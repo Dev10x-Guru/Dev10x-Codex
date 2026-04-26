@@ -1,0 +1,64 @@
+{
+  "skill_name": "Dev10x:memory-maintenance",
+  "eval_dimensions": [
+    {
+      "id": "discovery",
+      "name": "Memory Discovery",
+      "description": "Finds all memory files across global, project, and plugin scopes"
+    },
+    {
+      "id": "anti-pattern-detection",
+      "name": "Anti-Pattern Detection",
+      "description": "Identifies stale paths, script-calling instructions, contradictions, and index drift"
+    },
+    {
+      "id": "decision-gates",
+      "name": "Decision Gates",
+      "description": "Uses AskUserQuestion for fix approval, not plain text"
+    }
+  ],
+  "evals": [
+    {
+      "id": "discover-all-scopes",
+      "name": "Discover memory across all scopes",
+      "description": "Skill finds global, project, and plugin memory files",
+      "input": "/Dev10x:memory-maintenance",
+      "assertions": [
+        {
+          "dimension": "discovery",
+          "check": "output_contains",
+          "value": "global",
+          "signal": "Reports global memory scope"
+        }
+      ]
+    },
+    {
+      "id": "detect-stale-paths",
+      "name": "Detect versioned plugin cache paths",
+      "description": "Flags hardcoded version-specific plugin paths in memory files",
+      "input": "/Dev10x:memory-maintenance",
+      "assertions": [
+        {
+          "dimension": "anti-pattern-detection",
+          "check": "output_contains",
+          "value": "Stale",
+          "signal": "Identifies stale plugin path patterns"
+        }
+      ]
+    },
+    {
+      "id": "fix-gate-uses-askuserquestion",
+      "name": "Fix approval uses AskUserQuestion",
+      "description": "Phase 3 uses structured gate, not plain text",
+      "input": "/Dev10x:memory-maintenance",
+      "assertions": [
+        {
+          "dimension": "decision-gates",
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "signal": "AskUserQuestion called at fix approval gate"
+        }
+      ]
+    }
+  ]
+}

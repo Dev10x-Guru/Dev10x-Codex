@@ -1,0 +1,144 @@
+# Default acceptance criteria with executable checks
+# Plugin-owned — updates propagate automatically to all projects.
+# Repo overrides: ~/.claude/memory/Dev10x/dod-acceptance-criteria.yaml
+#
+# Schema per check:
+#   name:             Human-readable criterion name (required)
+#   check:            Shell command to run (use {pr_number} and {repo} placeholders)
+#                     Special values:
+#                       "manual"  — ask the user via AskUserQuestion
+#                       "prompt"  — Claude evaluates the prompt from session context
+#   expect:           Exact expected output (trimmed)
+#   expect_contains:  Output must contain this substring
+#   expect_not_contains: Output must NOT contain this substring
+#   expect_gt:        Output (parsed as number) must be greater than this value
+#   prompt:           For "manual": question shown to user
+#                     For "prompt": instruction Claude evaluates contextually
+#
+# Only one expect_* field per check. First match wins.
+
+defaults:
+  feature:
+    checks:
+      - name: Working copy clean
+        check: git status --porcelain
+        expect: ""
+      - name: CI passing
+        check: gh pr checks {pr_number} --repo {repo}
+        expect_contains: "All checks were successful"
+      - name: PR not draft
+        check: gh pr view {pr_number} --repo {repo} --json isDraft -q .isDraft
+        expect: "false"
+      - name: No fixup commits
+        check: git log --oneline origin/develop..HEAD
+        expect_not_contains: "fixup!"
+      - name: Skill routing compliance
+        check: prompt
+        prompt: >
+          Review the session for skill routing violations: were all
+          test runs delegated to the test skill (not raw pytest/uv
+          run pytest)? Were all commits created via Dev10x:git-commit
+          (not raw git commit)? Were all pushes via Dev10x:git (not
+          raw git push)? Check iterative loops especially — the first
+          iteration often uses the skill but subsequent iterations
+          fall back to raw CLI.
+      - name: No unresolved review threads
+        check: >
+          gh pr view {pr_number} --repo {repo}
+          --json reviewThreads -q '[.reviewThreads[] | select(.isResolved == false)] | length'
+        expect: "0"
+      - name: Review requested
+        check: >
+          gh pr view {pr_number} --repo {repo}
+          --json reviewRequests -q '.reviewRequests | length'
+        expect_gt: 0
+
+  bugfix:
+    checks:
+      - name: Working copy clean
+        check: git status --porcelain
+        expect: ""
+      - name: CI passing
+        check: gh pr checks {pr_number} --repo {repo}
+        expect_contains: "All checks were successful"
+      - name: PR not draft
+        check: gh pr view {pr_number} --repo {repo} --json isDraft -q .isDraft
+        expect: "false"
+      - name: Regression test present
+        check: git diff origin/develop..HEAD --stat
+        expect_contains: "test_"
+      - name: No fixup commits
+        check: git log --oneline origin/develop..HEAD
+        expect_not_contains: "fixup!"
+      - name: Skill routing compliance
+        check: prompt
+        prompt: >
+          Review the session for skill routing violations: were all
+          test runs delegated to the test skill (not raw pytest/uv
+          run pytest)? Were all commits via Dev10x:git-commit? Were
+          all pushes via Dev10x:git? Check iterative loops especially.
+      - name: No unresolved review threads
+        check: >
+          gh pr view {pr_number} --repo {repo}
+          --json reviewThreads -q '[.reviewThreads[] | select(.isResolved == false)] | length'
+        expect: "0"
+      - name: Review requested
+        check: >
+          gh pr view {pr_number} --repo {repo}
+          --json reviewRequests -q '.reviewRequests | length'
+        expect_gt: 0
+
+  pr-continuation:
+    checks:
+      - name: Working copy clean
+        check: git status --porcelain
+        expect: ""
+      - name: CI passing
+        check: gh pr checks {pr_number} --repo {repo}
+        expect_contains: "All checks were successful"
+      - name: PR not draft
+        check: gh pr view {pr_number} --repo {repo} --json isDraft -q .isDraft
+        expect: "false"
+      - name: No fixup commits
+        check: git log --oneline origin/develop..HEAD
+        expect_not_contains: "fixup!"
+      - name: Skill routing compliance
+        check: prompt
+        prompt: >
+          Review the session for skill routing violations in
+          iterative fix-test loops: did all test runs use the test
+          skill? Did all commits use Dev10x:git-commit?
+      - name: No unresolved review threads
+        check: >
+          gh pr view {pr_number} --repo {repo}
+          --json reviewThreads -q '[.reviewThreads[] | select(.isResolved == false)] | length'
+        expect: "0"
+      - name: Re-review requested
+        check: >
+          gh pr view {pr_number} --repo {repo}
+          --json reviewRequests -q '.reviewRequests | length'
+        expect_gt: 0
+
+  local-only:
+    checks:
+      - name: Working copy clean
+        check: git status --porcelain
+        expect: ""
+      - name: Changes verified
+        check: manual
+        prompt: "Were changes verified locally (tests pass, lint clean)?"
+
+  investigation:
+    checks:
+      - name: Findings documented
+        check: manual
+        prompt: "Are findings documented with clear next steps?"
+
+  fanout:
+    checks:
+      - name: All child PRs merged
+        check: manual
+        prompt: "Are all child work items merged or documented?"
+      - name: No orphaned branches
+        check: manual
+        prompt: "Are there any orphaned branches or draft PRs remaining?"

@@ -1,0 +1,51 @@
+{
+  "skill_name": "Dev10x:fanout",
+  "eval_dimensions": [
+    {
+      "id": "phase0-gate",
+      "name": "Phase 0 Friction Gate",
+      "description": "Phase 0 friction level prompt fires via AskUserQuestion before any work begins, and persists the choice for nested work-on invocations"
+    },
+    {
+      "id": "parallel-dispatch",
+      "name": "Parallel Work Dispatch",
+      "description": "Independent work items are dispatched to parallel agents or worktrees with proper isolation"
+    }
+  ],
+  "evals": [
+    {
+      "id": 1,
+      "name": "phase0-friction-gate",
+      "prompt": "/Dev10x:fanout GH-100 GH-101 GH-102",
+      "description": "Tests that Phase 0 friction level gate fires via AskUserQuestion before dispatching any work items.",
+      "expected_output": "AskUserQuestion is called with friction level options (Guided, Adaptive, Strict) before any issue processing begins. Choice is persisted to ~/.claude/Dev10x/session.yaml.",
+      "dimensions": ["phase0-gate"],
+      "assertions": [
+        {
+          "id": "phase0-uses-askuserquestion",
+          "text": "Phase 0 friction level prompt uses AskUserQuestion tool call, not plain text",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "friction", "Guided"]
+        },
+        {
+          "id": "phase0-fires-before-dispatch",
+          "text": "AskUserQuestion for friction level fires before any work item dispatch",
+          "check": "tool_called_before",
+          "signals": ["AskUserQuestion", "Agent"]
+        },
+        {
+          "id": "phase0-offers-three-levels",
+          "text": "Gate presents all three friction levels: Guided, Adaptive, Strict",
+          "check": "output_contains",
+          "signals": ["Guided", "Adaptive", "Strict"]
+        },
+        {
+          "id": "phase0-persists-choice",
+          "text": "After user selects a level, the choice is persisted to ~/.claude/Dev10x/session.yaml via Write tool",
+          "check": "tool_called",
+          "signals": ["Write", "session.yaml", "friction_level"]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,303 @@
+{
+  "skill_name": "Dev10x:gh-pr-create",
+  "eval_dimensions": [
+    {
+      "id": "body-format",
+      "name": "PR Body Format",
+      "description": "Body starts with JTBD Job Story, contains linked commit list, Fixes: URL, and checklist template — compact for notification previews"
+    },
+    {
+      "id": "title",
+      "name": "PR Title",
+      "description": "Single-commit PRs use commit title; multi-commit PRs derive title from JTBD 'so I can' clause or best overall outcome commit"
+    },
+    {
+      "id": "tracker-integration",
+      "name": "Issue Tracker Integration",
+      "description": "Detects tracker (GitHub/Linear/JIRA) from branch name, searches for existing Job Story in ticket, generates Fixes: link"
+    },
+    {
+      "id": "safety",
+      "name": "PR Safety",
+      "description": "Creates as draft, targets develop (never main), runs pre-PR checks, blocks on uncommitted changes or protected branches"
+    },
+    {
+      "id": "workflow",
+      "name": "Workflow Steps",
+      "description": "Follows correct step order (verify → generate → checks → push → create), shows preview, auto-advances, delegates to scripts"
+    }
+  ],
+  "evals": [
+    {
+      "id": 1,
+      "name": "single-commit-pr",
+      "prompt": "/Dev10x:gh-pr-create",
+      "description": "Single commit on branch janusz/PAY-310/fix-flaky-tests. Tests that PR title comes from commit title and body format is correct.",
+      "setup": {
+        "branch": "janusz/PAY-310/fix-flaky-tests",
+        "commits_ahead": 1,
+        "commit_title": "✅ PAY-310 Stabilize tax amount tests"
+      },
+      "dimensions": ["title", "body-format", "safety", "workflow"],
+      "assertions": [
+        {
+          "id": "title-from-commit",
+          "text": "PR title is the single commit title (✅ PAY-310 Stabilize tax amount tests)",
+          "check": "output_contains",
+          "signals": ["Stabilize tax amount tests"]
+        },
+        {
+          "id": "body-starts-with-job-story",
+          "text": "PR body starts with a JTBD Job Story in **When** / **I want to** / **so I can** format",
+          "check": "output_contains",
+          "signals": ["**When**", "**I want to**", "**so I can**"]
+        },
+        {
+          "id": "body-has-commit-list",
+          "text": "PR body contains linked commit list with short hash and commit message",
+          "check": "output_contains",
+          "signals": ["commits/", "PAY-310"]
+        },
+        {
+          "id": "body-has-fixes-link",
+          "text": "PR body contains Fixes: link to the issue tracker",
+          "check": "output_contains",
+          "signals": ["Fixes:"]
+        },
+        {
+          "id": "created-as-draft",
+          "text": "PR is created as a draft (--draft flag)",
+          "check": "command_contains",
+          "signals": ["--draft", "draft"]
+        },
+        {
+          "id": "targets-develop",
+          "text": "PR targets develop branch (--base develop)",
+          "check": "command_contains",
+          "signals": ["--base develop", "develop"]
+        },
+        {
+          "id": "runs-verify-state",
+          "text": "Runs verify-state.sh before any PR creation",
+          "check": "command_contains",
+          "signals": ["verify-state.sh"]
+        },
+        {
+          "id": "runs-pre-pr-checks",
+          "text": "Runs pre-pr-checks.sh (ruff, black, mypy, pytest) before pushing",
+          "check": "command_contains",
+          "signals": ["pre-pr-checks.sh"]
+        },
+        {
+          "id": "shows-preview",
+          "text": "Shows PR title and body preview before creating, asks for approval",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "Preview", "Create PR"]
+        },
+        {
+          "id": "opens-in-browser",
+          "text": "Opens the created PR in browser via gh pr view --web",
+          "check": "command_contains",
+          "signals": ["gh pr view --web"]
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "multi-commit-pr-with-jtbd",
+      "prompt": "/Dev10x:gh-pr-create",
+      "description": "Multiple commits on branch. Tests that PR title is derived from JTBD 'so I can' clause rather than last commit title.",
+      "setup": {
+        "branch": "janusz/PAY-200/multi-location-routing",
+        "commits_ahead": 4,
+        "commit_titles": [
+          "♻️ PAY-200 Extract location resolver",
+          "✨ PAY-200 Enable location-aware payment routing",
+          "✅ PAY-200 Verify multi-location scenarios",
+          "📝 PAY-200 Document location routing"
+        ]
+      },
+      "dimensions": ["title", "body-format"],
+      "assertions": [
+        {
+          "id": "title-not-last-commit",
+          "text": "PR title is NOT just the last commit title (📝 PAY-200 Document location routing)",
+          "check": "output_not_contains",
+          "signals": ["Document location routing"]
+        },
+        {
+          "id": "title-outcome-focused",
+          "text": "PR title describes overall outcome (e.g., Enable multi-location payment routing)",
+          "check": "output_contains",
+          "signals": ["Enable", "routing", "location"]
+        },
+        {
+          "id": "body-lists-all-commits",
+          "text": "PR body commit list includes all 4 commits, not just the latest",
+          "check": "output_contains",
+          "signals": ["Extract location", "Enable location", "Verify multi", "Document location"]
+        },
+        {
+          "id": "jtbd-sourced-or-generated",
+          "text": "Searches ticket for existing Job Story before generating new one",
+          "check": "behavioral",
+          "signals": ["detect-tracker.sh", "search", "Job Story", "generate"]
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "update-existing-pr",
+      "prompt": "/Dev10x:gh-pr-create #312",
+      "description": "PR number passed as argument — should switch to update mode, skip branch check and push, use gh pr edit.",
+      "setup": {
+        "existing_pr": 312
+      },
+      "dimensions": ["workflow"],
+      "assertions": [
+        {
+          "id": "detects-update-mode",
+          "text": "Detects PR number argument and switches to update mode",
+          "check": "transcript_contains",
+          "signals": ["update", "existing PR", "edit"]
+        },
+        {
+          "id": "skips-verify-and-push",
+          "text": "Skips verify-state.sh and branch push (PR already exists)",
+          "check": "command_absent",
+          "signals": ["verify-state.sh"]
+        },
+        {
+          "id": "uses-gh-pr-edit",
+          "text": "Uses gh pr edit (not gh pr create) to update the PR",
+          "check": "command_contains",
+          "signals": ["gh pr edit"]
+        },
+        {
+          "id": "regenerates-body",
+          "text": "Still regenerates Job Story and commit list for the updated body",
+          "check": "output_contains",
+          "signals": ["**When**", "commits/"]
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "checklist-na-detection",
+      "prompt": "/Dev10x:gh-pr-create",
+      "description": "PR with no migrations and no env var changes. Tests that N/A checklist items are struck through.",
+      "setup": {
+        "branch": "janusz/PAY-400/fix-timeout",
+        "commits_ahead": 1,
+        "diff_excludes": ["migrations/", "env"]
+      },
+      "dimensions": ["body-format"],
+      "assertions": [
+        {
+          "id": "strikes-migration-items",
+          "text": "Migration-related checklist items are struck through (no migrations/ in diff)",
+          "check": "output_contains",
+          "signals": ["~", "migration"]
+        },
+        {
+          "id": "strikes-env-items",
+          "text": "Environment variable checklist items are struck through (no env changes)",
+          "check": "output_contains",
+          "signals": ["~", "environment", "env"]
+        },
+        {
+          "id": "uses-gh-pr-edit-for-strikethrough",
+          "text": "Updates PR body with strikethroughs via gh pr edit after initial creation",
+          "check": "command_contains",
+          "signals": ["gh pr edit"]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "pre-pr-check-failure",
+      "prompt": "/Dev10x:gh-pr-create",
+      "description": "Pre-PR checks fail (e.g., ruff finds lint errors). Tests that workflow stops and shows error.",
+      "setup": {
+        "branch": "janusz/PAY-500/new-feature",
+        "pre_pr_checks_fail": true
+      },
+      "dimensions": ["safety", "workflow"],
+      "assertions": [
+        {
+          "id": "stops-on-check-failure",
+          "text": "Workflow stops when pre-PR checks fail — does NOT push or create PR",
+          "check": "command_absent",
+          "signals": ["gh pr create", "git push"]
+        },
+        {
+          "id": "shows-error-output",
+          "text": "Displays the specific check failure output to the user",
+          "check": "output_contains",
+          "signals": ["error", "failed", "fix"]
+        },
+        {
+          "id": "suggests-fix",
+          "text": "Suggests commands to fix the failing checks",
+          "check": "output_contains",
+          "signals": ["ruff", "black", "fix"]
+        }
+      ]
+    }
+  ],
+  "trigger_evals": {
+    "description": "Queries that should/should-not trigger the gh-pr-create skill",
+    "should_trigger": [
+      {
+        "query": "ok everything's committed and tests pass, let's create a PR for this",
+        "rationale": "Explicit PR creation intent after completing work"
+      },
+      {
+        "query": "/Dev10x:gh-pr-create",
+        "rationale": "Direct invocation"
+      },
+      {
+        "query": "push this branch and open a draft PR targeting develop",
+        "rationale": "PR creation with specific targeting — matches skill behavior"
+      },
+      {
+        "query": "I need to create a pull request for janusz/PAY-310/fix-flaky-tests and link it to the Linear ticket",
+        "rationale": "PR creation with tracker integration — core use case"
+      },
+      {
+        "query": "can you update the description on PR #312? The job story is outdated after our last round of changes",
+        "rationale": "Update existing PR mode — pass PR number"
+      },
+      {
+        "query": "let's get this up for review, create a PR with a proper job story",
+        "rationale": "PR creation emphasizing Job Story — skill generates it"
+      }
+    ],
+    "should_not_trigger": [
+      {
+        "query": "can you review PR #312 and leave comments?",
+        "rationale": "Wants PR review (Dev10x:gh-pr-review), not PR creation"
+      },
+      {
+        "query": "commit these changes and push the branch",
+        "rationale": "Wants git commit + push, not full PR creation workflow"
+      },
+      {
+        "query": "what's the status of my open PRs?",
+        "rationale": "Checking PR status, not creating one"
+      },
+      {
+        "query": "merge PR #312 into develop",
+        "rationale": "Wants to merge, not create — different git operation"
+      },
+      {
+        "query": "respond to the review comments on my PR",
+        "rationale": "Wants Dev10x:gh-pr-respond, not create"
+      },
+      {
+        "query": "I need to write a job story for JIRA-789 and add it to the ticket",
+        "rationale": "Wants Dev10x:ticket-jtbd to write JTBD to a ticket, not create a PR"
+      }
+    ]
+  }
+}

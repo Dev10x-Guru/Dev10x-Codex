@@ -1,0 +1,41 @@
+{
+  "skill_name": "Dev10x:gh-pr-doctor",
+  "eval_dimensions": [
+    {
+      "name": "task_tracking",
+      "description": "Creates and updates tasks per orchestration contract"
+    },
+    {
+      "name": "announce",
+      "description": "Opens with announce line identifying the skill"
+    },
+    {
+      "name": "decision_gates",
+      "description": "Decision gates use AskUserQuestion tool with correct options"
+    }
+  ],
+  "evals": [
+    {
+      "check": "tool_called",
+      "tool": "TaskCreate",
+      "assertion": "task_tracking_startup",
+      "signal": "TaskCreate is called at startup for each orchestration phase"
+    },
+    {
+      "check": "text_contains",
+      "assertion": "announce_line_present",
+      "signal": "Output contains 'Using Dev10x:gh-pr-doctor to'"
+    },
+    {
+      "check": "tool_called",
+      "tool": "AskUserQuestion",
+      "assertion": "gate1_uses_tool",
+      "signal": "AskUserQuestion is called at Step 2 grouping decision point"
+    },
+    {
+      "check": "options_match",
+      "assertion": "gate1_options_correct",
+      "signal": "Options match SKILL.md: 'Create issues', 'Edit grouping', 'Dry run'"
+    }
+  ]
+}

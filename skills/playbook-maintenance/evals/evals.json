@@ -1,0 +1,146 @@
+{
+  "skill_name": "Dev10x:playbook-maintenance",
+  "eval_dimensions": [
+    {
+      "id": "discovery",
+      "name": "Override Discovery",
+      "description": "Finds all user override files and matches them to their default playbooks by filename"
+    },
+    {
+      "id": "drift-detection",
+      "name": "Drift Detection",
+      "description": "Compares override steps against defaults by subject matching, detects new steps, prompt changes, skills changes, fragment drift, and intentional divergences"
+    },
+    {
+      "id": "fragment-comparison",
+      "name": "Fragment Comparison",
+      "description": "Expands fragments before comparing, handles differently-named fragments as intentional divergence, and detects new fragment steps"
+    },
+    {
+      "id": "decision-gates",
+      "name": "Decision Gates",
+      "description": "All blocking choices use AskUserQuestion tool calls, not plain text questions"
+    },
+    {
+      "id": "orchestration",
+      "name": "Task Orchestration",
+      "description": "Creates phase tasks at startup and updates status as each phase completes"
+    }
+  ],
+  "evals": [
+    {
+      "id": "no-overrides",
+      "name": "No overrides found",
+      "description": "User invokes skill in a project with no playbook overrides, expects clean exit message",
+      "input": "/Dev10x:playbook-maintenance",
+      "assertions": [
+        {
+          "dimension": "discovery",
+          "check": "output_contains",
+          "value": "nothing to maintain",
+          "signal": "Reports no overrides found when none exist"
+        }
+      ]
+    },
+    {
+      "id": "detect-new-step",
+      "name": "Detect new default step missing from override",
+      "description": "Default playbook has a step that the user override does not, skill reports it as INFO severity",
+      "input": "/Dev10x:playbook-maintenance work-on",
+      "assertions": [
+        {
+          "dimension": "drift-detection",
+          "check": "output_contains",
+          "value": "New step",
+          "signal": "Identifies steps in defaults not present in override"
+        }
+      ]
+    },
+    {
+      "id": "detect-fragment-drift",
+      "name": "Detect fragment step count difference",
+      "description": "Default fragment has more steps than user's shadowing fragment",
+      "input": "/Dev10x:playbook-maintenance work-on",
+      "assertions": [
+        {
+          "dimension": "fragment-comparison",
+          "check": "output_contains",
+          "value": "Fragment",
+          "signal": "Reports fragment drift when step counts differ"
+        }
+      ]
+    },
+    {
+      "id": "intentional-divergence",
+      "name": "Intentional divergence classified as INFO",
+      "description": "Override uses a differently-named fragment (e.g., shipping-pipeline-solo vs shipping-pipeline), classified as INFO not MEDIUM",
+      "input": "/Dev10x:playbook-maintenance work-on",
+      "assertions": [
+        {
+          "dimension": "drift-detection",
+          "check": "output_contains",
+          "value": "INFO",
+          "signal": "Intentional divergences are INFO severity, not MEDIUM"
+        }
+      ]
+    },
+    {
+      "id": "phase3-uses-decision-gate",
+      "name": "Phase 3 uses AskUserQuestion for action choice",
+      "description": "After presenting findings, skill must use AskUserQuestion with structured options",
+      "input": "/Dev10x:playbook-maintenance",
+      "assertions": [
+        {
+          "dimension": "decision-gates",
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "phase3_action_gate",
+          "signal": "AskUserQuestion is called at Phase 3 action choice point"
+        }
+      ]
+    },
+    {
+      "id": "phase4-per-finding-gate",
+      "name": "Phase 4 review-and-apply uses AskUserQuestion per finding",
+      "description": "When user chooses 'Review and apply', each finding gets an AskUserQuestion gate",
+      "input": "/Dev10x:playbook-maintenance",
+      "assertions": [
+        {
+          "dimension": "decision-gates",
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "phase4_per_finding_gate",
+          "signal": "AskUserQuestion is called for each finding in review mode"
+        }
+      ]
+    },
+    {
+      "id": "startup-tasks",
+      "name": "Creates phase tasks at startup",
+      "description": "Skill creates 4 phase tasks before any work begins",
+      "input": "/Dev10x:playbook-maintenance",
+      "assertions": [
+        {
+          "dimension": "orchestration",
+          "check": "tool_called",
+          "tool": "TaskCreate",
+          "signal": "TaskCreate is called for each of the 4 phases"
+        }
+      ]
+    },
+    {
+      "id": "specific-skill-filter",
+      "name": "Filter to specific skill when argument provided",
+      "description": "User passes a skill name as argument, only that skill's overrides are analyzed",
+      "input": "/Dev10x:playbook-maintenance work-on",
+      "assertions": [
+        {
+          "dimension": "discovery",
+          "check": "output_not_contains",
+          "value": "release-notes",
+          "signal": "Only the specified skill is analyzed when argument is provided"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,328 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["slack_sdk"]
+# ///
+"""
+PR notification helper for Phase 3 of pr:monitor.
+
+Consolidates all Phase 3 operations into two subcommands so the entire
+phase can be pre-approved as a single Bash allow rule.
+
+Subcommands:
+    prepare   — Fetch PR info, count open threads, format Slack message,
+                output JSON for Claude to present to user for confirmation.
+    send      — Post Slack notification, assign GitHub reviewers, update PR
+                body checklist, and save state snapshot.
+
+Usage:
+    pr-notify.py prepare --pr 123 --repo owner/repo
+    pr-notify.py send --pr 123 --repo owner/repo \\
+        --channel CHANNEL_ID --message-file /tmp/claude/pr-monitor/pr-notify-msg.txt \\
+        --reviewer org/team \\
+        [--skip-slack] [--skip-reviewers] [--skip-checklist]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+
+def gh_json(args: list[str]) -> Any:
+    result = subprocess.run(
+        ["gh", *args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        print(f"[ERROR] gh {' '.join(args)}: {result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+    return json.loads(result.stdout)
+
+
+def gh_run(args: list[str]) -> None:
+    result = subprocess.run(["gh", *args], timeout=30)
+    if result.returncode != 0:
+        print(f"[ERROR] gh {' '.join(args)} failed", file=sys.stderr)
+        sys.exit(1)
+
+
+def count_open_threads(pr_number: int, repo: str) -> int:
+    count = gh_json(
+        args=[
+            "api",
+            f"repos/{repo}/pulls/{pr_number}/comments",
+            "--jq",
+            "[.[] | select(.in_reply_to_id == null)] | length",
+        ]
+    )
+    return int(count)
+
+
+def extract_jtbd(body: str) -> str | None:
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip().startswith("**When**"):
+            jtbd_lines = [line.strip()]
+            for next_line in lines[i + 1 :]:
+                if not next_line.strip() or next_line.startswith("#"):
+                    break
+                jtbd_lines.append(next_line.strip())
+            return " ".join(jtbd_lines)
+    return None
+
+
+def md_to_slack_bold(text: str) -> str:
+    return re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
+
+
+def split_title_jtbd(pr_title: str) -> tuple[str, str | None]:
+    if " \u2014 " in pr_title:
+        title, embedded_jtbd = pr_title.split(" \u2014 ", maxsplit=1)
+        return title.strip(), embedded_jtbd.strip()
+    return pr_title, None
+
+
+def format_slack_message(
+    pr_number: int,
+    repo: str,
+    pr_url: str,
+    pr_title: str,
+    jtbd: str | None,
+) -> str:
+    repo_short = repo.split("/")[-1]
+    link = f"<{pr_url}|{repo_short}#{pr_number}>"
+    short_title, title_jtbd = split_title_jtbd(pr_title=pr_title)
+    effective_jtbd = jtbd or title_jtbd
+    lines = [f"Please review {link}", short_title]
+    if effective_jtbd:
+        lines.append(f"> {md_to_slack_bold(effective_jtbd)}")
+    return "\n".join(lines)
+
+
+def update_pr_checklist(pr_number: int, repo: str, diff: str) -> None:
+    pr = gh_json(args=["pr", "view", str(pr_number), "--repo", repo, "--json", "body"])
+    body: str = pr.get("body") or ""
+
+    has_migrations = "migrations/" in diff
+    has_env_changes = "settings" in diff and ("='" in diff or '="' in diff)
+    has_breaking = False  # Conservative default
+
+    replacements = [
+        ("- [ ] CI is passing", "- [x] CI is passing"),
+        (
+            "- [ ] A person or better yet a group is selected in the reviewers section",
+            "- [x] A person or better yet a group is selected in the reviewers section",
+        ),
+        (
+            "- [ ] Clean history with auto-squashed fixup! commits",
+            "- [x] Clean history with auto-squashed fixup! commits",
+        ),
+    ]
+
+    if not has_migrations:
+        replacements.append(
+            (
+                "- [ ] **Data migrations** are present (if applicable) and unit tested",
+                "- ~**Data migrations** are present (if applicable) and unit tested~",
+            )
+        )
+
+    if not has_env_changes:
+        replacements.append(
+            (
+                "- [ ] **New environment variables** are documented",
+                "- ~**New environment variables** are documented~",
+            )
+        )
+
+    if not has_breaking:
+        replacements.append(
+            (
+                "- [ ] **Breaking changes** are communicated to the team",
+                "- ~**Breaking changes** are communicated to the team~",
+            )
+        )
+
+    updated = body
+    for old, new in replacements:
+        updated = updated.replace(old, new)
+
+    if updated == body:
+        print("No checklist items found to update.")
+        return
+
+    gh_run(args=["pr", "edit", str(pr_number), "--repo", repo, "--body", updated])
+    print(f"✅ PR #{pr_number} checklist updated.")
+
+
+def cmd_prepare(args: argparse.Namespace) -> None:
+    pr = gh_json(
+        args=[
+            "pr",
+            "view",
+            str(args.pr),
+            "--repo",
+            args.repo,
+            "--json",
+            "number,title,body,url,state",
+        ]
+    )
+
+    open_threads = count_open_threads(pr_number=args.pr, repo=args.repo)
+    jtbd = extract_jtbd(body=pr.get("body") or "")
+    message = format_slack_message(
+        pr_number=args.pr,
+        repo=args.repo,
+        pr_url=pr["url"],
+        pr_title=pr["title"],
+        jtbd=jtbd,
+    )
+
+    output = {
+        "pr_number": args.pr,
+        "repo": args.repo,
+        "pr_url": pr["url"],
+        "pr_title": pr["title"],
+        "pr_state": pr["state"],
+        "open_threads": open_threads,
+        "jtbd_found": jtbd is not None,
+        "jtbd": jtbd,
+        "slack_message": message,
+        "ready": open_threads == 0 and pr["state"] == "OPEN",
+    }
+
+    print(json.dumps(output, indent=2))
+
+
+def cmd_send(args: argparse.Namespace) -> None:
+    slack_ts: str | None = None
+
+    if not args.skip_slack:
+        if not args.message_file and not args.message:
+            print("❌ --message or --message-file required", file=sys.stderr)
+            sys.exit(1)
+
+        message = args.message
+        if args.message_file:
+            message = Path(args.message_file).read_text()
+
+        # Post via Slack notification script if available, otherwise
+        # print the message for the user to post manually.
+        slack_notify = Path(__file__).parents[2] / "slack" / "slack-notify.py"
+        if slack_notify.exists() and args.channel:
+            notify_args = [
+                "run",
+                "--script",
+                str(slack_notify),
+                "--channel",
+                args.channel,
+                "--message",
+                message,
+            ]
+            result = subprocess.run(
+                ["uv", *notify_args],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                print(
+                    f"❌ Slack notification failed: {result.stderr.strip()}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print(result.stdout.strip())
+            ts_match = re.search(r"ts=(\S+)", result.stdout)
+            if ts_match:
+                slack_ts = ts_match.group(1)
+        else:
+            print(f"📋 Notification message (post manually):\n{message}")
+
+    if not args.skip_reviewers and args.reviewer:
+        gh_run(
+            args=[
+                "pr",
+                "edit",
+                str(args.pr),
+                "--repo",
+                args.repo,
+                "--add-reviewer",
+                args.reviewer,
+            ]
+        )
+        print(f"✅ Assigned reviewer: {args.reviewer}")
+
+    if not args.skip_checklist:
+        diff_result = subprocess.run(
+            ["gh", "pr", "diff", str(args.pr), "--repo", args.repo],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        diff = diff_result.stdout if diff_result.returncode == 0 else ""
+        update_pr_checklist(pr_number=args.pr, repo=args.repo, diff=diff)
+
+    print(f"✅ Phase 3 complete for PR #{args.pr}")
+    if slack_ts:
+        print(f"   Slack thread_ts: {slack_ts}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="PR Phase 3 notification helper")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    def add_common(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--pr", type=int, required=True, help="PR number")
+        p.add_argument("--repo", required=True, help="GitHub repo (owner/name)")
+
+    p_prepare = subparsers.add_parser(
+        "prepare",
+        help="Fetch PR info and format message for user confirmation",
+    )
+    add_common(p=p_prepare)
+
+    p_send = subparsers.add_parser(
+        "send",
+        help="Post notification, assign reviewers, update checklist",
+    )
+    add_common(p=p_send)
+    p_send.add_argument("--channel", help="Slack channel ID")
+    p_send.add_argument("--message", help="Notification message text")
+    p_send.add_argument("--message-file", help="Read message from file")
+    p_send.add_argument(
+        "--reviewer", help="GitHub reviewer to assign (user or org/team)"
+    )
+    p_send.add_argument(
+        "--skip-slack",
+        action="store_true",
+        help="Skip posting Slack notification",
+    )
+    p_send.add_argument(
+        "--skip-reviewers",
+        action="store_true",
+        help="Skip assigning GitHub reviewers",
+    )
+    p_send.add_argument(
+        "--skip-checklist",
+        action="store_true",
+        help="Skip updating PR body checklist",
+    )
+
+    args = parser.parse_args()
+    commands = {
+        "prepare": cmd_prepare,
+        "send": cmd_send,
+    }
+    commands[args.command](args)
+
+
+if __name__ == "__main__":
+    main()

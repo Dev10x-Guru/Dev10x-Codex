@@ -1,0 +1,23 @@
+{
+  "name": "Dev10x-Guru",
+  "owner": {
+    "name": "Janusz Skonieczny",
+    "email": "Dev10xAI@WooYek.com"
+  },
+  "metadata": {
+    "description": "Dev10x plugin marketplace — structured workflows for commits, PRs, tickets, QA, and more"
+  },
+  "plugins": [
+    {
+      "name": "Dev10x",
+      "source": "./",
+      "description": "67 skills for structured commits, PR lifecycle, branch hygiene, ticket management, task tracking, code review, scoping, and QA automation.",
+      "keywords": [
+        "git", "commits", "pull-requests", "code-review",
+        "workflow", "tasks", "JTBD", "gitmoji", "hooks",
+        "worktrees", "ticket-management", "metrics",
+        "session-persistence", "MCP"
+      ]
+    }
+  ]
+}

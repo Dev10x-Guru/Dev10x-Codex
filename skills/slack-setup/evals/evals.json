@@ -1,0 +1,73 @@
+{
+  "skill_name": "Dev10x:slack-setup",
+  "eval_dimensions": [
+    {
+      "id": "state_detection",
+      "name": "Current State Detection",
+      "description": "Correctly detects existing Slack config, keyring tokens, and env vars before proceeding"
+    },
+    {
+      "id": "decision_gates",
+      "name": "Decision Gate Enforcement",
+      "description": "Uses AskUserQuestion for all 4 decision gates (token type, storage method, config details, verification)"
+    },
+    {
+      "id": "platform_detection",
+      "name": "Cross-Platform Support",
+      "description": "Detects OS and provides correct keyring commands for Linux (secret-tool) and macOS (security)"
+    },
+    {
+      "id": "config_generation",
+      "name": "Config File Generation",
+      "description": "Generates valid slack-config.yaml with correct structure (self_user_id, bot_username, user_groups)"
+    }
+  ],
+  "evals": [
+    {
+      "id": 1,
+      "name": "fresh-setup",
+      "prompt": "/Dev10x:slack-setup",
+      "description": "Fresh setup with no existing config or token. Tests full happy-path workflow.",
+      "assertions": [
+        {
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "gate1_token_type",
+          "signal": "AskUserQuestion is called for token type selection"
+        },
+        {
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "gate2_storage_method",
+          "signal": "AskUserQuestion is called for storage method selection"
+        },
+        {
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "gate3_config_details",
+          "signal": "AskUserQuestion is called for config details (user ID, bot name)"
+        },
+        {
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "gate4_verification",
+          "signal": "AskUserQuestion is called for verification method selection"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "partial-setup-token-exists",
+      "prompt": "/Dev10x:slack-setup",
+      "description": "Token already in keyring but no config file. Should skip token setup steps.",
+      "assertions": [
+        {
+          "check": "output_contains",
+          "value": "token found",
+          "assertion": "detects_existing_token",
+          "signal": "Agent detects and reports existing token in keyring"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,221 @@
+{
+  "skill_name": "Dev10x:playbook",
+  "eval_dimensions": [
+    {
+      "id": "subcommand-routing",
+      "name": "Subcommand Routing",
+      "description": "Correctly parses arguments to determine subcommand (list, view, edit, reset) and routes to the appropriate workflow"
+    },
+    {
+      "id": "discovery",
+      "name": "Skill Discovery",
+      "description": "Scans skill directories for references/playbook.yaml to find all playbook-powered skills automatically"
+    },
+    {
+      "id": "play-resolution",
+      "name": "Play Resolution",
+      "description": "Resolves plays using the correct order: user overrides (persist: false first, then persist: true), then defaults from the skill's playbook.yaml"
+    },
+    {
+      "id": "guided-editing",
+      "name": "Guided Editing Flow",
+      "description": "Uses AskUserQuestion decision gates for all edit operations (add/remove/reorder/edit step), previews changes before saving, and supports continue-editing loop"
+    },
+    {
+      "id": "file-management",
+      "name": "Playbook File Management",
+      "description": "Creates per-skill override files only on first save, preserves existing overrides, correctly formats YAML with persist flag and date"
+    },
+    {
+      "id": "decision-gates",
+      "name": "Decision Gates",
+      "description": "All blocking choices use AskUserQuestion tool calls, not plain text questions"
+    },
+    {
+      "id": "fragment-resolution",
+      "name": "Fragment Resolution",
+      "description": "Fragment references are correctly expanded inline, with condition overrides propagated, circular references detected, and missing fragments producing clear errors"
+    }
+  ],
+  "evals": [
+    {
+      "id": "list-no-args",
+      "name": "List playbook-powered skills",
+      "description": "User invokes /Dev10x:playbook with no arguments, expects summary table of all playbook-powered skills",
+      "input": "/Dev10x:playbook",
+      "assertions": [
+        {
+          "dimension": "discovery",
+          "check": "output_contains",
+          "value": "work-on",
+          "signal": "Lists the work-on skill as playbook-powered"
+        },
+        {
+          "dimension": "subcommand-routing",
+          "check": "output_contains",
+          "value": "feature",
+          "signal": "Shows play names for discovered skills"
+        }
+      ]
+    },
+    {
+      "id": "view-skill-plays",
+      "name": "View plays for a specific skill",
+      "description": "User invokes /Dev10x:playbook view work-on, expects list of all plays",
+      "input": "/Dev10x:playbook view work-on",
+      "assertions": [
+        {
+          "dimension": "subcommand-routing",
+          "check": "output_contains",
+          "value": "feature",
+          "signal": "Shows the feature play"
+        },
+        {
+          "dimension": "subcommand-routing",
+          "check": "output_contains",
+          "value": "bugfix",
+          "signal": "Shows the bugfix play"
+        }
+      ]
+    },
+    {
+      "id": "view-specific-play",
+      "name": "View a specific play with fragment markers",
+      "description": "User invokes /Dev10x:playbook view work-on feature, expects play tree with [FRAGMENT] markers for fragment references",
+      "input": "/Dev10x:playbook view work-on feature",
+      "assertions": [
+        {
+          "dimension": "subcommand-routing",
+          "check": "output_contains",
+          "value": "Set up workspace",
+          "signal": "Shows the first step of the feature play"
+        },
+        {
+          "dimension": "play-resolution",
+          "check": "tool_called",
+          "tool": "Read",
+          "signal": "Reads the playbook file to get play defaults"
+        },
+        {
+          "dimension": "play-resolution",
+          "check": "output_contains",
+          "value": "FRAGMENT",
+          "signal": "Shows [FRAGMENT: name] marker for fragment references in the play"
+        }
+      ]
+    },
+    {
+      "id": "edit-uses-decision-gate",
+      "name": "Edit subcommand uses AskUserQuestion",
+      "description": "Edit flow must use AskUserQuestion for operation selection",
+      "input": "/Dev10x:playbook edit work-on feature",
+      "assertions": [
+        {
+          "dimension": "decision-gates",
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "edit_operation_gate",
+          "signal": "AskUserQuestion is called for edit operation selection"
+        },
+        {
+          "dimension": "decision-gates",
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "save_gate",
+          "signal": "AskUserQuestion is called for save/continue/discard decision"
+        }
+      ]
+    },
+    {
+      "id": "reset-confirms",
+      "name": "Reset subcommand confirms before deleting",
+      "description": "Reset must confirm with user before removing overrides",
+      "input": "/Dev10x:playbook reset work-on feature",
+      "assertions": [
+        {
+          "dimension": "decision-gates",
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "reset_confirmation",
+          "signal": "AskUserQuestion is called before resetting overrides"
+        }
+      ]
+    },
+    {
+      "id": "per-skill-file-isolation",
+      "name": "Per-skill file isolation",
+      "description": "Overrides are stored in per-skill files, not a shared file",
+      "input": "/Dev10x:playbook edit work-on feature",
+      "assertions": [
+        {
+          "dimension": "file-management",
+          "check": "output_contains",
+          "value": "playbooks/work-on.yaml",
+          "signal": "Writes to per-skill override file, not a shared file"
+        }
+      ]
+    },
+    {
+      "id": "fragment-expansion",
+      "name": "Fragment references resolve correctly",
+      "description": "When resolving a play for execution, fragment references are expanded into their constituent steps",
+      "input": "/Dev10x:playbook view work-on feature --expanded",
+      "assertions": [
+        {
+          "dimension": "fragment-resolution",
+          "check": "output_contains",
+          "value": "Code review",
+          "signal": "Fragment steps are expanded inline when requested"
+        },
+        {
+          "dimension": "fragment-resolution",
+          "check": "output_contains",
+          "value": "Groom commit history",
+          "signal": "Expanded view shows all steps from the shipping-pipeline fragment"
+        }
+      ]
+    },
+    {
+      "id": "missing-fragment-error",
+      "name": "Missing fragment produces clear error",
+      "description": "Pre-condition: the feature play references a nonexistent fragment name. Expects a clear error rather than silent skip.",
+      "input": "/Dev10x:playbook view work-on feature",
+      "assertions": [
+        {
+          "dimension": "fragment-resolution",
+          "check": "output_contains",
+          "value": "error",
+          "signal": "Shows an error message for missing fragment references"
+        }
+      ]
+    },
+    {
+      "id": "fragment-condition-override",
+      "name": "Fragment condition override propagates",
+      "description": "When a fragment reference carries a condition, it is applied to all expanded steps",
+      "input": "/Dev10x:playbook view work-on local-only --expanded",
+      "assertions": [
+        {
+          "dimension": "fragment-resolution",
+          "check": "output_contains",
+          "value": "if-pr-decided",
+          "signal": "Condition from fragment reference is applied to expanded steps"
+        }
+      ]
+    },
+    {
+      "id": "circular-fragment-error",
+      "name": "Circular fragment reference is detected",
+      "description": "Pre-condition: fragment A references fragment B which references fragment A. Resolution stops at depth 3 and shows a clear error.",
+      "input": "/Dev10x:playbook view work-on feature",
+      "assertions": [
+        {
+          "dimension": "fragment-resolution",
+          "check": "output_contains",
+          "value": "circular",
+          "signal": "Shows a circular reference error message"
+        }
+      ]
+    }
+  ]
+}

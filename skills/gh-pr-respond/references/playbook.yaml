@@ -1,0 +1,154 @@
+# playbook.yaml — Respond workflow plays for Dev10x:gh-pr-respond
+# Default location: ${CLAUDE_PLUGIN_ROOT}/skills/gh-pr-respond/references/playbook.yaml
+# User overrides (see references/config-resolution.md):
+#   1. .claude/Dev10x/playbooks/gh-pr-respond.yaml (project-local)
+#   2. ~/.claude/memory/Dev10x/playbooks/gh-pr-respond.yaml (global + repo match)
+#   3. ~/.claude/projects/<project>/memory/playbooks/gh-pr-respond.yaml (legacy)
+# Managed by Dev10x:playbook skill.
+#
+# Play names match the mode detection in SKILL.md:
+#   single — one comment at a time (Mode A)
+#   batch  — all unaddressed comments on a PR/review (Mode B)
+
+defaults:
+  single:
+    prompt: >
+      Use when the input contains #discussion_r{id} — a specific
+      comment URL. Process that one comment, then check for remaining
+      unaddressed comments and offer to continue or switch to batch.
+    steps:
+      - subject: Process comment
+        type: detailed
+        prompt: >
+          Delegate to Dev10x:gh-pr-triage with the comment URL.
+          If VALID → delegate to Dev10x:gh-pr-fixup.
+          If not VALID → reply is posted, proceed to thread
+          resolution confirmation.
+        skills: [Dev10x:gh-pr-triage, Dev10x:gh-pr-fixup]
+      - subject: Confirm thread resolution
+        type: detailed
+        prompt: >
+          REQUIRED: Call AskUserQuestion (Gate 1). Present verdict
+          and reason. Options: "Resolve" / "Leave open".
+          Only fires for non-VALID verdicts — VALID comments are
+          handled entirely by gh-pr-fixup.
+        condition: non-valid-verdict
+      - subject: Hide obsolete comment
+        type: detailed
+        prompt: >
+          REQUIRED: Call AskUserQuestion (Gate 6). After resolving
+          a thread, offer to minimize the root comment using the
+          minimizeComment GraphQL mutation with classifier OUTDATED.
+          Options: "Hide" / "Skip". Skip this gate if the thread
+          was left open.
+        condition: thread-resolved
+      - subject: Check remaining comments
+        type: detailed
+        prompt: >
+          Query for other unaddressed root comments on the PR.
+          Filter by in_reply_to_id == null.
+      - subject: Offer to continue
+        type: detailed
+        prompt: >
+          REQUIRED: Call AskUserQuestion (Gate 2). Present
+          remaining comment count and summaries. Options:
+          "Next comment" / "Switch to batch mode" / "Stop".
+          Skip if no remaining comments.
+        condition: has-remaining
+
+  batch:
+    prompt: >
+      Use when the input is a PR URL, review URL, or PR number
+      without #discussion_r. Collects all unaddressed comments,
+      triages them in parallel, and presents a response plan for
+      user approval before executing.
+    steps:
+      - subject: Collect unaddressed comments
+        type: detailed
+        prompt: >
+          List all root comments (in_reply_to_id == null) on the
+          PR. If a review ID is specified, filter to that review.
+          Always check the review body for structured findings —
+          parse individual items (bullet points with severity
+          markers, numbered items with file:line refs) into
+          separate synthetic comments. Merge with inline comments.
+          Report "No unaddressed comments" only if both inline
+          and body findings are empty.
+      - subject: Triage all comments
+        type: detailed
+        prompt: >
+          Dispatch parallel triage subagents — up to 4 concurrent.
+          Each returns verdict + draft reply. Present results as
+          a table with author, file:line, summary, verdict, and
+          proposed response.
+      - subject: Get user approval
+        type: detailed
+        prompt: >
+          REQUIRED: Call AskUserQuestion (Gate 3). Options:
+          "Approve all" / "Review one-by-one" / "Skip".
+          User may provide corrections in free text.
+      - subject: Execute approved responses
+        type: detailed
+        prompt: >
+          For VALID comments → delegate to Dev10x:gh-pr-fixup
+          (one fixup commit per comment). For non-VALID comments
+          → post reply via gh api. Do NOT resolve threads yet.
+        skills: [Dev10x:gh-pr-fixup]
+      - subject: Resolve threads
+        type: detailed
+        prompt: >
+          REQUIRED: Call AskUserQuestion (Gate 4). Collect all
+          replied-to but unresolved threads. Options:
+          "Resolve all" / "Review one-by-one" / "Leave all open".
+          If "Review one-by-one": per-thread confirmation.
+          Resolve only user-approved threads via GraphQL.
+      - subject: Hide obsolete comments
+        type: detailed
+        prompt: >
+          After resolving threads, offer to minimize resolved
+          comments. REQUIRED: Call AskUserQuestion (Gate 6).
+          Options: "Hide all resolved" / "Review one-by-one" /
+          "Skip". Uses minimizeComment GraphQL mutation with
+          classifier OUTDATED. Skip if no threads were resolved.
+        condition: has-resolved-threads
+      - subject: Summary
+        type: detailed
+        prompt: >
+          Report counts by verdict type, resolution status, and
+          hiding status. Include fixup commit count.
+
+  post-response:
+    prompt: >
+      Use after all comments are processed and fixup commits exist.
+      Executes the full shipping pipeline: groom → push → ready →
+      monitor → merge. Skip if no fixup commits were created.
+    steps:
+      - subject: Groom commit history
+        type: detailed
+        skills: [Dev10x:git-groom]
+        prompt: Squash fixup commits into clean history.
+      - subject: Push changes
+        type: detailed
+        skills: [Dev10x:git]
+        prompt: Push with --force-with-lease.
+      - subject: Mark PR ready
+        type: detailed
+        prompt: >
+          Run `gh pr ready` if the PR is still a draft. Skip if
+          already marked ready.
+      - subject: Monitor CI
+        type: detailed
+        skills: [Dev10x:gh-pr-monitor]
+        prompt: >
+          Watch CI. Fix failures with fixup commits if needed.
+          Auto-advance when green.
+      - subject: Merge PR
+        type: detailed
+        prompt: >
+          When CI passes and no new review comments exist, merge
+          via `gh pr merge --squash --delete-branch`. In solo-
+          maintainer mode, merge automatically. Otherwise, stop
+          and report ready-to-merge status.
+        condition: ci-green-no-comments
+
+overrides: []

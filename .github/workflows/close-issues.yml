@@ -1,0 +1,40 @@
+name: Close linked issues on merge
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  close-issues:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Close issues referenced in PR body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          urls=$(echo "$PR_BODY" \
+            | grep -oP '(?<=Fixes: )https://github\.com/[^\s]+/issues/\d+' \
+            || true)
+
+          if [ -z "$urls" ]; then
+            echo "No Fixes: URLs found in PR body"
+            exit 0
+          fi
+
+          for url in $urls; do
+            number=$(echo "$url" | grep -oP '\d+$')
+            repo=$(echo "$url" | grep -oP 'github\.com/\K[^/]+/[^/]+')
+            echo "Closing $repo#$number"
+            gh issue close "$number" \
+              --repo "$repo" \
+              --comment "Closed by #${{ github.event.pull_request.number }}" \
+              || {
+                echo "Note: Issue $repo#$number may already be closed"
+              }
+          done

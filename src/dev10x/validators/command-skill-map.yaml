@@ -1,0 +1,415 @@
+# Validation rules — single source of truth for command blocking,
+# skill redirection, and Edit/Write security enforcement.
+#
+# Used by:
+#   - skill_redirect.py (Bash PreToolUse hook)
+#   - validate-edit-write.py (Edit|Write PreToolUse hook)
+#   - Dev10x:skill-reinforcement (skill — advisory only)
+#
+# Per-project override: place a custom version at:
+#   ~/.claude/memory/Dev10x/skill-reinforcement.yaml
+# The hook merges override rules (user entries take precedence).
+#
+# Schema:
+#   config:
+#     friction_level: strict | guided | adaptive
+#     plugin_repo: URL for filing issues when skills instruct blocked commands
+#
+#   rules[]:
+#     name:             unique identifier
+#     matcher:          tool matcher (Bash | Edit|Write)
+#     patterns:         list of regex patterns to match commands
+#     except:           list of strings — if any present, rule is skipped
+#     hook_block:       true to enforce via hook (exit 2), false for advisory only
+#     compensations[]:  list of remediation options (first = recommended)
+#       type:           use-skill | split-commands | change-cwd | use-alias
+#                       | use-file-flag | use-tool | use-alternative | file-issue
+#       skill:          skill name (for use-skill)
+#       tool:           tool name (for use-tool)
+#       alias:          alias name (for use-alias)
+#       guardrails:     what the skill enforces (for use-skill)
+#       fallback:       manual fallback instructions (for use-skill)
+#       description:    human-readable guidance
+#     reason:           why this rule exists
+#     related:          list of related skill names
+#
+#     Edit|Write specific fields:
+#       file_pattern:     regex on full file path
+#       file_names:       exact basename matches
+#       file_prefixes:    basename prefix matches
+#       file_substrings:  substring matches on full path
+#       content_pattern:  regex on content being written (new_string or content)
+
+config:
+  friction_level: guided  # strict | guided | adaptive
+  plugin_repo: https://github.com/Dev10x-Guru/dev10x-claude
+
+rules:
+  # ── Bash command rules ─────────────────────────────────────
+
+  - name: git-commit
+    matcher: Bash
+    patterns:
+      - git commit
+    except:
+      - "--fixup"
+      - "--amend"
+      - "-F /tmp/claude/git/"
+    hook_block: true
+    compensations:
+      - type: use-skill
+        skill: Dev10x:git-commit
+        guardrails: gitmoji prefix, JTBD outcome title, 72-char limit
+        fallback: >
+          If Skill(Dev10x:git-commit) fails, apply guardrails manually:
+          (1) prefix with gitmoji, (2) include ticket ID from branch,
+          (3) keep title under 72 chars, (4) use -F with temp file
+          (not -m), (5) add Fixes: footer.
+    reason: >
+      Direct git commit bypasses gitmoji prefix, ticket ID
+      extraction from branch name, and 72-char line limit
+      enforcement.
+    related:
+      - Dev10x:git-groom
+
+  - name: gh-pr-create
+    matcher: Bash
+    patterns:
+      - gh pr create
+    except: []
+    hook_block: true
+    compensations:
+      - type: use-skill
+        skill: Dev10x:gh-pr-create
+        guardrails: Job Story body, ticket linking, commit list, summary comment
+        fallback: >
+          If Skill(Dev10x:gh-pr-create) fails, apply guardrails manually:
+          (1) start body with JTBD Job Story, (2) add Fixes: issue URL,
+          (3) create as draft (--draft), (4) include commit list.
+    reason: >
+      Direct gh pr create skips Job Story drafting, commit list
+      generation, and issue tracker linking.
+
+  - name: git-push
+    matcher: Bash
+    patterns:
+      - git push
+    except:
+      - "--force-with-lease"
+    hook_block: true
+    compensations:
+      - type: use-skill
+        skill: Dev10x:git
+        guardrails: protected branch checks, force-push safety
+        fallback: >
+          If Skill(Dev10x:git) fails, apply guardrails manually:
+          (1) verify branch is not develop/main before pushing,
+          (2) use --force-with-lease (never --force) if rebased,
+          (3) push with upstream tracking (-u flag).
+    reason: >
+      Direct git push bypasses force-push protection on
+      develop/main branches.
+    related:
+      - Dev10x:git-commit
+      - Dev10x:git-groom
+
+  - name: git-rebase-interactive
+    matcher: Bash
+    patterns:
+      - git rebase -i
+      - git rebase --interactive
+    except: []
+    hook_block: true
+    compensations:
+      - type: use-skill
+        skill: Dev10x:git-groom
+        guardrails: atomic commits, convention enforcement, non-interactive rebase
+        fallback: >
+          If Skill(Dev10x:git-groom) fails, run rebase manually with
+          GIT_SEQUENCE_EDITOR=true to auto-accept the default sequence,
+          then fixup any out-of-order commits.
+    reason: >
+      Direct interactive rebase may trigger editor prompts and
+      bypasses atomic commit and convention enforcement.
+
+  - name: gh-pr-checks-watch
+    matcher: Bash
+    patterns:
+      - gh pr checks --watch
+      - gh pr checks -w
+    except: []
+    hook_block: true
+    compensations:
+      - type: use-skill
+        skill: Dev10x:gh-pr-monitor
+        guardrails: failure detection, fixup commits, re-monitoring after push
+        fallback: >
+          If Skill(Dev10x:gh-pr-monitor) fails, monitor manually:
+          (1) poll gh pr checks until all pass, (2) fix any failures,
+          (3) mark PR ready with gh pr ready.
+    reason: >
+      Direct gh pr checks --watch exits on first result; the skill
+      loops, fixes CI failures, addresses comments, and requests review.
+
+  - name: gh-issue-view
+    matcher: Bash
+    patterns:
+      - gh issue view
+    except: []
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__issue_get
+        guardrails: structured responses, no Bash permission friction
+        description: >
+          If the MCP server is unavailable, use gh issue view directly
+          and parse the JSON output manually with --json flag.
+    reason: >
+      Direct gh issue view requires Bash permission approval on
+      every call. The MCP tool provides structured JSON responses
+      and avoids permission friction.
+
+  - name: gh-issue-create
+    matcher: Bash
+    patterns:
+      - gh issue create
+    except:
+      - "--body-file"
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__issue_create
+        guardrails: structured responses, no Bash permission friction
+        description: >
+          If the MCP server is unavailable, use gh issue create directly
+          with --title and --body flags.
+    reason: >
+      Direct gh issue create requires Bash permission approval on
+      every call. The MCP tool provides structured JSON responses
+      and avoids permission friction.
+
+  - name: git-push-safe-script
+    matcher: Bash
+    patterns:
+      - git-push-safe.sh
+    except: []
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__push_safe
+        guardrails: structured responses, protected branch checks, no Bash friction
+        description: >
+          If the MCP server is unavailable, use raw git push with manual
+          validation: verify the target branch is not main/develop, then
+          use --force-with-lease (never --force) if rebased.
+    reason: >
+      Direct git-push-safe.sh script invocation bypasses structured
+      responses and requires Bash permission on every call. The MCP
+      tool provides safe push validation with no permission friction.
+
+  # ── Advisory-only Bash rules (hook_block: false) ───────────
+
+  - name: kubectl
+    matcher: Bash
+    patterns:
+      - kubectl
+      - aws-vault exec.*kubectl
+    hook_block: false
+    compensations:
+      - type: use-skill
+        skill: Dev10x:k8s
+    reason: >
+      Direct kubectl calls bypass aws-vault authentication and
+      may use wrong credentials or target wrong cluster.
+    related:
+      - Dev10x:aws-vault
+
+  - name: gh-pr-review
+    matcher: Bash
+    patterns:
+      - gh pr review
+    hook_block: false
+    compensations:
+      - type: use-skill
+        skill: Dev10x:gh-pr-review
+    reason: >
+      Direct gh pr review skips structured review checklist and
+      domain-specific agent routing.
+
+  - name: psql
+    matcher: Bash
+    patterns:
+      - psql
+      - aws-vault exec.*psql
+    hook_block: false
+    compensations:
+      - type: use-skill
+        skill: Dev10x:db-psql
+    reason: >
+      Direct psql calls bypass SQL validation hooks and may
+      accidentally execute write operations.
+    related:
+      - Dev10x:db
+      - tt:db
+
+  - name: aws-vault
+    matcher: Bash
+    patterns:
+      - aws secretsmanager
+      - aws-vault exec
+    hook_block: false
+    compensations:
+      - type: use-skill
+        skill: Dev10x:aws-vault
+    reason: >
+      Direct aws CLI calls bypass credential management and
+      environment-specific profile selection.
+
+  - name: slack-api
+    matcher: Bash
+    patterns:
+      - curl.*slack.com/api
+      - curl.*hooks.slack.com
+    hook_block: false
+    compensations:
+      - type: use-skill
+        skill: Dev10x:slack
+    reason: >
+      Direct Slack API calls bypass token management and
+      structured message formatting.
+
+  - name: playwright
+    matcher: Bash
+    patterns:
+      - playwright
+      - npx playwright
+      - uv run.*playwright
+    hook_block: false
+    compensations:
+      - type: use-skill
+        skill: Dev10x:playwright
+    reason: >
+      Direct playwright calls skip CF Access header injection
+      and credential management for staging environments.
+
+  - name: pytest
+    matcher: Bash
+    patterns:
+      - pytest
+      - python -m pytest
+      - uv run pytest
+    hook_block: false
+    compensations:
+      - type: use-skill
+        skill: test
+    reason: >
+      The test skill ensures consistent coverage reporting and
+      concise summaries. Use it for standardized test execution.
+
+  - name: gh-pr-comment-reply
+    matcher: Bash
+    patterns:
+      - "gh api --method POST repos/.*/pulls/.*/comments/.*/replies"
+    hook_block: false
+    compensations:
+      - type: use-skill
+        skill: Dev10x:gh-pr-fixup
+    reason: >
+      PR comment replies for VALID review comments must go through
+      the fixup skill's push+reply atomic workflow. Raw gh api
+      replies bypass fixup commit creation and thread management.
+    related:
+      - Dev10x:gh-pr-respond
+      - Dev10x:gh-pr-triage
+
+  - name: sentry-api
+    matcher: Bash
+    patterns:
+      - curl.*sentry
+    hook_block: false
+    compensations:
+      - type: use-skill
+        skill: Dev10x:investigate
+    reason: >
+      The investigate skill combines Sentry, codebase search,
+      and Slack thread context for structured root-cause analysis.
+
+  - name: python3-inline
+    matcher: Bash
+    patterns:
+      - python3 -c
+    hook_block: false
+    compensations:
+      - type: use-tool
+        tool: Read
+        description: Use the Read tool for file inspection
+      - type: use-alternative
+        description: Write a standalone uv script for complex processing
+    reason: >
+      Inline python3 -c is hook-blocked. Use the Read tool to
+      inspect files, or write a standalone uv script for complex
+      processing.
+
+  - name: bash-n
+    matcher: Bash
+    patterns:
+      - bash -n
+    hook_block: false
+    compensations:
+      - type: use-alternative
+        description: Use shellcheck for deeper analysis including quoting, portability, and style
+    reason: >
+      bash -n only checks syntax errors. shellcheck provides
+      deeper analysis including quoting issues, portability
+      warnings, and style suggestions.
+
+  - name: uv-extra-dev
+    matcher: Bash
+    patterns:
+      - uv run --extra dev
+      - uv run --extra
+    hook_block: false
+    compensations:
+      - type: use-alternative
+        description: Use uv run directly without --extra dev flag
+    reason: >
+      The --extra dev flag is unnecessary in dev10x-ai repos
+      where dev dependencies are available by default. Use
+      uv run directly.
+
+  # ── Edit|Write rules ───────────────────────────────────────
+
+  - name: eval-in-skills
+    matcher: "Edit|Write"
+    file_pattern: '/\.claude/skills/.*\.(md|sh)$'
+    content_pattern: '\beval\s+["$]'
+    hook_block: true
+    message: >
+      eval is not allowed in skill files — it executes arbitrary
+      code via double expansion.
+    compensations:
+      - type: use-alternative
+        description: 'Use source <(script.sh) instead of eval "$(script.sh)"'
+      - type: file-issue
+        description: >
+          If a skill explicitly instructs using eval, file an issue
+          at the plugin repo — the skill instructions need updating.
+    reason: >
+      eval executes arbitrary code via double expansion and is
+      not allowed in skill files.
+
+  - name: sensitive-files
+    matcher: "Edit|Write"
+    file_names: [".env", "secrets.env", ".secret"]
+    file_prefixes: [".env.", "secrets.env."]
+    file_substrings: ["credentials"]
+    hook_block: true
+    message: "BLOCKED: Editing sensitive file: {file_path}"
+    compensations:
+      - type: use-alternative
+        description: >
+          Sensitive files must not be edited by Claude. Ask the user
+          to make changes manually.
+    reason: >
+      Prevents accidental exposure or modification of secrets,
+      credentials, and environment-specific configuration.

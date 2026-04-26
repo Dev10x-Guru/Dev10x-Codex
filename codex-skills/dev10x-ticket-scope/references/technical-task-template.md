@@ -1,0 +1,185 @@
+# Technical Task Scoping Template
+
+Use this template for technical improvements, refactoring, or infrastructure work that doesn't directly provide business value.
+
+---
+
+# [Technical Task Title]
+
+## Objective
+[What we're building/refactoring and why from a technical perspective]
+
+Example:
+"Refactor payment repository to extend BaseRepository, extracting common CRUD operations to reduce code duplication and establish consistent repository patterns across the codebase."
+
+## Technical Approach
+[High-level technical solution]
+
+Example:
+"Create a generic BaseRepository with CRUD methods, update PaymentRepository to extend it, remove duplicated methods, ensure all tests still pass with no breaking changes."
+
+---
+
+## Architecture
+
+**Components:**
+
+**Repositories:**
+- Modify: `BaseRepository` - Add generic CRUD methods
+- Refactor: `PaymentRepository` - Extend BaseRepository
+- Refactor: `TransactionRepository` - Extend BaseRepository (future)
+
+**Services:**
+- No changes needed
+
+**DTOs:**
+- No changes needed
+
+**Models:**
+- No changes needed
+
+**Database Changes:**
+- None
+
+**GraphQL Changes:**
+- None
+
+---
+
+## Implementation Steps
+
+1. **Update BaseRepository with Generic CRUD**
+   - File: `src/app/repositories/base.py`
+   - Add methods:
+     - `get(id: int) -> DTO`
+     - `list(filters: dict) -> List[DTO]`
+     - `create(dto: DTO) -> DTO`
+     - `update(id: int, dto: DTO) -> DTO`
+     - `delete(id: int) -> None`
+   - Pattern: Use generics (`Generic[T]`) with type parameter
+   - Reference: Django's generic views for inspiration on generic patterns
+
+2. **Refactor PaymentRepository to Extend BaseRepository**
+   - File: `src/payments/repository.py`
+   - Change: `class PaymentRepository(BaseRepository[PaymentDto])`
+   - Remove: Duplicate CRUD methods
+   - Keep: Custom payment-specific queries (`get_by_order_no`, etc.)
+   - Verify: All existing method signatures unchanged
+
+3. **Update DI Container** (if needed)
+   - File: `src/app/container/__init__.py`
+   - Check: BaseRepository registration
+   - Verify: PaymentRepository still works with injection
+
+4. **Update Tests**
+   - File: `src/payments/tests/test_repository.py`
+   - Verify: All existing tests pass
+   - Add: Tests for base methods if needed
+   - Pattern: No new tests needed if behavior unchanged
+
+5. **Run Full Test Suite**
+   - Command: `pytest src/payments/tests/`
+   - Verify: 100% passing
+   - Check: Coverage maintained
+
+6. **Code Review Preparation**
+   - Document: What changed and why
+   - Ensure: No breaking changes
+   - List: Benefits (reduced duplication, consistency)
+
+---
+
+## Code References
+- `src/app/repositories/base.py` - Base class to extend
+- `src/payments/repository.py:PaymentRepository` - Class to refactor
+- `src/quotes/repository.py:WorkOrderRepository` - Similar pattern example
+- `src/payments/tests/test_repository.py` - Tests to maintain
+
+---
+
+## Dependencies
+
+**Depends on:**
+- None
+
+**Related to:**
+- PAY-275: "Establish repository base class" (parent epic)
+- PAY-281: "Refactor QuoteRepository" (similar future work)
+
+**Blocks:**
+- None
+
+---
+
+## Technical Risks
+
+**Risk: Breaking existing repository behavior**
+- **Scenario:** Generic methods don't handle edge cases correctly
+- **Mitigation:**
+  - Run full test suite before and after
+  - Keep custom methods that override base behavior
+  - Thorough code review
+
+**Risk: DI container issues with generics**
+- **Scenario:** Type resolution fails with Generic[T]
+- **Mitigation:**
+  - Test DI registration explicitly
+  - Use concrete type hints where needed
+  - Fallback: Keep explicit registrations
+
+**Risk: Performance regression**
+- **Scenario:** Generic methods slower than specialized ones
+- **Mitigation:**
+  - Benchmark critical queries before/after
+  - Unlikely for CRUD operations
+  - Can optimize base methods if needed
+
+---
+
+## Rollout Considerations
+
+**Deployment:**
+- No special rollout needed
+- Pure refactoring, no behavior changes
+- Deploy with regular release
+
+**Testing:**
+- Run full test suite on staging
+- Smoke test payment creation/retrieval
+- No user-facing changes to verify
+
+**Rollback:**
+- Revert commit if issues found
+- No data migration to rollback
+- Low risk, easy rollback
+
+---
+
+## Acceptance Criteria
+- [ ] PaymentRepository extends BaseRepository
+- [ ] All duplicate CRUD methods removed
+- [ ] Custom payment methods preserved
+- [ ] All existing tests pass
+- [ ] No breaking changes to public API
+- [ ] Test coverage maintained at 100%
+- [ ] DI container registration works
+- [ ] Code review approved
+
+---
+
+## Out of Scope
+- Refactoring other repositories (do in separate PRs)
+- Adding new functionality to base class
+- Performance optimizations (unless needed)
+- Changing test patterns
+
+---
+
+## Story Points
+**5 points** (1-2 days)
+
+**Rationale:**
+- Update BaseRepository (1 point)
+- Refactor PaymentRepository (2 points)
+- Test verification and fixes (1 point)
+- Code review and adjustments (1 point)

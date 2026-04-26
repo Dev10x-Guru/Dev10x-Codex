@@ -1,0 +1,377 @@
+{
+  "skill_name": "Dev10x:git-commit",
+  "eval_dimensions": [
+    {
+      "id": "format",
+      "name": "Commit Message Format",
+      "description": "Title follows gitmoji + ticket + description pattern, all lines <= 72 chars, structured body with problem/solution/footer"
+    },
+    {
+      "id": "jtbd",
+      "name": "JTBD Outcome Focus",
+      "description": "Title uses outcome verbs (Enable, Simplify, Resolve), blocks implementation verbs (Add, Update, Remove, Refactor)"
+    },
+    {
+      "id": "extraction",
+      "name": "Ticket Extraction",
+      "description": "Correctly extracts ticket ID from branch name convention (username/TICKET-ID/[worktree/]description)"
+    },
+    {
+      "id": "safety",
+      "name": "Git Safety",
+      "description": "Blocks commits to protected branches, separates git add and git commit into separate calls, uses Write + -F pattern, no Co-Authored-By"
+    },
+    {
+      "id": "workflow",
+      "name": "Interactive Workflow",
+      "description": "Shows preview before committing, asks for approval, handles edits, validates line lengths before showing preview"
+    }
+  ],
+  "evals": [
+    {
+      "id": 1,
+      "name": "standard-feature-commit",
+      "prompt": "/Dev10x:git-commit",
+      "description": "Standard feature commit on branch janusz/PAY-310/fix-flaky-tests with staged changes. Tests full happy-path workflow.",
+      "setup": {
+        "branch": "janusz/PAY-310/fix-flaky-tests",
+        "staged_changes": true,
+        "note": "Requires a git repo with staged changes on a properly named branch"
+      },
+      "dimensions": ["format", "extraction", "workflow"],
+      "assertions": [
+        {
+          "id": "extracts-ticket-from-branch",
+          "text": "Extracts PAY-310 as ticket ID from branch name janusz/PAY-310/fix-flaky-tests",
+          "check": "transcript_contains",
+          "signals": ["PAY-310"]
+        },
+        {
+          "id": "title-has-gitmoji",
+          "text": "Commit title starts with a gitmoji character (not :code: format)",
+          "check": "output_matches_pattern",
+          "pattern": "^[\\p{Emoji}] PAY-310 .+"
+        },
+        {
+          "id": "title-72-chars",
+          "text": "Commit title is <= 72 characters",
+          "check": "line_length",
+          "max_chars": 72,
+          "target": "title_line"
+        },
+        {
+          "id": "body-has-problem-section",
+          "text": "Commit body contains problem explanation (not just title)",
+          "check": "output_contains",
+          "signals": ["problem", "explanation"]
+        },
+        {
+          "id": "body-has-solution-section",
+          "text": "Commit body contains Solution: section with bullet points",
+          "check": "output_contains",
+          "signals": ["Solution:", "- "]
+        },
+        {
+          "id": "footer-has-fixes",
+          "text": "Commit message ends with Fixes: PAY-310 footer",
+          "check": "output_contains",
+          "signals": ["Fixes: PAY-310"]
+        },
+        {
+          "id": "shows-preview",
+          "text": "Shows commit message preview to user before creating commit",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "Preview", "Commit"]
+        },
+        {
+          "id": "no-co-authored-by",
+          "text": "Commit message does NOT contain Co-Authored-By attribution",
+          "check": "output_absent",
+          "signals": ["Co-Authored-By", "co-authored-by"]
+        },
+        {
+          "id": "uses-write-plus-F",
+          "text": "Creates commit using Write tool + git commit -F (not heredoc)",
+          "check": "tool_sequence",
+          "signals": ["Write", "git commit -F"]
+        },
+        {
+          "id": "separate-add-and-commit",
+          "text": "git add and git commit are separate Bash calls (not chained with &&)",
+          "check": "command_not_contains",
+          "signals": ["git add && git commit", "git add . && git commit"]
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "jtbd-verb-rewrite",
+      "prompt": "/Dev10x:git-commit\n\n(User selects Feature type, then provides description: \"Add Square location ID query\")",
+      "description": "Tests JTBD enforcement — user provides implementation-focused title that should be rewritten to outcome-focused.",
+      "setup": {
+        "branch": "janusz/PAY-200/multi-location-routing",
+        "staged_changes": true
+      },
+      "dimensions": ["jtbd"],
+      "assertions": [
+        {
+          "id": "blocks-implementation-verb",
+          "text": "Detects 'Add' as implementation verb and suggests a rewrite",
+          "check": "transcript_contains",
+          "signals": ["implementation", "outcome", "rewrite", "Enable"]
+        },
+        {
+          "id": "suggests-outcome-title",
+          "text": "Suggests an outcome-focused alternative like 'Enable multi-location payment routing'",
+          "check": "output_contains",
+          "signals": ["Enable", "routing"]
+        },
+        {
+          "id": "final-title-outcome-focused",
+          "text": "Final commit title does NOT start with blocked verbs (Add, Update, Remove, Refactor, Move, Rename, Synchronize)",
+          "check": "output_not_starts_with",
+          "blocked_verbs": ["Add", "Update", "Remove", "Refactor", "Move", "Rename", "Synchronize"]
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "no-ticket-branch",
+      "prompt": "/Dev10x:git-commit",
+      "description": "Branch without standard naming convention (fix-typo-readme). Tests ticket extraction failure handling and ticketless commit format.",
+      "setup": {
+        "branch": "fix-typo-readme",
+        "staged_changes": true
+      },
+      "dimensions": ["extraction", "format"],
+      "assertions": [
+        {
+          "id": "warns-no-ticket-extracted",
+          "text": "Warns that ticket ID could not be extracted from branch name",
+          "check": "transcript_contains",
+          "signals": ["Could not extract", "ticket ID", "Warning"]
+        },
+        {
+          "id": "asks-for-ticket-or-none",
+          "text": "Asks user for ticket ID with option to skip",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "ticket"]
+        },
+        {
+          "id": "commit-without-fixes-footer",
+          "text": "When user skips ticket, commit message has no Fixes: footer",
+          "check": "output_absent",
+          "signals": ["Fixes:"]
+        },
+        {
+          "id": "title-format-without-ticket",
+          "text": "Title format is '<gitmoji> <description>' (no ticket ID)",
+          "check": "output_matches_pattern",
+          "pattern": "^[\\p{Emoji}] [A-Z]"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "protected-branch-guard",
+      "prompt": "/Dev10x:git-commit",
+      "description": "Attempt to commit while on develop branch. Should be blocked immediately.",
+      "setup": {
+        "branch": "develop",
+        "staged_changes": true
+      },
+      "dimensions": ["safety"],
+      "assertions": [
+        {
+          "id": "blocks-commit-on-develop",
+          "text": "Refuses to commit on develop branch with clear error message",
+          "check": "output_contains",
+          "signals": ["Cannot commit", "develop", "main", "master", "protected"]
+        },
+        {
+          "id": "no-commit-created",
+          "text": "Does NOT execute git commit command",
+          "check": "command_absent",
+          "signals": ["git commit"]
+        },
+        {
+          "id": "suggests-feature-branch",
+          "text": "Suggests creating a feature branch first",
+          "check": "output_contains",
+          "signals": ["feature branch", "create", "branch"]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "long-title-enforcement",
+      "prompt": "/Dev10x:git-commit\n\n(User provides description: \"Enable automatic discovery of Square terminal devices across all dealer locations with retry\")",
+      "description": "User provides a title that exceeds 72 chars when combined with gitmoji + ticket. Tests length validation and iteration.",
+      "setup": {
+        "branch": "janusz/PAY-400/terminal-discovery",
+        "staged_changes": true
+      },
+      "dimensions": ["format", "workflow"],
+      "assertions": [
+        {
+          "id": "detects-overlength",
+          "text": "Calculates total title length (gitmoji + PAY-400 + description) and warns it exceeds 72 chars",
+          "check": "output_contains",
+          "signals": ["too long", "72", "characters", "shorten"]
+        },
+        {
+          "id": "asks-to-shorten",
+          "text": "Asks user to provide a shorter description",
+          "check": "transcript_contains",
+          "signals": ["shorten", "shorter"]
+        },
+        {
+          "id": "validates-body-lines-too",
+          "text": "Validates ALL lines in commit body are <= 72 chars, not just the title",
+          "check": "behavioral",
+          "signals": ["awk", "length", "72"]
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "auto-generate-from-context",
+      "prompt": "/Dev10x:git-commit\n\n(Session already has context from a preceding scope/investigation about the fix)",
+      "description": "When problem and solution are already known from session context, auto-generates Steps 5-6 but STILL shows preview.",
+      "setup": {
+        "branch": "janusz/PAY-133/fix-motor-timeout",
+        "staged_changes": true,
+        "prior_context": "Already investigated motor timeout, determined root cause is 5s timeout too short for Square API"
+      },
+      "dimensions": ["workflow"],
+      "assertions": [
+        {
+          "id": "auto-fills-problem-solution",
+          "text": "Auto-generates problem explanation and solution points from session context instead of asking",
+          "check": "behavioral",
+          "signals": ["auto-generate", "session context", "known"]
+        },
+        {
+          "id": "still-shows-preview",
+          "text": "Still shows preview for approval even when auto-generated (Step 9 is mandatory in attended mode)",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "Preview"]
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "name": "unattended-orchestrated-commit",
+      "prompt": "Skill(Dev10x:git-commit)",
+      "description": "When invoked by an orchestrating skill with an active task list, all interactive gates should be bypassed: auto-stage, auto-select commit type, auto-generate message, skip preview, and return control immediately.",
+      "setup": {
+        "branch": "janusz/PAY-500/new-feature",
+        "staged_changes": false,
+        "unstaged_changes": true,
+        "prior_context": "Implemented new feature as part of work-on plan step. Commit type is clearly Feature (new .py files). Problem and solution known from session.",
+        "orchestrator": "Dev10x:work-on",
+        "active_task_list": true
+      },
+      "dimensions": ["workflow"],
+      "assertions": [
+        {
+          "id": "no-staging-prompt",
+          "text": "Does NOT call AskUserQuestion for staging — auto-stages all changes",
+          "check": "output_absent",
+          "signals": ["AskUserQuestion", "Staging", "Stage"]
+        },
+        {
+          "id": "no-commit-type-prompt",
+          "text": "Does NOT call AskUserQuestion for commit type — auto-selects from context",
+          "check": "output_absent",
+          "signals": ["AskUserQuestion", "Commit type"]
+        },
+        {
+          "id": "no-preview-prompt",
+          "text": "Does NOT call AskUserQuestion for message preview — skips gate",
+          "check": "output_absent",
+          "signals": ["AskUserQuestion", "Preview"]
+        },
+        {
+          "id": "no-description-prompt",
+          "text": "Does NOT ask for commit description — auto-generates from context",
+          "check": "output_absent",
+          "signals": ["Short description", "will be title line"]
+        },
+        {
+          "id": "no-solution-prompt",
+          "text": "Does NOT ask for solution points — auto-generates from diff",
+          "check": "output_absent",
+          "signals": ["Solution points", "what did you change"]
+        },
+        {
+          "id": "no-next-steps-prompt",
+          "text": "Does NOT ask 'what next?' — returns control to orchestrator",
+          "check": "output_absent",
+          "signals": ["What would you like to do", "Next steps:", "Continue working"]
+        },
+        {
+          "id": "commit-still-created",
+          "text": "A commit IS created despite skipping interactive gates",
+          "check": "command_contains",
+          "signals": ["git commit -F"]
+        }
+      ]
+    }
+  ],
+  "trigger_evals": {
+    "description": "Queries that should/should-not trigger the git-commit skill",
+    "should_trigger": [
+      {
+        "query": "ok I'm done with the changes, let's commit this with a proper message",
+        "rationale": "Explicit intent to commit with formatting help"
+      },
+      {
+        "query": "/Dev10x:git-commit",
+        "rationale": "Direct invocation"
+      },
+      {
+        "query": "commit these changes — make sure the message follows our gitmoji convention",
+        "rationale": "Commit request with convention awareness"
+      },
+      {
+        "query": "I need to create a commit for this bugfix, can you help format the message?",
+        "rationale": "Help formatting commit message — core use case"
+      },
+      {
+        "query": "let's stage and commit the test changes we just made on janusz/PAY-310/fix-flaky",
+        "rationale": "Stage + commit request with branch context"
+      },
+      {
+        "query": "create a commit for these refactoring changes",
+        "rationale": "Simple commit request mentioning change type"
+      }
+    ],
+    "should_not_trigger": [
+      {
+        "query": "show me the last 5 commits on this branch",
+        "rationale": "Wants git log, not to create a commit"
+      },
+      {
+        "query": "can you split this big commit into smaller atomic ones?",
+        "rationale": "Wants git-commit-split, not git-commit"
+      },
+      {
+        "query": "amend the last commit message to fix the typo",
+        "rationale": "Wants to amend (direct git command), not create new commit via skill"
+      },
+      {
+        "query": "push this branch and create a PR",
+        "rationale": "Wants PR creation (Dev10x:gh-pr-create), not a commit"
+      },
+      {
+        "query": "what gitmoji should I use for a performance improvement?",
+        "rationale": "Just a reference question, not creating a commit"
+      },
+      {
+        "query": "create a fixup commit for the review comment about missing validation",
+        "rationale": "Wants git-fixup skill, not the full git-commit workflow"
+      }
+    ]
+  }
+}

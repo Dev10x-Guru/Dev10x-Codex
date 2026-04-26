@@ -1,0 +1,43 @@
+# Default gitmoji-to-type mapping for Dev10x:git-commit.
+#
+# This file ships with the plugin and is used when no project
+# override exists in ~/.claude/memory/Dev10x/gitmoji.yaml.
+#
+# Users can override this by creating a strategy in the global
+# config file. See project-override.md for the full schema.
+#
+# If this file is invalid or unreadable, the skill logs a
+# warning and falls back to a hardcoded 4-type menu (Feature,
+# Fix, Refactor, Test) — the commit is never blocked by a
+# config error.
+
+title-format: "<gitmoji> <ticket> <description>"
+
+gitmoji-mapping:
+  - emoji: "✅"
+    label: Test
+    description: "Adding/updating/fixing tests"
+  - emoji: "🐛"
+    label: Fix
+    description: "Bug fixes"
+  - emoji: "♻️"
+    label: Refactor
+    description: "Code refactoring"
+  - emoji: "✨"
+    label: Feature
+    description: "New features"
+  - emoji: "📝"
+    label: Docs
+    description: "Documentation"
+  - emoji: "🔒"
+    label: Security
+    description: "Security fixes"
+  - emoji: "⚡"
+    label: Performance
+    description: "Performance improvements"
+  - emoji: "💄"
+    label: UI
+    description: "UI/styling updates"
+  - emoji: "🔧"
+    label: Config
+    description: "Configuration changes"

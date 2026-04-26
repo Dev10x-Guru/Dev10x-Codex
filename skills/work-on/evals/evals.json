@@ -1,0 +1,759 @@
+{
+  "skill_name": "Dev10x:work-on",
+  "eval_dimensions": [
+    {
+      "id": "classify",
+      "name": "Input Classification",
+      "description": "Phase 1: correctly identifies input type and extracts identifiers from URLs, ticket IDs, bare numbers, and free text"
+    },
+    {
+      "id": "gather",
+      "name": "Context Gathering",
+      "description": "Phase 2: creates subtask per source, dispatches parallel subagents, produces structured Context Summary with sources/cross-refs/details sections"
+    },
+    {
+      "id": "plan",
+      "name": "Plan Generation",
+      "description": "Phase 3: builds appropriate subtask list under Phase 4 task, includes mandatory elements (workspace setup, Job Story, fixups, groom, review request, acceptance criteria), adapts template to work type"
+    },
+    {
+      "id": "execute",
+      "name": "Execution Behavior",
+      "description": "Phase 4: auto-advances between subtasks, delegates to correct sub-skills (gh-pr-respond, git-groom, gh-pr-request-review), handles pause signals, uses batched decisions"
+    },
+    {
+      "id": "task-structure",
+      "name": "Phase-Level Task Structure",
+      "description": "Creates exactly 4 top-level tasks upfront (one per phase) with sequential dependencies, then creates subtasks during each phase"
+    },
+    {
+      "id": "workspace",
+      "name": "Early Workspace Decision",
+      "description": "Phase 1 determines workspace state (main repo vs worktree, generic vs feature branch) and whether a branch is needed. Worktrees with generic WT branches get a work-specific branch created."
+    },
+    {
+      "id": "orchestration-guardrails",
+      "name": "Orchestration Guardrails",
+      "description": "Verifies that the agent follows the skill's own orchestration (TaskCreate, AskUserQuestion) and never bypasses it via ExitPlanMode or task collapsing"
+    }
+  ],
+  "evals": [
+    {
+      "id": 1,
+      "name": "single-github-issue",
+      "prompt": "/Dev10x:work-on https://github.com/example-org/app-pos/issues/247",
+      "description": "Single GitHub issue URL — the most common input. Tests full 4-phase flow with feature work type.",
+      "expected_output": "Creates 4 phase tasks upfront, classifies as github-issue, fetches issue context with subtask per source, builds feature plan as Phase 4 subtasks ending with acceptance criteria verification",
+      "dimensions": ["classify", "gather", "plan", "task-structure", "workspace"],
+      "assertions": [
+        {
+          "id": "creates-4-phase-tasks",
+          "text": "Creates exactly 4 top-level tasks at startup: Phase 1 (Parse & Classify), Phase 2 (Gather), Phase 3 (Plan), Phase 4 (Execute)",
+          "check": "tool_called_count",
+          "signals": ["TaskCreate", "=4"],
+          "note": "First 4 TaskCreate calls before any other work"
+        },
+        {
+          "id": "phase-tasks-sequential-deps",
+          "text": "Sets sequential dependencies between phase tasks (each blocked by previous)",
+          "check": "tool_called",
+          "signals": ["TaskUpdate", "addBlockedBy"]
+        },
+        {
+          "id": "workspace-decision-in-phase1",
+          "text": "Detects workspace state (main repo vs worktree) and determines branch is needed for ticket work",
+          "check": "transcript_contains",
+          "signals": [".git", "branch", "workspace"]
+        },
+        {
+          "id": "classify-github-issue",
+          "text": "Classifies input as github-issue type and extracts repo=example-org/app-pos, number=247",
+          "check": "transcript_contains",
+          "signals": ["github-issue", "example-org/app-pos", "247"]
+        },
+        {
+          "id": "gather-creates-source-subtasks",
+          "text": "Creates subtasks under Phase 2 for each source being fetched",
+          "check": "tool_called",
+          "signals": ["TaskCreate", "parentTaskId", "Fetch"]
+        },
+        {
+          "id": "gather-dispatches-subagent",
+          "text": "Dispatches at least one Agent/subagent to fetch issue context",
+          "check": "tool_called",
+          "signals": ["Agent"]
+        },
+        {
+          "id": "gather-context-summary",
+          "text": "Presents a structured Context Summary with Sources and Key Details sections",
+          "check": "output_contains_structure",
+          "signals": ["Context Summary", "Sources", "Key Details"]
+        },
+        {
+          "id": "plan-subtasks-under-phase4",
+          "text": "Plan steps are created as subtasks of Phase 4 task (parentTaskId references Phase 4)",
+          "check": "tool_called",
+          "signals": ["TaskCreate", "parentTaskId"]
+        },
+        {
+          "id": "plan-includes-workspace-setup",
+          "text": "Plan includes a workspace setup subtask (branch or worktree)",
+          "check": "task_exists",
+          "signals": ["workspace", "branch", "worktree"]
+        },
+        {
+          "id": "plan-includes-job-story",
+          "text": "Plan includes a Job Story drafting subtask",
+          "check": "task_exists",
+          "signals": ["Job Story", "JTBD"]
+        },
+        {
+          "id": "plan-includes-fixups",
+          "text": "Plan includes 'Apply fixups to review comments' subtask",
+          "check": "task_exists",
+          "signals": ["fixup", "review comments"]
+        },
+        {
+          "id": "plan-includes-groom",
+          "text": "Plan includes 'Groom commit history' subtask",
+          "check": "task_exists",
+          "signals": ["Groom", "commit history"]
+        },
+        {
+          "id": "plan-includes-request-review",
+          "text": "Plan includes 'Request review' subtask",
+          "check": "task_exists",
+          "signals": ["Request review"]
+        },
+        {
+          "id": "plan-ends-with-acceptance",
+          "text": "Last subtask is always acceptance criteria verification",
+          "check": "task_exists",
+          "signals": ["acceptance criteria", "verify"]
+        },
+        {
+          "id": "plan-approval-gate",
+          "text": "Presents plan for supervisor approval via AskUserQuestion before executing",
+          "check": "tool_called_before",
+          "signals": ["AskUserQuestion", "Approve"]
+        },
+        {
+          "id": "plan-adapts-to-feature",
+          "text": "Plan follows feature template (Design+Implement+Verify+PR+Fixups+Groom+Review+Acceptance)",
+          "check": "task_exists",
+          "signals": ["Design", "Implement"]
+        },
+        {
+          "id": "acceptance-criteria-pr-passing",
+          "text": "Acceptance criteria includes: PR passing CI, fixups applied, groomed history, review request published",
+          "check": "output_contains",
+          "signals": ["CI", "fixup", "groom", "review request"]
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "linear-ticket-with-sentry",
+      "prompt": "/Dev10x:work-on DEV-42 https://example-org.sentry.io/issues/5201839452",
+      "description": "Linear ticket + Sentry issue — tests multi-input classification, parallel gathering with source subtasks, and bugfix plan adaptation.",
+      "expected_output": "Creates 4 phase tasks, classifies both inputs, creates subtask per source in Phase 2, builds bugfix plan with reproduce step added",
+      "dimensions": ["classify", "gather", "plan", "task-structure"],
+      "assertions": [
+        {
+          "id": "creates-4-phase-tasks",
+          "text": "Creates exactly 4 top-level phase tasks at startup",
+          "check": "tool_called_count",
+          "signals": ["TaskCreate", "=4"],
+          "note": "First 4 TaskCreate calls"
+        },
+        {
+          "id": "classify-linear-ticket",
+          "text": "Classifies first input as linear-ticket with ID DEV-42",
+          "check": "transcript_contains",
+          "signals": ["linear-ticket", "DEV-42"]
+        },
+        {
+          "id": "classify-sentry-issue",
+          "text": "Classifies second input as sentry-issue",
+          "check": "transcript_contains",
+          "signals": ["sentry-issue", "5201839452"]
+        },
+        {
+          "id": "gather-subtask-per-source",
+          "text": "Creates one subtask under Phase 2 for each source (linear-ticket, sentry-issue)",
+          "check": "tool_called",
+          "signals": ["TaskCreate", "Fetch linear-ticket", "Fetch sentry-issue"]
+        },
+        {
+          "id": "gather-parallel-dispatch",
+          "text": "Dispatches subagents for both sources in a single tool-call block (parallel)",
+          "check": "parallel_tool_calls",
+          "signals": ["Agent", "Agent"]
+        },
+        {
+          "id": "plan-includes-reproduce",
+          "text": "Plan includes a Reproduce step because Sentry issue was found",
+          "check": "task_exists",
+          "signals": ["Reproduce", "reproduce"]
+        },
+        {
+          "id": "plan-bugfix-template",
+          "text": "Plan follows bugfix template (Reproduce+Investigate+Fix+Verify+PR+Fixups+Groom+Review+Acceptance)",
+          "check": "task_exists",
+          "signals": ["Investigate", "root cause", "fix"]
+        },
+        {
+          "id": "plan-bugfix-acceptance",
+          "text": "Bugfix acceptance criteria includes regression test covering the fix",
+          "check": "output_contains",
+          "signals": ["regression", "test", "fix"]
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "pr-continuation",
+      "prompt": "/Dev10x:work-on https://github.com/example-org/app-pos/pull/312",
+      "description": "PR URL — tests PR continuation plan template with fixups, groom, and re-review steps.",
+      "expected_output": "Creates 4 phase tasks, classifies as github-pr, builds PR-continuation plan (fetch comments, address, fixups, CI, groom, re-review, acceptance)",
+      "dimensions": ["classify", "plan", "task-structure"],
+      "assertions": [
+        {
+          "id": "creates-4-phase-tasks",
+          "text": "Creates exactly 4 top-level phase tasks at startup",
+          "check": "tool_called_count",
+          "signals": ["TaskCreate", "=4"]
+        },
+        {
+          "id": "classify-github-pr",
+          "text": "Classifies input as github-pr and extracts PR number 312",
+          "check": "transcript_contains",
+          "signals": ["github-pr", "312"]
+        },
+        {
+          "id": "plan-pr-continuation-template",
+          "text": "Plan follows PR continuation template — starts with fetch review context, not workspace setup",
+          "check": "task_exists",
+          "signals": ["review comments", "feedback", "address"]
+        },
+        {
+          "id": "plan-no-job-story-for-pr",
+          "text": "Plan does NOT include a Job Story step (PR already has one)",
+          "check": "task_absent",
+          "signals": ["Draft Job Story"]
+        },
+        {
+          "id": "plan-pr-includes-fixups",
+          "text": "Plan includes 'Apply fixups to unaddressed comments' subtask",
+          "check": "task_exists",
+          "signals": ["fixup", "unaddressed"]
+        },
+        {
+          "id": "plan-pr-includes-groom",
+          "text": "Plan includes 'Groom commit history' subtask",
+          "check": "task_exists",
+          "signals": ["Groom", "commit history"]
+        },
+        {
+          "id": "plan-pr-includes-re-review",
+          "text": "Plan includes 'Request re-review' subtask (not just 'Request review')",
+          "check": "task_exists",
+          "signals": ["re-review", "Request re-review"]
+        },
+        {
+          "id": "plan-acceptance-pr-continuation",
+          "text": "Acceptance criteria: PR passing CI, fixups applied to all unaddressed comments, groomed history, re-review requested",
+          "check": "output_contains",
+          "signals": ["CI", "fixup", "unaddressed", "groom", "re-review"]
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "mixed-inputs-with-free-text",
+      "prompt": "/Dev10x:work-on TEAM-133 https://app.slack.com/archives/C06ABCDEF/p1709827200123456 \"check the retry logic in payment processing\"",
+      "description": "Three inputs: Linear ticket + Slack thread + free-text note. Tests multi-source subtask creation in Phase 2.",
+      "expected_output": "Creates 4 phase tasks, classifies all three, creates subtasks per source in Phase 2 (2 for fetching, note passes through)",
+      "dimensions": ["classify", "gather", "task-structure"],
+      "assertions": [
+        {
+          "id": "classify-three-inputs",
+          "text": "Classifies all three inputs: linear-ticket, slack-thread, and note",
+          "check": "transcript_contains",
+          "signals": ["linear-ticket", "slack-thread", "note"]
+        },
+        {
+          "id": "gather-subtasks-for-sources",
+          "text": "Creates subtasks under Phase 2 for linear-ticket and slack-thread (note needs no fetch)",
+          "check": "tool_called",
+          "signals": ["TaskCreate", "Fetch linear-ticket", "Fetch slack-thread"]
+        },
+        {
+          "id": "gather-slack-thread",
+          "text": "Dispatches subagent to read Slack thread via mcp__claude_ai_Slack__slack_read_thread",
+          "check": "transcript_contains",
+          "signals": ["slack_read_thread", "Slack"]
+        },
+        {
+          "id": "gather-note-passthrough",
+          "text": "Free-text note appears in context summary without subagent dispatch",
+          "check": "output_contains",
+          "signals": ["check the retry logic", "note"]
+        },
+        {
+          "id": "context-summary-structure",
+          "text": "Context summary lists all 3 sources with correct types",
+          "check": "output_contains_structure",
+          "signals": ["Sources (3", "[linear-ticket]", "[slack-thread]", "[note]"]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "bare-number-input",
+      "prompt": "/Dev10x:work-on #42",
+      "description": "Bare number with hash — should resolve as PR against current repo. Tests the #N shorthand classification.",
+      "expected_output": "Creates 4 phase tasks, classifies as github-pr, resolves against current repo",
+      "dimensions": ["classify", "task-structure"],
+      "assertions": [
+        {
+          "id": "creates-4-phase-tasks",
+          "text": "Creates exactly 4 top-level phase tasks at startup",
+          "check": "tool_called_count",
+          "signals": ["TaskCreate", "=4"]
+        },
+        {
+          "id": "classify-bare-number-as-pr",
+          "text": "Classifies #42 as github-pr type (not github-issue)",
+          "check": "transcript_contains",
+          "signals": ["github-pr", "42"]
+        },
+        {
+          "id": "resolves-against-current-repo",
+          "text": "Resolves PR against the current repository context",
+          "check": "tool_called",
+          "signals": ["gh pr view", "42"]
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "free-text-only",
+      "prompt": "/Dev10x:work-on add a retry mechanism to the Square payment webhook handler with exponential backoff",
+      "description": "Pure free-text input with no ticket or URL. Tests local-only plan template with conditional PR steps.",
+      "expected_output": "Creates 4 phase tasks, classifies as note, builds local-only plan with decide step, conditional PR/fixup/groom/review steps, and acceptance criteria last",
+      "dimensions": ["classify", "plan", "task-structure"],
+      "assertions": [
+        {
+          "id": "creates-4-phase-tasks",
+          "text": "Creates exactly 4 top-level phase tasks at startup",
+          "check": "tool_called_count",
+          "signals": ["TaskCreate", "=4"]
+        },
+        {
+          "id": "classify-as-note",
+          "text": "Classifies entire input as note type (no URL or ticket ID detected)",
+          "check": "transcript_contains",
+          "signals": ["note"]
+        },
+        {
+          "id": "plan-local-only-template",
+          "text": "Follows local-only plan template (Summarize+Implement+Verify+Decide)",
+          "check": "task_exists",
+          "signals": ["Summarize", "Implement", "Decide"]
+        },
+        {
+          "id": "plan-offers-ticket-creation",
+          "text": "Plan includes a decision step about whether to create a ticket or PR",
+          "check": "task_exists",
+          "signals": ["create ticket", "create PR", "done"]
+        },
+        {
+          "id": "plan-conditional-pr-steps",
+          "text": "Plan includes conditional PR steps (fixups, groom, review) marked as 'if PR'",
+          "check": "task_exists",
+          "signals": ["if PR", "if decided"]
+        },
+        {
+          "id": "plan-ends-with-acceptance",
+          "text": "Last subtask is always acceptance criteria verification, even for local-only",
+          "check": "task_exists",
+          "signals": ["acceptance criteria"]
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "name": "cross-reference-expansion",
+      "prompt": "/Dev10x:work-on https://github.com/example-org/app-pos/issues/200",
+      "description": "GitHub issue whose body contains a Sentry URL and mentions PR #198. Tests one-level cross-reference expansion with additional subtasks.",
+      "expected_output": "Creates subtask for initial source, discovers cross-refs, creates additional subtasks for Sentry + PR, fetches them",
+      "dimensions": ["gather", "task-structure"],
+      "assertions": [
+        {
+          "id": "gather-discovers-cross-refs",
+          "text": "After initial fetch, scans gathered text for cross-references (Sentry URLs, PR numbers)",
+          "check": "output_contains_structure",
+          "signals": ["Cross-References Found", "from ticket body", "from issue"]
+        },
+        {
+          "id": "gather-creates-cross-ref-subtasks",
+          "text": "Creates additional Phase 2 subtasks for newly discovered cross-references",
+          "check": "tool_called",
+          "signals": ["TaskCreate", "parentTaskId", "cross-reference"]
+        },
+        {
+          "id": "gather-fetches-cross-refs",
+          "text": "Dispatches additional subagents for discovered cross-references",
+          "check": "tool_called_count",
+          "signals": ["Agent", ">=2"]
+        },
+        {
+          "id": "gather-no-recursive-expansion",
+          "text": "Does NOT expand beyond one level of cross-references",
+          "check": "behavioral",
+          "signals": ["one level", "no recursive"]
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "name": "jira-ticket-input",
+      "prompt": "/Dev10x:work-on JIRA-456",
+      "description": "JIRA ticket ID shorthand — tests detect-tracker.sh routing and JIRA-specific gathering with source subtask.",
+      "expected_output": "Creates 4 phase tasks, classifies as jira-ticket, creates fetch subtask, routes through detect-tracker.sh",
+      "dimensions": ["classify", "gather", "task-structure"],
+      "assertions": [
+        {
+          "id": "creates-4-phase-tasks",
+          "text": "Creates exactly 4 top-level phase tasks at startup",
+          "check": "tool_called_count",
+          "signals": ["TaskCreate", "=4"]
+        },
+        {
+          "id": "classify-jira-ticket",
+          "text": "Classifies JIRA-456 as jira-ticket type",
+          "check": "transcript_contains",
+          "signals": ["jira-ticket", "JIRA-456"]
+        },
+        {
+          "id": "gather-creates-jira-subtask",
+          "text": "Creates a Phase 2 subtask for fetching the JIRA ticket",
+          "check": "tool_called",
+          "signals": ["TaskCreate", "Fetch jira-ticket"]
+        },
+        {
+          "id": "runs-tracker-detector",
+          "text": "Routes ticket ID through detect-tracker.sh to confirm tracker type",
+          "check": "tool_called",
+          "signals": ["detect-tracker.sh", "JIRA-456"]
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "name": "execution-delegates-endgame-skills",
+      "prompt": "/Dev10x:work-on https://github.com/example-org/app-pos/issues/247",
+      "description": "Tests that Phase 4 execution delegates the endgame subtasks to the correct skills (gh-pr-respond, git-groom, gh-pr-request-review).",
+      "expected_output": "During Phase 4, invokes Dev10x:gh-pr-respond for fixups, Dev10x:git-groom for history cleanup, and Dev10x:gh-pr-request-review for publishing review request",
+      "dimensions": ["execute"],
+      "assertions": [
+        {
+          "id": "delegates-fixups-to-pr-respond",
+          "text": "Delegates 'Apply fixups to review comments' to Dev10x:gh-pr-respond skill",
+          "check": "tool_called",
+          "signals": ["Skill", "Dev10x:gh-pr-respond"]
+        },
+        {
+          "id": "delegates-groom-to-git-groom",
+          "text": "Delegates 'Groom commit history' to Dev10x:git-groom skill",
+          "check": "tool_called",
+          "signals": ["Skill", "Dev10x:git-groom"]
+        },
+        {
+          "id": "delegates-review-to-request-review",
+          "text": "Delegates 'Request review' to Dev10x:gh-pr-request-review skill",
+          "check": "tool_called",
+          "signals": ["Skill", "Dev10x:gh-pr-request-review"]
+        },
+        {
+          "id": "post-step-skill-verification",
+          "text": "After completing a playbook step with skills:, verifies Skill() was called — not raw CLI commands",
+          "check": "behavioral",
+          "signals": ["Skill()", "verify", "delegation"]
+        },
+        {
+          "id": "auto-advances-through-subtasks",
+          "text": "Auto-advances between subtasks without pausing to ask 'should I continue?'",
+          "check": "behavioral",
+          "signals": ["auto-advance", "no pause"]
+        },
+        {
+          "id": "acceptance-verified-last",
+          "text": "Acceptance criteria verification is the final action in the execution",
+          "check": "behavioral",
+          "signals": ["last subtask", "acceptance criteria", "CI", "fixup", "groom", "review"]
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "name": "worktree-generic-branch",
+      "prompt": "/Dev10x:work-on DEV-99",
+      "description": "CWD is a worktree with a generic WT branch (e.g., wt/my-worktree). Tests that Phase 1 detects this and Phase 4 creates a work-specific branch before any commits.",
+      "setup": {
+        "cwd_is_worktree": true,
+        "current_branch": "wt/my-worktree",
+        "note": "Requires .git to be a file (worktree indicator) and branch to lack ticket ID"
+      },
+      "dimensions": ["workspace", "plan"],
+      "assertions": [
+        {
+          "id": "detects-worktree",
+          "text": "Phase 1 detects CWD is a worktree (.git is a file)",
+          "check": "transcript_contains",
+          "signals": ["worktree", ".git"]
+        },
+        {
+          "id": "detects-generic-branch",
+          "text": "Phase 1 identifies current branch as generic (no ticket ID pattern)",
+          "check": "transcript_contains",
+          "signals": ["generic", "wt/my-worktree", "work-specific"]
+        },
+        {
+          "id": "plan-includes-branch-creation",
+          "text": "Plan includes workspace setup subtask to create work-specific branch",
+          "check": "task_exists",
+          "signals": ["branch", "workspace", "DEV-99"]
+        },
+        {
+          "id": "delegates-to-ticket-branch",
+          "text": "Workspace setup delegates to Dev10x:ticket-branch (not Dev10x:git-worktree — already in worktree)",
+          "check": "tool_called",
+          "signals": ["Skill", "Dev10x:ticket-branch"]
+        },
+        {
+          "id": "branch-before-commits",
+          "text": "Branch creation happens before any git commit operations",
+          "check": "tool_sequence",
+          "signals": ["Dev10x:ticket-branch", "git commit"]
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "name": "worktree-matching-branch",
+      "prompt": "/Dev10x:work-on DEV-99",
+      "description": "CWD is a worktree already on the correct feature branch (janusz/DEV-99/fix-something). Tests that workspace setup is skipped.",
+      "setup": {
+        "cwd_is_worktree": true,
+        "current_branch": "janusz/DEV-99/fix-something"
+      },
+      "dimensions": ["workspace", "plan"],
+      "assertions": [
+        {
+          "id": "detects-matching-branch",
+          "text": "Phase 1 detects branch already matches ticket DEV-99",
+          "check": "transcript_contains",
+          "signals": ["DEV-99", "matching", "reuse"]
+        },
+        {
+          "id": "plan-skips-workspace-setup",
+          "text": "Plan does NOT include workspace setup subtask (branch already correct)",
+          "check": "task_absent",
+          "signals": ["Set up workspace", "Create branch"]
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "name": "pr-continuation-skips-branch",
+      "prompt": "/Dev10x:work-on https://github.com/example-org/app-pos/pull/312",
+      "description": "PR continuation — branch already exists from the PR. Tests that workspace decision is 'no branch needed'.",
+      "setup": {
+        "existing_pr": 312,
+        "pr_branch": "janusz/PAY-310/fix-flaky-tests"
+      },
+      "dimensions": ["workspace"],
+      "assertions": [
+        {
+          "id": "workspace-no-branch-for-pr",
+          "text": "Phase 1 workspace decision: no branch needed (PR already has one)",
+          "check": "transcript_contains",
+          "signals": ["branch", "already exists", "PR"]
+        },
+        {
+          "id": "plan-no-workspace-setup",
+          "text": "Plan does NOT include workspace setup subtask",
+          "check": "task_absent",
+          "signals": ["Set up workspace"]
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "name": "orchestration-guardrails",
+      "prompt": "/Dev10x:work-on add retry logic to the webhook handler",
+      "description": "Free-text input that tests orchestration guardrails: no ExitPlanMode, Phase 3 uses TaskCreate mechanically, AskUserQuestion at approval gate, 1:1 task-to-step mapping, and completion gate at end.",
+      "expected_output": "Creates 4 phase tasks, never calls ExitPlanMode, creates one TaskCreate per local-only play step (not fewer), presents plan via AskUserQuestion, and shows completion gate after last task",
+      "dimensions": ["orchestration-guardrails", "plan", "task-structure"],
+      "assertions": [
+        {
+          "id": "never-calls-exitplanmode",
+          "text": "ExitPlanMode is never called during the entire session",
+          "check": "tool_never_called",
+          "signals": ["ExitPlanMode"]
+        },
+        {
+          "id": "self-check-before-phase2",
+          "text": "Calls TaskList between Phase 1 and Phase 2 to verify phase tasks exist",
+          "check": "tool_called_before",
+          "signals": ["TaskList", "Phase 2"]
+        },
+        {
+          "id": "phase3-uses-taskcreate-not-plan-agent",
+          "text": "Phase 3 creates tasks via TaskCreate, never dispatches Agent(Plan) subagents",
+          "check": "behavioral",
+          "signals": ["TaskCreate", "no Agent(Plan)"]
+        },
+        {
+          "id": "one-task-per-play-step",
+          "text": "Phase 3 creates exactly one TaskCreate per play step (local-only has 13 steps), not fewer",
+          "check": "tool_called_count",
+          "signals": ["TaskCreate", ">=13"],
+          "note": "4 phase tasks + at least 13 play steps = 17+ total TaskCreate calls"
+        },
+        {
+          "id": "approval-gate-uses-askuserquestion",
+          "text": "Plan approval uses AskUserQuestion tool call, not plain text",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "Approve"]
+        },
+        {
+          "id": "completion-gate-at-end",
+          "text": "After last task completes, AskUserQuestion is called with hand-over options — plain text (e.g., 'Ready to merge?') is NOT acceptable",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "hand over", "Add more tasks"]
+        },
+        {
+          "id": "completion-gate-not-plain-text",
+          "text": "Completion gate uses AskUserQuestion tool call, never plain text questions — plain text allows auto-proceed without structured confirmation",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "Work complete"]
+        }
+      ]
+    }
+    ,
+    {
+      "id": 14,
+      "name": "phase0-friction-gate",
+      "prompt": "/Dev10x:work-on https://github.com/example-org/app-pos/issues/300",
+      "description": "Tests that Phase 0 friction level gate fires via AskUserQuestion (not plain text) before Phase 1, and persists the choice to session.yaml.",
+      "expected_output": "AskUserQuestion is called with friction level options (Guided, Adaptive, Strict) before any Phase 1 work begins. Choice is persisted to ~/.claude/Dev10x/session.yaml.",
+      "dimensions": ["orchestration-guardrails"],
+      "assertions": [
+        {
+          "id": "phase0-uses-askuserquestion",
+          "text": "Phase 0 friction level prompt uses AskUserQuestion tool call, not plain text",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "friction", "Guided"]
+        },
+        {
+          "id": "phase0-fires-before-phase1",
+          "text": "AskUserQuestion for friction level fires before Phase 1 classification begins",
+          "check": "tool_called_before",
+          "signals": ["AskUserQuestion", "Phase 1"]
+        },
+        {
+          "id": "phase0-offers-three-levels",
+          "text": "Gate presents all three friction levels: Guided, Adaptive, Strict",
+          "check": "output_contains",
+          "signals": ["Guided", "Adaptive", "Strict"]
+        },
+        {
+          "id": "phase0-persists-choice",
+          "text": "After user selects a level, the choice is persisted to ~/.claude/Dev10x/session.yaml via Write tool",
+          "check": "tool_called",
+          "signals": ["Write", "session.yaml", "friction_level"]
+        },
+        {
+          "id": "phase0-skips-when-nested",
+          "text": "Phase 0 is skipped when running as nested invocation from Dev10x:fanout",
+          "check": "behavioral",
+          "signals": ["skip", "nested", "fanout"]
+        }
+      ]
+    }
+  ],
+  "trigger_evals": {
+    "description": "Queries that should/should-not trigger the work-on skill",
+    "should_trigger": [
+      {
+        "query": "ok I just got assigned JIRA-789, the payment reconciliation thing. Can you help me get started on it?",
+        "rationale": "Mentions a ticket ID and wants to start work — core use case"
+      },
+      {
+        "query": "/Dev10x:work-on https://linear.app/example/issue/DEV-55/fix-square-webhook-retry",
+        "rationale": "Explicit invocation with Linear URL"
+      },
+      {
+        "query": "hey so there's this sentry issue https://example-org.sentry.io/issues/5201839452 and a slack thread about it https://app.slack.com/archives/C06ABCDEF/p1709827200 can you take a look and fix it",
+        "rationale": "Multiple source URLs with intent to investigate and fix — needs structured orchestration"
+      },
+      {
+        "query": "I need to work on PR #312 — there are some review comments I need to address before merging",
+        "rationale": "PR continuation scenario with bare PR number"
+      },
+      {
+        "query": "let's implement exponential backoff for the webhook retry logic in app-pos, there's no ticket yet but let's just do it",
+        "rationale": "Free-text local-only work — no ticket but wants structured execution"
+      },
+      {
+        "query": "I want to start on https://github.com/example-org/app-pos/issues/247 and also check the related slack thread at https://app.slack.com/archives/C06QWERTY/p1710000000",
+        "rationale": "Multi-input with GitHub issue + Slack thread"
+      },
+      {
+        "query": "work on DEV-42",
+        "rationale": "Minimal ticket ID input — should still trigger full orchestration"
+      },
+      {
+        "query": "can you pick up where we left off on https://github.com/example-org/app-pos/pull/298? CI was failing last time",
+        "rationale": "PR continuation with context about previous state"
+      }
+    ],
+    "should_not_trigger": [
+      {
+        "query": "can you review PR #312 and leave comments on the code quality?",
+        "rationale": "Wants PR review (Dev10x:gh-pr-review), not to work on the PR"
+      },
+      {
+        "query": "create a ticket for the webhook retry bug we found yesterday",
+        "rationale": "Wants ticket creation (Dev10x:ticket-create), not to start working"
+      },
+      {
+        "query": "what's the status of DEV-42? Is it in progress or still in backlog?",
+        "rationale": "Just checking status — doesn't want to start work"
+      },
+      {
+        "query": "commit these changes with a message about fixing the payment timeout",
+        "rationale": "Wants a git commit (Dev10x:git-commit), not orchestrated work"
+      },
+      {
+        "query": "can you scope out JIRA-789 and estimate story points for the planning meeting?",
+        "rationale": "Wants scoping (Dev10x:ticket-scope), not implementation"
+      },
+      {
+        "query": "push this branch and create a PR for the changes we just made",
+        "rationale": "Wants PR creation (Dev10x:gh-pr-create), already has the work done"
+      },
+      {
+        "query": "read the sentry issue at https://example-org.sentry.io/issues/5201839452 and tell me what's causing it",
+        "rationale": "Wants investigation only (Dev10x:investigate or triage-sentry), not full work orchestration"
+      },
+      {
+        "query": "let's wrap up for today and save my progress",
+        "rationale": "Wants session wrap-up (Dev10x:session-wrap-up), opposite of starting work"
+      }
+    ]
+  }
+}

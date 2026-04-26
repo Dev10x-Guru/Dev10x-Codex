@@ -1,0 +1,106 @@
+# playbook.yaml — Investigation workflow plays for Dev10x:investigate
+# Default location: ${CLAUDE_PLUGIN_ROOT}/skills/investigate/references/playbook.yaml
+# User overrides (see references/config-resolution.md):
+#   1. .claude/Dev10x/playbooks/investigate.yaml (project-local)
+#   2. ~/.claude/memory/Dev10x/playbooks/investigate.yaml (global + repo match)
+#   3. ~/.claude/projects/<project>/memory/playbooks/investigate.yaml (legacy)
+# Managed by Dev10x:playbook skill.
+#
+# Play names match mode detection in SKILL.md:
+#   standard   — Slack thread with bug report or unexpected behaviour
+#   pr-review  — Slack thread containing a PR link for review
+
+defaults:
+  standard:
+    prompt: >
+      Use when the Slack thread describes a bug, question, or unexpected
+      behaviour. Investigate the codebase, draft a technical reply with
+      GitHub links, and optionally create a Linear ticket.
+    steps:
+      - subject: Parse Slack URL
+        type: detailed
+        prompt: >
+          Extract channel_id and thread_ts from the Slack URL using
+          parse-slack-url.sh.
+      - subject: Read the thread
+        type: detailed
+        prompt: >
+          Use MCP slack_read_thread with channel_id and thread_ts.
+          Read all replies — the answer may already be in the thread.
+          Note key details: who reported, what symptoms, when it started.
+      - subject: Investigate the codebase
+        type: epic
+        prompt: >
+          Use an Explore subagent with a focused prompt. For frontend
+          display bugs: check formatting utilities, GraphQL fragments,
+          component rendering. For backend errors: check model methods,
+          serializers, signal handlers, recent migrations.
+        steps:
+          - subject: Identify the symptom's proximate source
+            type: detailed
+            prompt: >
+              What file/function causes the symptom described?
+              Are other call-sites affected?
+          - subject: Trace the causal chain
+            type: detailed
+            prompt: >
+              Map backend → API → frontend path. Identify where the
+              bug originates vs where it manifests.
+      - subject: Verify findings
+        type: detailed
+        prompt: >
+          Read the identified files directly to confirm line numbers
+          and exact code. Wrong line numbers embarrass more than no
+          links at all.
+      - subject: Draft the reply
+        type: detailed
+        prompt: >
+          Structure: 1-sentence root cause summary, 2-3 sentences of
+          causal chain, fix description. Use Slack link format
+          <url|text>. Map repos correctly (app-pos, app-backend,
+          app-admin). Use branch develop unless investigating
+          a specific release.
+      - subject: Post the reply
+        type: detailed
+        prompt: >
+          Show draft to user and wait for approval before posting
+          unless they explicitly said to post immediately.
+          Use reply.sh to post.
+      - subject: Create a ticket (when warranted)
+        type: detailed
+        prompt: >
+          Create when fix is not trivial, issue affects production/staging,
+          or user requests. Delegate to Dev10x:ticket-create.
+        condition: fix-warrants-ticket
+        skills: [Dev10x:ticket-create]
+      - subject: Mention the ticket in the thread
+        type: detailed
+        prompt: >
+          Post a follow-up reply with the Linear ticket link using
+          reply.sh. Format: "Logged as <url|TICKET-ID>."
+        condition: ticket-created
+
+  pr-review:
+    prompt: >
+      Use when the Slack thread contains a GitHub PR link and the
+      request is to review it or check its status. Parse the URL and
+      read the thread for context, then delegate to pr:review.
+    steps:
+      - subject: Parse Slack URL
+        type: detailed
+        prompt: >
+          Extract channel_id and thread_ts from the Slack URL using
+          parse-slack-url.sh.
+      - subject: Read the thread
+        type: detailed
+        prompt: >
+          Use MCP slack_read_thread. Identify the PR URL and any
+          specific review requests or concerns mentioned.
+      - subject: Delegate to PR review
+        type: detailed
+        prompt: >
+          Invoke pr:review skill with the PR URL and Slack thread
+          context. Let the review skill handle the rest.
+        skills: [pr:review]
+
+overrides: []

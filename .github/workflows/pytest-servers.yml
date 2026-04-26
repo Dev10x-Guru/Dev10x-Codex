@@ -1,0 +1,43 @@
+name: Server Tests
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - "servers/**"
+      - "src/dev10x/mcp/**"
+      - "tests/mcp/**"
+      - "pyproject.toml"
+      - ".github/workflows/pytest-servers.yml"
+  pull_request:
+    branches: [develop]
+    paths:
+      - "servers/**"
+      - "src/dev10x/mcp/**"
+      - "tests/mcp/**"
+      - "pyproject.toml"
+      - ".github/workflows/pytest-servers.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Run server tests with coverage
+        run: |
+          uv run --extra dev pytest tests/mcp/ src/dev10x/mcp/tests/ -v --tb=short \
+            -o 'addopts=' --cov=src/dev10x/mcp --cov-config=.coveragerc-servers \
+            --cov-report=term-missing --cov-fail-under=80

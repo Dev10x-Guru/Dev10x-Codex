@@ -1,0 +1,23 @@
+# Database configuration for Dev10x:db-psql skill.
+#
+# Place this file as databases.yaml in:
+#   ~/.claude/memory/databases.yaml    (global, user-level)
+#   ~/.claude/skills/<project>:db/     (project-specific)
+#
+# DSN backends:
+#   env     — reads DSN from an environment variable
+#   keyring — reads DSN from system keyring (secret-tool / libsecret)
+
+databases:
+  my-prod:
+    label: "My App production (read-only)"
+    aliases: [mp]
+    backend: env
+    env_var: DB_MY_PRODUCTION_RO
+
+  my-staging:
+    label: "My App staging (read-only)"
+    aliases: [ms]
+    backend: keyring
+    keyring_service: claude-db
+    keyring_account: my-staging

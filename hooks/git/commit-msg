@@ -1,0 +1,28 @@
+#!/bin/bash
+#
+# Git commit-msg hook - runs validation on commit messages
+#
+# Install for a single repo:
+#   ln -sf <plugin-path>/hooks/git/commit-msg .git/hooks/commit-msg
+#
+# Install globally:
+#   git config --global core.hooksPath <plugin-path>/hooks/git
+#
+
+# Resolve symlinks to get actual hooks directory
+SCRIPT_PATH="$0"
+if [ -L "$SCRIPT_PATH" ]; then
+    SCRIPT_PATH="$(readlink -f "$SCRIPT_PATH")"
+fi
+HOOKS_DIR="$(dirname "$SCRIPT_PATH")"
+COMMIT_MSG_FILE="$1"
+
+# Run fixup comment link check
+if [ -x "$HOOKS_DIR/check-fixup-comment-link" ]; then
+    "$HOOKS_DIR/check-fixup-comment-link" "$COMMIT_MSG_FILE"
+    if [ $? -ne 0 ]; then
+        exit 1
+    fi
+fi
+
+exit 0

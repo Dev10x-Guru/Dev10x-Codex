@@ -1,0 +1,61 @@
+{
+  "skill_name": "Dev10x:context-audit",
+  "eval_dimensions": [
+    {
+      "name": "budget_reporting",
+      "description": "Reports line counts and budget compliance for all context file categories"
+    },
+    {
+      "name": "oversized_detection",
+      "description": "Identifies files exceeding INDEX.md size budgets"
+    },
+    {
+      "name": "pruning_suggestions",
+      "description": "Suggests specific, actionable pruning or consolidation actions"
+    },
+    {
+      "name": "no_unauthorized_edits",
+      "description": "Does not modify files without explicit user approval via AskUserQuestion"
+    }
+  ],
+  "evals": [
+    {
+      "scenario": "Repo with oversized rule files",
+      "expected": "Reports OVER status for files exceeding 200-line budget, suggests split actions",
+      "assertions": [
+        {
+          "check": "output_contains",
+          "value": "OVER",
+          "assertion": "oversized_files_flagged"
+        },
+        {
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "decision_gate_presented"
+        }
+      ]
+    },
+    {
+      "scenario": "All files within budget",
+      "expected": "Reports OK status for all files, no pruning suggestions needed",
+      "assertions": [
+        {
+          "check": "output_contains",
+          "value": "OK",
+          "assertion": "clean_report"
+        }
+      ]
+    },
+    {
+      "scenario": "File with documented budget override",
+      "expected": "Uses override budget instead of default, flags as INFO not WARNING",
+      "assertions": [
+        {
+          "check": "output_contains",
+          "value": "override",
+          "assertion": "override_respected"
+        }
+      ]
+    }
+  ]
+}

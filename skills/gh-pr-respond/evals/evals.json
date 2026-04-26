@@ -1,0 +1,350 @@
+{
+  "skill_name": "Dev10x:gh-pr-respond",
+  "eval_dimensions": [
+    {
+      "id": "decision-gates",
+      "name": "Decision Gate Compliance",
+      "description": "All 6 blocking decision gates use AskUserQuestion tool calls, never plain text questions. Gates: Mode A Step 1b (thread resolve), Mode A Step 1c (hide obsolete), Mode A Step 3 (continue/batch/stop), Mode B Step 3 (approve batch), Mode B Step 5 (resolve threads), Mode B Step 5b (hide obsolete)"
+    },
+    {
+      "id": "option-correctness",
+      "name": "Option Correctness",
+      "description": "Each AskUserQuestion call presents the correct options as documented in the skill — right labels, right number of choices, multiSelect=false"
+    },
+    {
+      "id": "no-auto-resolve",
+      "name": "No Auto-Resolve",
+      "description": "Threads are never auto-resolved — resolution requires explicit user confirmation via AskUserQuestion"
+    },
+    {
+      "id": "hide-comments",
+      "name": "Hide Obsolete Comments",
+      "description": "After resolving threads, offers to minimize resolved comments via minimizeComment GraphQL mutation with classifier OUTDATED. Gate 6 uses AskUserQuestion with options: Hide all resolved / Review one-by-one / Skip"
+    },
+    {
+      "id": "post-response-continuation",
+      "name": "Post-Response Continuation",
+      "description": "After all comments are processed, if fixup commits were created, offers to groom+push+monitor via AskUserQuestion (Gate 5). Skipped if no fixups were created."
+    },
+    {
+      "id": "orchestration",
+      "name": "Task Orchestration",
+      "description": "TaskCreate/TaskUpdate calls track progress through comment processing with correct task structure per mode"
+    },
+    {
+      "id": "body-findings",
+      "name": "Body-Only Review Finding Parsing",
+      "description": "Reviews with no inline comments but structured findings in the body are parsed into individual synthetic comments. Each finding is triaged independently. The review body is not treated as a single opaque comment."
+    }
+  ],
+  "evals": [
+    {
+      "id": 1,
+      "name": "single-comment-invalid-verdict",
+      "prompt": "/Dev10x:gh-pr-respond https://github.com/org/repo/pull/42#discussion_r12345",
+      "description": "Single comment mode where triage returns INVALID verdict. Tests Gate 1 (Step 1b thread resolution), Gate 6 (Step 1c hide obsolete), and Gate 2 (Step 3 offer to continue). All must use AskUserQuestion.",
+      "setup": {
+        "mode": "A (single)",
+        "triage_verdict": "INVALID",
+        "remaining_comments": 2,
+        "note": "Requires PR with comment r12345 that triages as INVALID and 2 other unaddressed comments"
+      },
+      "dimensions": ["decision-gates", "option-correctness", "no-auto-resolve", "hide-comments"],
+      "assertions": [
+        {
+          "id": "gate1-uses-tool",
+          "text": "Step 1b uses AskUserQuestion tool to ask about thread resolution (not plain text)",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "Resolve", "Leave open"]
+        },
+        {
+          "id": "gate1-no-plain-text",
+          "text": "Step 1b does NOT ask 'Resolve this thread?' as plain text before calling AskUserQuestion",
+          "check": "behavioral",
+          "signals": ["no inline question before AskUserQuestion"]
+        },
+        {
+          "id": "gate1-correct-options",
+          "text": "Gate 1 AskUserQuestion has exactly 2 options: 'Resolve' and 'Leave open'",
+          "check": "tool_parameters",
+          "signals": ["options", "Resolve", "Leave open", "2 options"]
+        },
+        {
+          "id": "gate2-uses-tool",
+          "text": "Step 3 uses AskUserQuestion tool to offer continue/batch/stop (not plain text)",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "Next comment", "batch", "Stop"]
+        },
+        {
+          "id": "gate2-correct-options",
+          "text": "Gate 2 AskUserQuestion has exactly 3 options: 'Next comment', 'Switch to batch mode', 'Stop'",
+          "check": "tool_parameters",
+          "signals": ["options", "Next comment", "Switch to batch mode", "Stop", "3 options"]
+        },
+        {
+          "id": "no-auto-resolve-on-invalid",
+          "text": "Thread is NOT resolved automatically after INVALID verdict — waits for user decision",
+          "check": "command_absent",
+          "signals": ["resolveReviewThread", "minimize"]
+        },
+        {
+          "id": "gate6-hide-after-resolve",
+          "text": "Step 1c uses AskUserQuestion to offer hiding the resolved comment (not plain text)",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "Hide", "Skip"]
+        },
+        {
+          "id": "gate6-correct-options-single",
+          "text": "Gate 6 in single mode has exactly 2 options: 'Hide' and 'Skip'",
+          "check": "tool_parameters",
+          "signals": ["options", "Hide", "Skip", "2 options"]
+        },
+        {
+          "id": "gate6-skip-if-left-open",
+          "text": "Step 1c is skipped if the user chose 'Leave open' in Step 1b",
+          "check": "behavioral",
+          "signals": ["no AskUserQuestion about Hide when thread left open"]
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "batch-mode-full-flow",
+      "prompt": "/Dev10x:gh-pr-respond https://github.com/org/repo/pull/42",
+      "description": "Batch mode with 4 comments (2 VALID, 2 INVALID). Tests Gate 3 (batch approval), Gate 4 (thread resolution), Gate 5 (post-response continuation), and Gate 6 (hide obsolete). All must use AskUserQuestion.",
+      "setup": {
+        "mode": "B (batch)",
+        "comments": 4,
+        "verdicts": ["VALID", "VALID", "INVALID", "INVALID"],
+        "note": "Requires PR #42 with 4 unaddressed root comments"
+      },
+      "dimensions": ["decision-gates", "option-correctness", "no-auto-resolve", "orchestration", "hide-comments", "post-response-continuation"],
+      "assertions": [
+        {
+          "id": "gate3-uses-tool",
+          "text": "Step 3 uses AskUserQuestion tool for batch approval (not plain text like 'Approve all, or specify?')",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "Approve all", "Review one-by-one", "Skip"]
+        },
+        {
+          "id": "gate3-no-plain-text",
+          "text": "After presenting the triage table, does NOT ask batch approval as plain text",
+          "check": "behavioral",
+          "signals": ["no plain text question between table and AskUserQuestion"]
+        },
+        {
+          "id": "gate3-correct-options",
+          "text": "Gate 3 AskUserQuestion has exactly 3 options: 'Approve all', 'Review one-by-one', 'Skip'",
+          "check": "tool_parameters",
+          "signals": ["options", "Approve all", "Review one-by-one", "Skip", "3 options"]
+        },
+        {
+          "id": "gate4-uses-tool",
+          "text": "Step 5 uses AskUserQuestion tool for thread resolution confirmation (not plain text)",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "Resolve all", "Review one-by-one", "Leave all open"]
+        },
+        {
+          "id": "gate4-correct-options",
+          "text": "Gate 4 AskUserQuestion has exactly 3 options: 'Resolve all', 'Review one-by-one', 'Leave all open'",
+          "check": "tool_parameters",
+          "signals": ["options", "Resolve all", "Review one-by-one", "Leave all open", "3 options"]
+        },
+        {
+          "id": "gate4-after-all-replies",
+          "text": "Gate 4 appears AFTER all replies are posted, not before or during execution",
+          "check": "tool_sequence",
+          "signals": ["gh api --method POST", "AskUserQuestion"]
+        },
+        {
+          "id": "no-auto-resolve-batch",
+          "text": "No threads are resolved before user confirms via Gate 4",
+          "check": "behavioral",
+          "signals": ["no resolveReviewThread before AskUserQuestion Gate 4"]
+        },
+        {
+          "id": "task-tracking-batch",
+          "text": "Creates batch-mode TaskCreate calls: collect, triage, execute, resolve, hide",
+          "check": "tool_called",
+          "signals": ["TaskCreate", "Collect", "Triage", "approval", "Execute", "Resolve", "Hide", "Summary"]
+        },
+        {
+          "id": "gate6-hide-after-resolve-batch",
+          "text": "Step 5b uses AskUserQuestion to offer hiding resolved comments (not plain text)",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "Hide all resolved", "Review one-by-one", "Skip"]
+        },
+        {
+          "id": "gate6-correct-options-batch",
+          "text": "Gate 6 in batch mode has exactly 3 options: 'Hide all resolved', 'Review one-by-one', 'Skip'",
+          "check": "tool_parameters",
+          "signals": ["options", "Hide all resolved", "Review one-by-one", "Skip", "3 options"]
+        },
+        {
+          "id": "gate6-after-resolve-batch",
+          "text": "Gate 6 appears AFTER thread resolution (Gate 4), not before",
+          "check": "tool_sequence",
+          "signals": ["resolveReviewThread", "AskUserQuestion about Hide"]
+        },
+        {
+          "id": "gate6-skip-if-none-resolved",
+          "text": "Step 5b is skipped if no threads were resolved in Step 5",
+          "check": "behavioral",
+          "signals": ["no AskUserQuestion about Hide when no threads resolved"]
+        },
+        {
+          "id": "gate5-post-response-continuation",
+          "text": "After all comments processed, if fixup commits exist, uses AskUserQuestion for continuation (Gate 5)",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "Groom + push + monitor", "Push only", "Stop"]
+        },
+        {
+          "id": "gate5-correct-options",
+          "text": "Gate 5 has exactly 3 options: 'Groom + push + monitor', 'Push only', 'Stop'",
+          "check": "tool_parameters",
+          "signals": ["options", "Groom + push + monitor", "Push only", "Stop", "3 options"]
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "single-comment-valid-no-remaining",
+      "prompt": "/Dev10x:gh-pr-respond https://github.com/org/repo/pull/42#discussion_r99999",
+      "description": "Single comment mode where triage returns VALID and no remaining comments exist. Gate 1 should NOT fire (VALID skips resolution ask). Gate 2 should NOT fire (no remaining comments). Tests that gates are skipped appropriately.",
+      "setup": {
+        "mode": "A (single)",
+        "triage_verdict": "VALID",
+        "remaining_comments": 0,
+        "note": "Requires PR with only 1 comment that triages as VALID"
+      },
+      "dimensions": ["decision-gates"],
+      "assertions": [
+        {
+          "id": "no-gate1-for-valid",
+          "text": "Does NOT call AskUserQuestion for thread resolution when verdict is VALID (fixup handles it)",
+          "check": "behavioral",
+          "signals": ["no AskUserQuestion about Resolve/Leave open"]
+        },
+        {
+          "id": "no-gate2-when-empty",
+          "text": "Does NOT call AskUserQuestion for continue/batch/stop when no remaining comments",
+          "check": "behavioral",
+          "signals": ["no AskUserQuestion about Next comment/Stop"]
+        },
+        {
+          "id": "delegates-to-fixup",
+          "text": "Delegates VALID comment to Dev10x:gh-pr-fixup",
+          "check": "transcript_contains",
+          "signals": ["gh-pr-fixup", "fixup"]
+        },
+        {
+          "id": "no-gate6-for-valid",
+          "text": "Does NOT call AskUserQuestion for hiding when verdict is VALID (no thread resolved via Step 1b)",
+          "check": "behavioral",
+          "signals": ["no AskUserQuestion about Hide/Skip"]
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "batch-mode-body-only-review",
+      "prompt": "/Dev10x:gh-pr-respond https://github.com/org/repo/pull/42#pullrequestreview-789",
+      "description": "Batch mode where the review has no inline comments but a body with structured findings (e.g., '1 blocking issue found' with bullet items). Tests that individual findings are parsed from the body and triaged independently, not treated as one opaque comment.",
+      "setup": {
+        "mode": "B (batch)",
+        "inline_comments": 0,
+        "review_body": "## Review Summary\n**Status**: 2 issues found.\n- CRITICAL: Invalid exception syntax on mutations.py:115\n- INFO: Consider adding type narrowing for EventBus handler",
+        "expected_findings": 2,
+        "note": "Requires PR #42 with review #789 that has no inline comments but a body with 2 structured findings"
+      },
+      "dimensions": ["decision-gates", "orchestration", "body-findings"],
+      "assertions": [
+        {
+          "id": "parses-individual-findings",
+          "text": "Parses 2 individual findings from the review body instead of treating the entire body as 1 comment",
+          "check": "behavioral",
+          "signals": ["2 findings", "2 comments", "CRITICAL", "INFO", "mutations.py:115"]
+        },
+        {
+          "id": "triages-each-finding",
+          "text": "Each parsed finding is triaged independently via Dev10x:gh-pr-triage",
+          "check": "tool_called",
+          "signals": ["Dev10x:gh-pr-triage", "2 triage calls"]
+        },
+        {
+          "id": "presents-findings-in-table",
+          "text": "Triage results are presented in the batch approval table with per-finding verdicts",
+          "check": "behavioral",
+          "signals": ["table", "Verdict", "mutations.py:115", "EventBus"]
+        },
+        {
+          "id": "not-zero-comments",
+          "text": "Does NOT report 'No unaddressed comments' when review body has findings",
+          "check": "behavioral",
+          "signals": ["no 'No unaddressed comments' message"]
+        },
+        {
+          "id": "replies-as-pr-comments",
+          "text": "Replies to body findings are posted as top-level PR comments (not inline thread replies)",
+          "check": "behavioral",
+          "signals": ["issues/{pr_number}/comments", "top-level comment"]
+        }
+      ]
+    }
+  ],
+  "trigger_evals": {
+    "description": "Queries that should/should-not trigger the gh-pr-respond skill",
+    "should_trigger": [
+      {
+        "query": "/Dev10x:gh-pr-respond https://github.com/example-org/app-pos/pull/1164",
+        "rationale": "Direct invocation with PR URL — batch mode"
+      },
+      {
+        "query": "/Dev10x:gh-pr-respond https://github.com/example-org/app-pos/pull/1164#discussion_r1847293456",
+        "rationale": "Direct invocation with specific comment — single mode"
+      },
+      {
+        "query": "I got 3 new review comments on my PR, can you help me respond to them? https://github.com/example-org/app-pos/pull/1164",
+        "rationale": "Natural language request to handle PR review comments"
+      },
+      {
+        "query": "the reviewer left feedback on my PR — go through the comments and respond https://github.com/org/repo/pull/42#pullrequestreview-2345",
+        "rationale": "Review-scoped batch request with review URL"
+      },
+      {
+        "query": "/Dev10x:gh-pr-respond 1164",
+        "rationale": "Direct invocation with PR number only"
+      },
+      {
+        "query": "respond to the remaining review comments on my PR, here's the link https://github.com/org/repo/pull/55",
+        "rationale": "Casual request to handle unaddressed comments"
+      }
+    ],
+    "should_not_trigger": [
+      {
+        "query": "review this PR and leave comments: https://github.com/org/repo/pull/42",
+        "rationale": "Wants to CREATE review comments (Dev10x:gh-pr-review), not respond to existing ones"
+      },
+      {
+        "query": "create a fixup commit for the review comment about missing validation on line 42",
+        "rationale": "Wants Dev10x:gh-pr-fixup directly, not the orchestrating respond skill"
+      },
+      {
+        "query": "check if there are any new review comments on my PR",
+        "rationale": "Monitoring/checking (Dev10x:gh-pr-monitor), not responding"
+      },
+      {
+        "query": "resolve all the review threads on PR #42",
+        "rationale": "Direct thread resolution request — not the triage+respond workflow"
+      },
+      {
+        "query": "triage the review comment at https://github.com/org/repo/pull/42#discussion_r123 — is it valid?",
+        "rationale": "Wants triage only (Dev10x:gh-pr-triage), not the full respond workflow"
+      },
+      {
+        "query": "create a PR for my current branch with the review changes",
+        "rationale": "Wants PR creation (Dev10x:gh-pr-create), not responding to reviews"
+      }
+    ]
+  }
+}

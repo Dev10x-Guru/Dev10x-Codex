@@ -1,0 +1,94 @@
+# Dev10x
+
+Claude Code plugin providing reusable skills, hooks, and commands for
+development workflows.
+
+## Directory Layout
+
+This repo is a **single unified `Dev10x` plugin** (consolidated from 11
+separate plugin directories). All skills, hooks, and config are defined at
+the root level.
+
+| Directory        | Purpose                                    |
+|------------------|--------------------------------------------|
+| `src/dev10x/`    | Python package (CLI, validators, hooks, MCP)|
+| `tests/`         | Unified test directory (mirrors src/)      |
+| `skills/`        | Skill definitions (SKILL.md + scripts)     |
+| `commands/`      | Slash command definitions                  |
+| `hooks/`         | PreToolUse / PostToolUse hook entry points |
+| `servers/`       | MCP server scripts                         |
+| `bin/`           | Helper scripts (release, CI)               |
+| `.claude-plugin/`| Plugin manifest (`plugin.json`)            |
+| `agents/`        | Plugin-distributed sub-agent specs         |
+| `references/`    | Shared docs (git, review, JTBD guides)     |
+| `.claude/rules/` | Always-loaded essentials + path-scoped rules |
+| `.claude/agents/`| Internal domain-specific reviewer agents   |
+
+## Development
+
+```bash
+claude --plugin-dir .          # load plugin locally
+claude plugin validate         # validate plugin structure
+dev10x --help                  # CLI entry point
+uv run --extra dev pytest      # run tests with coverage
+```
+
+MCP migration: shell scripts → MCP tools. See `.claude/rules/mcp-tools.md`.
+
+## External Tool Declarations
+
+All skills that invoke external scripts (shell, Python, etc.) must declare
+them in SKILL.md front matter under `allowed-tools:`:
+
+```yaml
+allowed-tools:
+  - Bash(${CLAUDE_PLUGIN_ROOT}/skills/<name>/scripts/:*)
+```
+
+Missing declarations cause per-invocation approval friction — users cannot
+invoke the skill without approving tool access each time. See
+`.claude/rules/mcp-tools.md` for MCP vs. direct script trade-offs.
+
+## Coding Style
+
+- **Python scripts**: ruff + black (line-length 99)
+- **Shell scripts**: shellcheck, `set -e`, POSIX-compatible where possible
+- **Markdown**: one sentence per line, 80-char soft wrap
+
+## Skill Naming Convention
+
+- **Directory name**: plain feature name — `git-worktree/`, `skill-audit/`
+- **Invocation name** (`name:` in SKILL.md): `Dev10x:<feature>` — `Dev10x:git-worktree`
+- The `Dev10x:` prefix identifies this plugin's skills at invocation time
+  without cluttering the filesystem
+- See `.claude/rules/skill-naming.md` for full convention
+- **Decision Gates**: Skills with blocking user choice points MUST use
+  `AskUserQuestion` tool calls (not plain text). See `.claude/rules/skill-gates.md`
+
+## Git Conventions
+
+- **Default branch**: `develop` (PR target)
+- **Release branch**: `main` (merge from develop via release script)
+- **Branch naming**: `username/TICKET-ID/short-description`
+  (worktree: `username/TICKET-ID/worktree-name/short-description`)
+- **Commit format**: `<gitmoji> <TICKET-ID> <JTBD outcome>`
+- **Commit titles**: outcome-focused — "Enable X" not "Add X"
+- **Job Story voice** (REQUIRED): First-person "**I want to**" or explicit
+  third-party "**so [name] can**" — never objective voice ("wants to")
+  See `.claude/rules/essentials.md` and `references/git-jtbd.md` lines 31–45
+- See `references/git-commits.md`, `git-pr.md`, `git-jtbd.md`
+
+### Plugin Directory Renames
+
+When renaming a plugin directory (e.g., `plugins/old/ → plugins/new/`):
+
+1. Use `git mv` to preserve history
+2. Update `.claude-plugin/marketplace.json` reference
+3. Update all SKILL.md files that reference the old path
+4. Search codebase for hardcoded directory paths
+
+## Code Review
+
+Multi-agent architecture with domain-routed reviewers.
+See `.claude/rules/INDEX.md` for the routing table and
+`references/rules-architecture.md` for the full architecture.

@@ -1,0 +1,126 @@
+# release-notes playbook — plays for generating release notes
+# Default location: ${CLAUDE_PLUGIN_ROOT}/skills/release-notes/references/playbook.yaml
+# User overrides (see references/config-resolution.md):
+#   1. .claude/Dev10x/playbooks/release-notes.yaml (project-local)
+#   2. ~/.claude/memory/Dev10x/playbooks/release-notes.yaml (global + repo match)
+#   3. ~/.claude/projects/<project>/memory/playbooks/release-notes.yaml (legacy)
+# Managed by Dev10x:playbook skill.
+#
+# Play-level `config` block holds structured settings that the
+# orchestrating skill reads to configure script args and output
+# formatting. The playbook manager preserves it as opaque YAML.
+#
+# Plays:
+#   release  — standard release notes workflow
+#   hotfix   — abbreviated workflow for hotfix releases
+
+fragments:
+  jtbd-generation:
+    - subject: Generate missing JTBDs
+      type: epic
+      prompt: >
+        For each feature PR listed as "MISSING JTBDs" in the
+        collect-prs output, invoke Dev10x:jtbd in unattended mode
+        with the ticket ID and PR number. Collect all drafts.
+      skills: [Dev10x:jtbd]
+    - subject: Batch approve generated JTBDs
+      type: detailed
+      prompt: >
+        Present all newly generated JTBDs in a single batch for
+        user approval. Allow per-item edits before proceeding.
+
+  format-and-post:
+    - subject: Format output
+      type: detailed
+      prompt: >
+        Format the release notes according to the output_target
+        in the play config. Use markdown for github-release and
+        stdout, Slack mrkdwn for slack. Apply gitmoji prefixes
+        to each JTBD bullet. Group by business theme.
+    - subject: Deliver to target
+      type: detailed
+      prompt: >
+        Post the formatted output to the configured target.
+        For github-release: use `gh release edit` to update the
+        release body. For slack: use slack-notify.py to post as
+        a thread reply. For stdout: print to console.
+
+defaults:
+  release:
+    prompt: >
+      Standard release notes workflow. Use when a new version tag
+      exists and release notes are needed. Collects PRs between
+      the two latest tags, extracts JTBDs, generates missing ones,
+      synthesizes a business summary, and delivers to the
+      configured output target.
+    config:
+      ticket_patterns:
+        - "[A-Z]+-\\d+"
+      ticket_links: {}
+      output_target: stdout
+      slack_channel: null
+      include_joke: true
+      categories:
+        - New Features
+        - Bug Fixes
+        - Improvements
+        - Maintenance
+    steps:
+      - subject: Load config and identify release range
+        type: detailed
+        prompt: >
+          Read the playbook config block for ticket patterns,
+          output target, and other settings. Identify the two
+          latest tags or use --from/--to if provided.
+      - subject: Collect PRs
+        type: detailed
+        prompt: >
+          Run collect-prs.py with the repo path and configured
+          ticket patterns. Parse the structured markdown output.
+        skills: [Dev10x:release-notes]
+      - fragment: jtbd-generation
+      - subject: Synthesize business summary
+        type: detailed
+        prompt: >
+          Group JTBDs by business theme. Merge related JTBDs
+          from stacked PRs. Write a 2-3 sentence summary that
+          leads with the most impactful change. Use business
+          language — what users can now do.
+      - subject: Identify behavior changes
+        type: detailed
+        prompt: >
+          Scan each feature PR's commit messages for signal/trigger
+          changes, auto-completion logic changes, permission changes,
+          default value changes, or removal of behavior. If found,
+          prepare a behavior change section and present to user.
+      - fragment: format-and-post
+
+  hotfix:
+    prompt: >
+      Abbreviated workflow for hotfix releases. Skips JTBD
+      generation and behavior change analysis. Produces a
+      short summary focused on what was fixed.
+    config:
+      ticket_patterns:
+        - "[A-Z]+-\\d+"
+      ticket_links: {}
+      output_target: stdout
+      slack_channel: null
+      include_joke: false
+      categories:
+        - Fixes
+    steps:
+      - subject: Collect PRs
+        type: detailed
+        prompt: >
+          Run collect-prs.py with the repo path. Focus on
+          bugfix and hotfix categories.
+        skills: [Dev10x:release-notes]
+      - subject: Format short summary
+        type: detailed
+        prompt: >
+          Write a 1-2 sentence summary of what was fixed.
+          No JTBD generation — just describe the fixes.
+      - fragment: format-and-post
+
+overrides: []

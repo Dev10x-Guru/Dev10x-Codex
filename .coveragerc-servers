@@ -1,0 +1,9 @@
+[run]
+omit =
+    src/dev10x/mcp/github.py
+    src/dev10x/mcp/tests/*
+
+[report]
+exclude_lines =
+    if __name__
+    pragma: no cover

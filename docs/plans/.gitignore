@@ -1,0 +1,5 @@
+# This folder is used in local development and should never get into the repo
+# but to reduce fricition it should exists empty ready to be used when needed.
+
+*
+!.gitignore

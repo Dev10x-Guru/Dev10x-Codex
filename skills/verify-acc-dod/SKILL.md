@@ -1,0 +1,272 @@
+---
+name: Dev10x:verify-acc-dod
+description: >
+  Verify that definition-of-done / acceptance criteria are met before
+  closing a task list. Loads executable checks from plugin defaults,
+  applies project overrides (add/remove/replace), runs each check
+  automatically, and prompts the user only for manual items.
+  TRIGGER when: task list is complete and work needs shippability
+  verification before handover.
+  DO NOT TRIGGER when: mid-implementation, or task list has incomplete
+  items.
+user-invocable: true
+invocation-name: Dev10x:verify-acc-dod
+allowed-tools:
+  - AskUserQuestion
+  - Bash(gh:*)
+  - Bash(git status:*)
+  - Bash(git log:*)
+  - Bash(git diff:*)
+---
+
+# Verify Acceptance Criteria / Definition of Done
+
+**Announce:** "Verifying acceptance criteria for this work session."
+
+## When to Use
+
+- As the final step in any orchestrating skill's task list
+  (work-on, fanout, gh-pr-monitor)
+- When the user asks "is this done?" or "are we ready to ship?"
+- Before closing a task list or handing off work
+
+## Orchestration
+
+This skill follows `references/task-orchestration.md` patterns
+(Tier: Minimal).
+
+**REQUIRED: Create a task at invocation.** Execute at startup:
+
+1. `TaskCreate(subject="Verify acceptance criteria", activeForm="Verifying acceptance criteria")`
+
+Mark completed when done.
+
+## Friction Level Awareness
+
+This skill adapts behavior based on the project's friction level
+(see `references/friction-levels.md`):
+
+| Level | Automated checks | Manual checks | Decision gate |
+|-------|-----------------|---------------|---------------|
+| strict | Run, must all pass | AskUserQuestion per item | AskUserQuestion required |
+| guided | Run, failures shown | AskUserQuestion per item | AskUserQuestion with recommendation |
+| adaptive | Run, auto-pass/fail | Converted to `prompt` (Claude evaluates) | Auto-select "Work complete" if all pass |
+
+**Resolving friction level:** Read from session context or
+playbook step metadata. If not available, default to `guided`.
+Playbook steps may override with `friction_level: adaptive`
+for unattended shipping pipelines.
+
+## Input
+
+The skill accepts an optional `work_type` argument. If not
+provided, infer from session context:
+
+| Context | Work type |
+|---------|-----------|
+| Ticket with implementation | `feature` |
+| Sentry/bug ticket | `bugfix` |
+| PR with review comments | `pr-continuation` |
+| No ticket, no PR | `local-only` |
+| Sentry/Slack only, no fix planned | `investigation` |
+| Fanout (multi-item) | `fanout` |
+
+## Criteria Resolution
+
+Load criteria from two sources and merge them:
+
+### Step 1: Load plugin defaults
+
+Read executable checks from:
+```
+${CLAUDE_PLUGIN_ROOT}/skills/verify-acc-dod/references/defaults.yaml
+```
+
+Extract `defaults[work_type].checks` — an array of check objects.
+
+### Step 2: Load repo overrides (if present)
+
+Read overrides from a single global file:
+```
+~/.claude/memory/Dev10x/dod-acceptance-criteria.yaml
+```
+
+This file maps repositories to their override deltas:
+
+```yaml
+repos:
+  example-org/app-pos:
+    bugfix:
+      add:
+        - name: Sentry issue linked
+          check: >
+            gh pr view {pr_number} --repo {repo}
+            --json body -q .body
+          expect_contains: "sentry.io"
+      remove:
+        - Slack notification posted
+  Dev10x-Guru/dev10x-claude:
+    feature:
+      remove:
+        - Review requested
+      add:
+        - name: PR ready (solo maintainer)
+          check: >
+            gh pr view {pr_number} --repo {repo}
+            --json isDraft -q .isDraft
+          expect: "false"
+```
+
+**Repo detection:** Resolve the current repo via `gh repo view
+--json nameWithOwner -q .nameWithOwner` or session context.
+Look up `repos[nameWithOwner][work_type]` for deltas.
+
+**Legacy migration:** If the old per-project file
+(`~/.claude/projects/<project>/memory/acceptance-criteria.yaml`)
+exists but the global file does not, warn the user that the
+legacy file is no longer read. Do NOT auto-migrate — the user
+should manually move overrides to the global file.
+
+### Step 3: Merge with delta semantics
+
+Apply the repo-scoped deltas from the global file to the
+plugin defaults:
+
+**`add`** — append checks to the defaults list.
+**`remove`** — remove checks by `name` (exact match).
+**`replace`** — replace a check by `name` with the new definition.
+
+Apply in order: remove first, then replace, then add. This
+prevents removing a just-added check or replacing a removed one.
+
+### Resolution order (summary)
+
+1. Load plugin defaults for `work_type`
+2. If global file exists and has overrides for current repo +
+   `work_type`: apply remove → replace → add
+3. If global file is absent: use plugin defaults as-is
+4. If `work_type` has no entry in defaults: use empty checks list
+   and warn
+
+## Executing Checks
+
+### Placeholder resolution
+
+Before running each check command, resolve placeholders:
+
+| Placeholder | Source |
+|-------------|--------|
+| `{pr_number}` | Current PR number (from `gh pr view --json number -q .number` or session context) |
+| `{repo}` | Current repo (from `gh repo view --json nameWithOwner -q .nameWithOwner` or session context) |
+
+If no PR exists (e.g., `local-only`), skip checks that reference
+`{pr_number}` and mark them as "skipped (no PR)".
+
+### Run each check
+
+For each check in the merged list:
+
+1. **If `check: manual`** — queue for user confirmation (see
+   Manual Checks below)
+2. **If `check: prompt`** — evaluate the `prompt` contextually
+   from the current session (code state, conversation history,
+   tool outputs). Report pass/fail with a brief rationale.
+   Use this for criteria that require judgment but not user
+   interaction (e.g., "Does the PR description contain a Job
+   Story?").
+3. **Otherwise** — run the command via Bash and evaluate:
+
+| Field | Evaluation |
+|-------|-----------|
+| `expect` | Trim command output; pass if exactly equals the value |
+| `expect_contains` | Pass if output contains the substring |
+| `expect_not_contains` | Pass if output does NOT contain the substring |
+| `expect_gt` | Parse output as number; pass if > value |
+
+If none of the expect fields match the output, the check **fails**.
+Capture the actual output for the failure report.
+
+### Manual checks
+
+**At strict/guided level:**
+
+Collect all `check: manual` items and present them in a single
+`AskUserQuestion` call after all automated checks complete:
+
+**REQUIRED: Call `AskUserQuestion`** for manual checks (do NOT
+assume pass/fail).
+
+Present each manual check as a yes/no confirmation using its
+`prompt` field.
+
+**At adaptive level:**
+
+Convert `manual` checks to `prompt` checks — Claude evaluates
+each from session context (code state, conversation history,
+tool outputs). Report pass/fail with a brief rationale. No
+`AskUserQuestion` call. This enables fully unattended ACC
+verification in AFK/solo-maintainer workflows.
+
+## Presentation
+
+Present results as a pass/fail table:
+
+```
+Acceptance criteria (feature):
+
+Checks:
+  ✅ Working copy clean
+  ✅ CI passing
+  ✅ PR not draft
+  ✅ No fixup commits
+  ❌ Review requested — actual: "0" (expected > 0)
+  ⏭️  Slack posted (skipped — no PR)
+  ✋ Findings documented — awaiting confirmation
+
+4/5 automated checks passed. 1 manual check pending.
+```
+
+Show the actual command output on failure so the user can
+diagnose without re-running.
+
+## Decision Gate
+
+**At strict/guided level:**
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text).
+Options:
+- **"Work complete" (Recommended)** — All criteria met, close
+  the task list
+- **"Override — complete anyway"** — Accept despite failures
+  (ask whether to persist this override)
+- **"Go back"** — Return to fix failing checks
+
+**At adaptive level:**
+
+Skip `AskUserQuestion`. Auto-select based on results:
+- All checks pass → auto-complete ("Work complete")
+- Any check fails → auto-select "Go back" and report failures
+  to the parent orchestrator for resolution
+- No user interruption in either case
+
+If the user picks "Override", ask whether to persist:
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text).
+Options:
+- **"Always"** — Save override with `persist: true`
+- **"Just this time"** — Save with `persist: false`
+
+Update the global YAML file at
+`~/.claude/memory/Dev10x/dod-acceptance-criteria.yaml` accordingly.
+Create the file if absent. Add the override under the current
+repo's key using add/remove/replace semantics.
+
+## Integration
+
+```
+Dev10x:work-on → ... → Dev10x:verify-acc-dod (last step)
+Dev10x:fanout  → ... → Dev10x:verify-acc-dod (last step)
+```
+
+Callers pass the work type and let this skill handle criteria
+resolution, state checking, and user confirmation.

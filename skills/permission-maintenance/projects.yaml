@@ -1,0 +1,71 @@
+# Project roots to scan for .claude/settings.local.json
+# Each root is scanned recursively for settings files containing
+# versioned plugin paths. Worktree directories (.worktrees/) are
+# included automatically.
+#
+# Copy this file to ~/.claude/skills/Dev10x:permission-maintenance/
+# and customize with your own project roots:
+#   update-paths.py --init
+
+plugin_cache: ~/.claude/plugins/cache/Dev10x-Guru/dev10x-claude
+
+roots: []
+#  - /work/my-projects
+#  - /work/team-repos
+
+include_user_settings: true
+
+# Base permissions that update-paths.py --ensure-base will add to every
+# settings.local.json if missing.  These are stable, version-independent
+# rules that every Dev10x plugin user needs.
+#
+# GH-98:  gh CLI patterns
+# GH-120: /tmp/claude/git/ temp file access
+# GH-274: /tmp/claude/bin/mktmp.sh for all namespaces
+# GH-101: plugin cache broad rule (covers ${CLAUDE_PLUGIN_ROOT} scripts)
+base_permissions:
+  # --- Plugin infrastructure (GH-274, GH-101, GH-426) ---
+  - "Bash(/tmp/claude/bin/mktmp.sh:*)"
+  - "Bash(~/.claude/plugins/cache/**:*)"
+  - "mcp__plugin_Dev10x_*"
+
+  # --- Git temp files (GH-120) ---
+  - "Write(/tmp/claude/git/**)"
+  - "Read(/tmp/claude/git/**)"
+
+  # --- gh CLI patterns (GH-98) ---
+  - "Bash(gh pr view:*)"
+  - "Bash(gh pr diff:*)"
+  - "Bash(gh pr list:*)"
+  - "Bash(gh pr create:*)"
+  - "Bash(gh pr comment:*)"
+  - "Bash(gh pr review:*)"
+  - "Bash(gh pr checks:*)"
+  - "Bash(gh pr edit:*)"
+  - "Bash(gh pr ready:*)"
+  - "Bash(gh issue view:*)"
+  - "Bash(gh issue list:*)"
+  - "Bash(gh issue create:*)"
+  - "Bash(gh issue comment:*)"
+  - "Bash(gh api:*)"
+  - "Bash(gh auth:*)"
+  - "Bash(gh run view:*)"
+  - "Bash(gh run list:*)"
+  - "Bash(gh run watch:*)"
+
+  # --- Common git operations ---
+  - "Bash(git log:*)"
+  - "Bash(git add:*)"
+  - "Bash(git commit:*)"
+  - "Bash(git push:*)"
+  - "Bash(git diff:*)"
+  - "Bash(git status:*)"
+  - "Bash(git fetch:*)"
+  - "Bash(git branch:*)"
+  - "Bash(git checkout:*)"
+  - "Bash(git symbolic-ref:*)"
+  - "Bash(git reset --soft:*)"
+  - "Bash(git reset --hard:*)"
+
+  # --- Dev10x skills ---
+  - "Skill(Dev10x:*)"

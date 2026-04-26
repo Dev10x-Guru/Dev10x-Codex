@@ -1,0 +1,75 @@
+{
+  "description": "Evaluation criteria for Dev10x:skill-reinforcement skill",
+  "evals": [
+    {
+      "name": "direct-match-kubectl",
+      "description": "Agent used kubectl, skill identifies k8s match",
+      "setup": "Agent ran 'kubectl get pods -n staging', user invoked /Dev10x:skill-reinforcement",
+      "checks": [
+        {
+          "type": "behavioral",
+          "assertion": "identifies_offending_command",
+          "signal": "Output contains the kubectl command that was detected"
+        },
+        {
+          "type": "behavioral",
+          "assertion": "recommends_correct_skill",
+          "signal": "Output recommends Dev10x:k8s as the replacement skill"
+        },
+        {
+          "type": "behavioral",
+          "assertion": "includes_reason",
+          "signal": "Output includes explanation of why the skill should be used"
+        }
+      ]
+    },
+    {
+      "name": "no-match-fallback",
+      "description": "Agent used a command with no direct skill mapping",
+      "setup": "Agent ran 'curl https://api.example.com/health', user invoked /Dev10x:skill-reinforcement",
+      "checks": [
+        {
+          "type": "behavioral",
+          "assertion": "acknowledges_no_match",
+          "signal": "Output states no direct skill match was found"
+        },
+        {
+          "type": "behavioral",
+          "assertion": "suggests_related_skills",
+          "signal": "Output lists potentially related skills from SKILLS.md"
+        }
+      ]
+    },
+    {
+      "name": "user-provides-command-arg",
+      "description": "User passes command as argument to the skill",
+      "setup": "User invoked '/Dev10x:skill-reinforcement git push'",
+      "checks": [
+        {
+          "type": "behavioral",
+          "assertion": "uses_provided_command",
+          "signal": "Output identifies 'git push' as the command without scanning conversation"
+        },
+        {
+          "type": "behavioral",
+          "assertion": "recommends_git_skill",
+          "signal": "Output recommends Dev10x:git as the replacement"
+        }
+      ]
+    }
+  ],
+  "trigger_evals": {
+    "should_trigger": [
+      "User says 'use the skills' after rejecting a bash command",
+      "User invokes /Dev10x:skill-reinforcement explicitly",
+      "User rejects a kubectl command and wants skill guidance",
+      "User says 'there's a skill for that'"
+    ],
+    "should_not_trigger": [
+      "Agent is already using skills correctly",
+      "User is asking about how to create a new skill (use Dev10x:skill-create)",
+      "User wants to list available skills (use Dev10x:skill-index)",
+      "The CLI command has no skill or MCP equivalent"
+    ]
+  }
+}

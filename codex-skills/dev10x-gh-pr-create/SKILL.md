@@ -1,0 +1,298 @@
+---
+name: Dev10x-gh-pr-create
+description: Create a GitHub pull request for the current branch with issue tracker integration (GitHub Issues, Linear, or JIRA). Sources or generates a JTBD Job Story for the PR description, extracts ticket info from branch name, pushes the branch, creates a draft PR with Job Story, commit list, and issue tracker link, posts summary comment, and opens in browser.
+---
+
+# Create Pull Request for Ticket
+
+## Overview
+
+This skill automates the creation of a GitHub pull request for the
+current branch with issue tracker integration (GitHub Issues, Linear,
+or JIRA). It handles pushing the branch, creating the PR with
+appropriate title and body, adding checklist comments, and opening the
+PR in your browser.
+
+## Scripts
+
+All multi-line commands live in `$HOME/.codex/skills/Dev10x-gh-pr-create/scripts/`:
+
+| Script | Purpose |
+|--------|---------|
+| `verify-state.sh` | Validate branch, commits, and base branch ancestry |
+| `generate-commit-list.sh` | Generate linked commit list for PR body |
+| `pre-pr-checks.sh` | Run ruff, black, mypy, pytest before push |
+| `create-pr.sh` | Push branch, create draft PR with body including checklist |
+| `post-summary-comment.sh` | _(deprecated — checklist is now in PR body)_ |
+
+## Prerequisites Check
+
+**IMPORTANT:** Before executing this workflow, verify required tools:
+
+1. Check if `gh` CLI is installed and authenticated:
+   ```bash
+   gh auth status
+   ```
+   If not authenticated, inform the user to run `gh auth login`
+
+2. Verify we're in a git repository with a remote:
+   ```bash
+   git remote get-url origin
+   ```
+
+3. **Worktree check** — `verify-state.sh` reads git state from the current working
+   directory. If the session is rooted in the main repo but the branch lives in a
+   worktree, run it with `GIT_DIR` pointing to the worktree — BUT that env var
+   prefix breaks `Bash($HOME/.codex/skills:*)` allow-rule matching. Instead, pass
+   the worktree path as an argument when the script supports it, or use a subshell:
+   ```bash
+   # When invoking from main repo for a branch checked out in a worktree:
+   # ❌  GIT_DIR=... verify-state.sh   (env prefix breaks allow rules)
+   # ✅  Run the script from within the worktree context
+   # Note: env var prefix is still subject to permission friction. The
+   # cleanest alternative is to invoke pr:create while CWD is inside the
+   # worktree, not the main repo.
+   ```
+
+## When to Use This Skill
+
+Use this skill when:
+- Ready to create a PR for your current feature branch
+- Have committed changes that need review
+- Want to link a PR to an issue tracker ticket
+- Need to create a draft PR for early feedback
+- **Updating an existing PR** (pass PR number or URL as argument)
+
+### Update Existing PR Mode
+
+When a PR number or URL is provided as argument, switch to "update" mode:
+- Skip Steps 1-3 (branch check, ticket extraction) — use the existing PR's info
+- Steps 4-5 still apply (source JTBD, generate body)
+- Skip Step 6 (pre-PR checks) and Step 7 (push) — PR already exists
+- Step 8 becomes "Update PR" using `gh pr edit`
+- Steps 8-9 still apply (re-mark N/A checklist items, open browser, display summary)
+
+## Workflow
+
+### Step 1: Verify Current State and Extract Ticket
+
+Run the verification script:
+
+```bash
+$HOME/.codex/skills/Dev10x-gh-pr-create/scripts/verify-state.sh
+```
+
+This validates:
+- Not on develop/main/master
+- No uncommitted changes
+- Has commits ahead of develop
+- Branch does not include master-only commits (would cause PR to target master)
+
+On success, outputs `BRANCH_NAME=<name>` and `ISSUE=<ticket-id>`.
+
+**Verify base branch from live git data** — do not trust memory alone:
+```bash
+git symbolic-ref refs/remotes/origin/HEAD
+```
+Use whatever branch this returns as the PR base.
+
+### Step 2: Generate PR Title
+
+**Single-commit PRs:** Use the commit title directly:
+
+```bash
+TITLE=$(git log -1 --format=%s)
+```
+
+**Multi-commit PRs:** The most recent commit title often describes the
+last incremental step, not the overall change. Instead:
+
+1. List all commit titles in the branch:
+   ```bash
+   git log origin/develop..HEAD --reverse --format=%s
+   ```
+2. Check if the JTBD "so I can" clause (from Step 3) suggests a
+   better title — transform it to imperative form with the ticket's
+   gitmoji prefix (e.g., "so I can reuse outbox for SMS" →
+   `♻️ PROJ-551 Enable outbox reuse for SMS messaging`).
+3. If no JTBD is available yet, select the commit title that best
+   describes the **overall outcome** of the PR, not an intermediate
+   step.
+4. Present the candidate title to the user for approval.
+
+**Guiding Principle:** The PR title should describe the user-facing
+outcome, not the implementation detail.
+
+### Step 3: Source or Generate Job Story
+
+The PR body must start with a JTBD Job Story. Look for an existing one
+before generating a new one.
+
+**Step 3a: Detect issue tracker**
+
+Run `detect-tracker.sh` with the ISSUE extracted from the branch name:
+
+```bash
+$HOME/.codex/skills/Dev10x-gh-context/scripts/detect-tracker.sh "$ISSUE"
+```
+
+Parse TRACKER and FIXES_URL from output.
+
+**Step 3b: Search for existing Job Story**
+
+Dispatch based on TRACKER:
+
+| TRACKER | How to search |
+|---------|--------------|
+| `github` | `$HOME/.codex/skills/Dev10x-gh-context/scripts/gh-issue-get.sh` for body, `$HOME/.codex/skills/Dev10x-gh-context/scripts/gh-issue-comments.sh` for comments |
+| `linear` | Linear MCP tools for description and comments |
+| `jira` | JIRA API for description |
+| `unknown` | Skip ticket search, rely on commit messages |
+
+Search each source for the `**When**` / `**I want to**` / `**so I can**`
+pattern.
+
+**Step 3c: Check commit messages (fallback)**
+
+If no Job Story found in the ticket:
+
+```bash
+git log origin/develop..HEAD --format=%B
+```
+
+**Step 3d: Generate a new one**
+
+If none found, generate a Job Story:
+
+- **For simple/trivial fixes** (flaky tests, typos, single-line changes):
+  generate the Job Story inline in `**When** / **I want to** / **so I can**`
+  format without invoking the full `Dev10x:jtbd` skill.
+- **For features, bug fixes, and multi-commit PRs**: follow the `Dev10x:jtbd`
+  base skill workflow:
+  1. Gather context (ticket, parent ticket, diff)
+  2. Identify the situation (who, trigger, current pain)
+  3. Draft using format: `**When** [situation], **I want to** [motivation], **so I can** [expected outcome].`
+  4. Present draft and ask user: "Apply this Job Story to the PR? (y/edit/n)"
+
+### Step 4: Generate PR Body
+
+The PR body must be **compact** to minimize notification preview size.
+It starts with the Job Story, followed by a commit list with links and
+the issue tracker reference.
+
+**Generate commit list (for preview before PR creation):**
+```bash
+$HOME/.codex/skills/Dev10x-gh-pr-create/scripts/generate-commit-list.sh PLACEHOLDER
+```
+
+**Body format (Job Story + separator + commit list + issue link + separator + checklist):**
+```markdown
+**When** [situation], **I want to** [motivation], **so I can** [expected outcome].
+
+---
+
+[`b3a015a8`](REPO_URL/pull/NUMBER/commits/FULL_HASH) ✨ PROJ-36 Enable feature
+[`fec49998`](REPO_URL/pull/NUMBER/commits/FULL_HASH) ♻️ PROJ-36 Refactor module
+
+Fixes: {FIXES_URL from detect-tracker.sh}
+
+---
+
+{.github/checklist.md contents with TICKET-ID substituted}
+```
+
+If FIXES_URL is empty (unknown tracker), omit the `Fixes:` line entirely.
+
+### Step 5: Run Pre-PR Checks
+
+```bash
+$HOME/.codex/skills/Dev10x-gh-pr-create/scripts/pre-pr-checks.sh
+```
+
+Automatically skips if no Python files changed. Runs ruff, formatting,
+mypy, and pytest. Exits on first failure.
+
+**If any check fails:**
+- Stop the workflow
+- Display the error output
+- Suggest fix commands
+
+### Step 6: Push and Create Draft PR
+
+```bash
+$HOME/.codex/skills/Dev10x-gh-pr-create/scripts/create-pr.sh "$TITLE" "$JOB_STORY" "$ISSUE" "$FIXES_URL"
+```
+
+This script:
+1. Pushes the branch with upstream tracking
+2. Creates a draft PR targeting `develop` with plain commit list + checklist template
+3. Gets the PR number
+4. Updates the body with linked commits (using `generate-commit-list.sh`)
+5. Outputs the PR number
+
+### Step 7: Mark N/A Checklist Items in PR Body
+
+Analyze `git diff origin/develop..HEAD` to determine which checklist items
+don't apply to this PR, then update the PR body with strikethroughs:
+
+**N/A detection heuristics:**
+- No `migrations/` files in diff → strike migration items
+- No new env var references → strike environment variable items
+- No schema-breaking changes → strike breaking changes items
+
+**Strike-through format:** Replace `- [ ] item text` with `- ~item text~`
+
+**Update PR body:**
+```bash
+PR_NUMBER=$(gh pr view --json number -q .number)
+gh pr edit "$PR_NUMBER" --body "$UPDATED_BODY"
+```
+
+### Step 8: Open PR in Browser
+
+```bash
+gh pr view --web
+```
+
+### Step 9: Display Summary
+
+Show a success message with PR details:
+
+```
+✅ Pull Request Created
+
+Title: 🐛 PROJ-123 Fix timeout handling
+Branch: user/PROJ-123/fix-timeout
+Status: Draft
+Issue: {FIXES_URL}
+PR URL: https://github.com/owner/repo/pull/456
+
+Next steps:
+- Review the PR in your browser
+- Wait for CI checks to complete
+- Mark as "Ready for review" when done
+- Request reviewers if needed
+```
+
+## Important Notes
+
+- Always create PRs as drafts initially
+- **Always target `develop`** — the `--base develop` flag is mandatory
+  in `create-pr.sh` and enforced by a PreToolUse hook
+- Ensure branch is pushed before creating PR
+- Handle existing PR case gracefully
+- Link to issue tracker ticket in PR body (when FIXES_URL is available)
+- **PR body starts with the Job Story** — sourced from ticket description,
+  ticket comments, or generated fresh using the `Dev10x:jtbd` base skill.
+- **PR body contains the checklist** — Job Story + separator + commit
+  list + issue tracker link + separator + checklist.
+- Open PR in browser for immediate review
+
+## Integration with Other Skills
+
+This skill is designed to be used standalone or as part of larger workflows:
+
+- **ticket:work-on**: Could add an optional final step to create PR when work is done
+- **Dev10x:git-promote**: Uses this skill for Push and Create PR
+- **test:fix-flaky**: Uses this skill for Create PR
+- **Standalone usage**: User manually invokes when ready to create PR

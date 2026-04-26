@@ -1,0 +1,28 @@
+# Skills hidden from the index.
+# These are orchestration-only dependencies invoked by parent
+# skills — not meant to be called directly by users.
+# Only hide true internals here; user-facing skills belong in
+# families.yaml instead.
+
+hidden:
+  - Dev10x:jtbd
+  - Dev10x:linear
+  - Dev10x:session-tasks
+  - Dev10x:scope
+  - Dev10x:gh-context
+  - Dev10x:gh-pr-bookmark
+  - Dev10x:git
+  - Dev10x:git-alias-setup
+  - Dev10x:git-worktree
+  - Dev10x:park-todo
+  - Dev10x:park-remind
+  - Dev10x:py-uv
+  - Dev10x:playwright
+  - Dev10x:slack
+  - Dev10x:ticket-jtbd
+  - Dev10x:gh-pr-review
+  - Dev10x:report-work-weekly
+  - Dev10x-py-mockito
+  - example-slides
+  - Dev10x-db
+  - refactor

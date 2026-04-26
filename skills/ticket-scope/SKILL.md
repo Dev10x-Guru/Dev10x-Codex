@@ -1,0 +1,442 @@
+---
+name: Dev10x:ticket-scope
+description: >
+  Scope Linear tickets with technical research and architecture design.
+  Extends the base scope skill with Linear ticket integration, story
+  point estimation, and acceptance criteria formatting.
+  TRIGGER when: preparing to implement a Linear ticket — scoping
+  technical approach, estimating story points, or writing acceptance
+  criteria.
+  DO NOT TRIGGER when: scoping non-Linear tickets, multi-ticket
+  projects (use Dev10x:project-scope), or new domain areas (use
+  Dev10x:ddd first).
+user-invocable: true
+invocation-name: Dev10x:ticket-scope
+allowed-tools:
+  - mcp__claude_ai_Linear__get_issue
+  - mcp__claude_ai_Linear__list_issues
+  - mcp__claude_ai_Linear__list_comments
+  - mcp__claude_ai_Linear__save_comment
+  - Skill(Dev10x:jtbd)
+  - Agent
+  - WebFetch
+  - Grep
+  - Glob
+  - Read
+  - Bash(mkdir -p:*)
+---
+
+# Ticket Scope - Linear Ticket Scoping Skill
+
+## Overview
+
+This skill creates comprehensive technical scoping documents for Linear tickets. It extends the base `scope` skill with Linear-specific workflows.
+
+**Use when:**
+- Preparing to implement a Linear ticket
+- Need technical design before coding
+- Want to document approach for a ticket
+- Creating detailed implementation plan
+
+**Do NOT use for:**
+- Architectural decisions (use `Dev10x:adr` instead)
+- Simple bug fixes with obvious solutions
+- Quick tasks under 1 story point
+
+## Orchestration
+
+This skill follows `references/task-orchestration.md` patterns
+(Tier: Standard). It extends the base `scope` skill's orchestration
+with Linear-specific tasks.
+
+**Auto-advance:** Complete each phase and immediately start the next.
+Never pause between phases to ask "should I continue?".
+
+**REQUIRED: Create tasks before ANY work.** Execute these
+`TaskCreate` calls at startup:
+
+1. `TaskCreate(subject="Fetch Linear ticket context", activeForm="Fetching ticket")`
+2. `TaskCreate(subject="Research technical context", activeForm="Researching codebase")`
+3. `TaskCreate(subject="Design solution architecture", activeForm="Designing solution")`
+4. `TaskCreate(subject="Estimate complexity and draft Job Story", activeForm="Estimating complexity")`
+5. `TaskCreate(subject="Format and present scoping document", activeForm="Formatting scope")`
+6. `TaskCreate(subject="Save and update Linear", activeForm="Saving scope")`
+
+Set sequential dependencies: research blocked by fetch, design
+blocked by research, estimate blocked by design, format blocked by
+estimate, save blocked by format.
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text, call spec: [ask-scope-approval.md](./tool-calls/ask-scope-approval.md)) after
+presenting the scope. This blocks execution until the user responds.
+Options:
+- Approve (Recommended) — Save document and optionally update Linear
+- Revise — I have corrections to the scope
+- More research needed — Need to explore additional areas
+
+## Prerequisites
+
+**Required:**
+- Linear ticket ID (e.g., PAY-329)
+
+**Optional:**
+- External documentation URLs to research
+- Specific areas of codebase to explore
+
+## Workflow
+
+### Phase 1: Gather Ticket Context
+
+#### 1.1 Fetch Ticket Details
+
+```
+Use Linear MCP to get ticket:
+- Title
+- Description
+- Labels
+- Assignee
+- Related tickets
+- Comments
+```
+
+#### 1.2 Check for Existing Context
+
+Look for:
+- Related tickets (blocks, blocked by, related to)
+- Existing scoping documents
+- Previous comments with context
+- Attachments or links
+
+### Phase 2: Technical Research (Uses base scope skill)
+
+Follow the base `scope` skill for:
+
+1. **Research external resources** (if provided)
+2. **Explore existing codebase**
+   - Find related patterns
+   - Identify reusable components
+3. **Identify components** (existing vs. new)
+
+### Phase 3: Design Solution
+
+#### 3.1 Determine Task Type
+
+**Business Feature** - User-facing functionality
+- Requires acceptance criteria
+- May need release notes
+
+**Technical Task** - Infrastructure/refactoring
+- Technical depth only
+- No user-facing changes
+
+**Bug Fix** - Fixing broken behavior
+- Root cause analysis
+- Resolution summary
+
+#### 3.2 Apply Design Principles
+
+From base `scope` skill:
+- YAGNI
+- Follow existing patterns
+- Clean Architecture
+
+#### 3.3 Create Implementation Plan
+
+Order steps by dependencies:
+1. Types/DTOs
+2. Client/Repository layer
+3. Service layer
+4. API layer
+5. Tests
+
+### Phase 4: Estimate Complexity
+
+#### Story Points (Fibonacci)
+
+| Points | Complexity | Duration |
+|--------|------------|----------|
+| 1 | Trivial | Hours |
+| 2 | Small | < 1 day |
+| 3 | Medium | 1-2 days |
+| 5 | Large | 2-3 days |
+| 8 | Complex | 3-5 days |
+| 13 | Epic-sized | Should be split |
+
+#### Estimation Factors
+
+- New patterns vs. following existing
+- Database migrations
+- External dependencies
+- Test complexity
+- Review/iteration cycles
+
+### Phase 4b: Draft Job Story
+
+After estimating complexity, draft a Job Story for the ticket using the JTBD framework. This captures the business "why" early — before implementation begins — and will later be used in the PR description and release notes.
+
+**Invoke the `Dev10x:jtbd` base skill in attended mode:**
+
+1. Pass the ticket context already gathered in Phase 1 (ticket details, parent ticket, related tickets) via the `context` parameter to avoid redundant API calls
+2. The `Dev10x:jtbd` skill handles: situation identification, drafting, and user approval
+3. Include the approved Job Story in the scoping document under a `## Job Story` section (right after the title)
+
+**Do NOT update the Linear ticket description at this point** — the story is saved in the scoping document and will be applied to the PR later via `Dev10x:ticket-jtbd` or `Dev10x:gh-pr-create`.
+
+### Phase 5: Format Scoping Document
+
+#### 5.1 Select Template
+
+Based on task type:
+- Business Feature → `references/business-feature-template.md`
+- Technical Task → `references/technical-task-template.md`
+- Bug Fix → `references/bug-fix-template.md`
+
+#### 5.2 Complete All Sections
+
+**Required sections:**
+- Objective/Problem Statement
+- Technical Approach
+- Architecture (components, dependencies)
+- Implementation Steps (with file paths)
+- Code References
+- Dependencies (tickets)
+- Risks and Mitigations
+- Acceptance Criteria
+- Story Points
+
+### Phase 6: User Review
+
+**Critical:** Present scoping to user before saving.
+
+Ask for feedback on:
+- Architecture decisions
+- Missing considerations
+- Complexity estimate
+- Implementation order
+
+### Phase 7: Save and Update
+
+#### 7.1 Save Scoping Document
+
+```bash
+# Save to /tmp for reference
+/tmp/claude/ticket-scope/TICKET-ID-scope.md
+```
+
+#### 7.2 Update Linear Ticket (Optional)
+
+If user approves, update ticket with:
+- Story point estimate
+- Comment with architecture summary
+- Links to related resources
+
+**IMPORTANT:** Never modify ticket description without explicit user approval.
+
+## Scoping Document Format
+
+### Business Feature
+
+```markdown
+# [TICKET-ID]: [Title]
+
+## Job Story
+**When** [situation], **I want to** [motivation], **so I can** [expected outcome].
+
+## Objective
+[Business value and user impact]
+
+## Technical Approach
+[High-level solution]
+
+## Architecture
+
+### Components
+**Repositories:** [list]
+**Services:** [list]
+**DTOs:** [list]
+**Models:** [list]
+
+### Database Changes
+[Migrations, new tables, columns]
+
+### GraphQL Changes
+[New queries/mutations]
+
+## Implementation Steps
+
+1. **[Step name]**
+   - File: `src/path/file.py`
+   - Pattern: [reference to similar code]
+   - Changes: [what to do]
+
+## Code References
+- `src/path/file.py` - [description]
+
+## Dependencies
+**Depends on:** [tickets]
+**Related to:** [tickets]
+**Blocks:** [tickets]
+
+## Risks
+
+**Risk: [Name]**
+- Scenario: [what could go wrong]
+- Mitigation: [how to prevent/handle]
+
+## Acceptance Criteria
+- [ ] Criterion 1
+- [ ] Criterion 2
+
+## Out of Scope
+- [What we're NOT doing]
+
+## Story Points
+**[N] points**
+
+Rationale:
+- [Breakdown of estimate]
+```
+
+### Technical Task
+
+```markdown
+# [TICKET-ID]: [Title]
+
+## Job Story
+**When** [situation], **I want to** [motivation], **so I can** [expected outcome].
+
+## Objective
+[Technical goal]
+
+## Technical Approach
+[Solution design]
+
+## Architecture
+[Components affected]
+
+## Implementation Steps
+[Ordered steps with file paths]
+
+## Code References
+[Files to reference]
+
+## Dependencies
+[Related tickets]
+
+## Risks
+[Technical risks]
+
+## Acceptance Criteria
+- [ ] Technical criterion 1
+
+## Story Points
+**[N] points**
+```
+
+### Bug Fix
+
+```markdown
+# [TICKET-ID]: [Title]
+
+## Job Story
+**When** [situation], **I want to** [motivation], **so I can** [expected outcome].
+
+## Problem Statement
+[What's broken]
+
+## Root Cause Analysis
+[Why it's broken]
+
+## Resolution
+[How to fix]
+
+## Implementation Steps
+[Fix steps]
+
+## Code References
+[Affected files]
+
+## Risks
+[Regression risks]
+
+## Acceptance Criteria
+- [ ] Bug no longer occurs
+- [ ] No regressions
+
+## Story Points
+**[N] points**
+```
+
+## Quality Checklist
+
+Before finalizing, verify:
+
+### Context
+- [ ] Ticket details fetched
+- [ ] Related tickets identified
+- [ ] External resources reviewed
+
+### Design
+- [ ] Follows existing patterns
+- [ ] YAGNI applied
+- [ ] Dependencies clear
+
+### Documentation
+- [ ] All sections complete
+- [ ] File paths specific
+- [ ] Code references included
+- [ ] Risks identified
+
+### Estimation
+- [ ] Story points justified
+- [ ] Complexity factors considered
+
+### Review
+- [ ] User approved scoping
+- [ ] Linear updated (if requested)
+
+## Integration with Other Skills
+
+```
+Dev10x:ticket-scope
+├── Extends: scope (base scoping workflow)
+├── Uses: Linear MCP (ticket data)
+├── Uses: Dev10x:jtbd (JTBD story drafting in Phase 4b)
+├── May lead to: Dev10x:work-on (start implementation)
+├── Alternative: Dev10x:adr (for architectural decisions)
+└── Saves to: /tmp/claude/ticket-scope/TICKET-ID-scope.md
+```
+
+## Example Usage
+
+### User Request
+```
+/Dev10x:ticket-scope PAY-329
+```
+
+### Workflow
+1. Fetch PAY-329 from Linear
+2. Read ticket description and comments
+3. Research external docs (if provided)
+4. Explore codebase for patterns
+5. Design solution following patterns
+6. Apply YAGNI
+7. Create implementation plan
+8. Estimate story points
+9. Draft Job Story (using Dev10x:jtbd base skill)
+10. Present to user for review
+11. Incorporate feedback
+12. Save scoping document
+13. Update Linear (if approved)
+
+## References
+
+### Templates
+- `references/business-feature-template.md`
+- `references/technical-task-template.md`
+- `references/bug-fix-template.md`
+- `references/scoping-checklist.md`
+
+### Related Skills
+- `scope` - Base scoping skill
+- `Dev10x:adr` - For architectural decisions
+- `Dev10x:work-on` - Start implementation

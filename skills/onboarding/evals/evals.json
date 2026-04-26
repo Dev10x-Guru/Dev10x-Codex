@@ -1,0 +1,46 @@
+{
+  "skill_name": "Dev10x:onboarding",
+  "eval_dimensions": [
+    {
+      "name": "interactive_tour",
+      "description": "Guides user through capabilities with AskUserQuestion gates"
+    },
+    {
+      "name": "config_detection",
+      "description": "Detects existing configuration and skips already-done steps"
+    },
+    {
+      "name": "completion_time",
+      "description": "Guided setup completes in under 10 minutes"
+    }
+  ],
+  "evals": [
+    {
+      "scenario": "First-time user with no configuration",
+      "expected": "Full tour with all sections, offers git alias setup",
+      "assertions": [
+        {
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "experience_level_asked"
+        },
+        {
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "alias_setup_offered"
+        }
+      ]
+    },
+    {
+      "scenario": "Returning user with aliases and playbooks configured",
+      "expected": "Abbreviated tour skipping git setup and customization",
+      "assertions": [
+        {
+          "check": "output_contains",
+          "value": "Skip",
+          "assertion": "configured_steps_skipped"
+        }
+      ]
+    }
+  ]
+}

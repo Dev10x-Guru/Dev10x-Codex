@@ -1,0 +1,111 @@
+# Skill family grouping for SKILLS.md index.
+# Each family has a label, description, and ordered list of skill
+# display-names (what users type). Hidden skills (hidden.yaml)
+# are excluded before grouping.
+#
+# display_map translates display-names to internal invocation-name
+# keys from SKILL.md. Skills not in display_map match by exact key.
+
+display_map:
+  commit: Dev10x:git-commit
+  commit:split: Dev10x:git-commit-split
+  commit:fixup: Dev10x:git-fixup
+  commit:to-new-ticket: Dev10x:git-promote
+  branch:groom: Dev10x:git-groom
+  pr:create: Dev10x:gh-pr-create
+  pr:respond: Dev10x:gh-pr-respond
+  pr:monitor: Dev10x:gh-pr-monitor
+  pr:request-review: Dev10x:gh-pr-request-review
+  pr:triage: Dev10x:gh-pr-triage
+  pr:comment-fixup: Dev10x:gh-pr-fixup
+  ticket:work-on: Dev10x:work-on
+  logs: logs:start
+  Dev10x:investigate: investigate
+  triage-sentry: triage-sentry
+  app-db: tt:db
+  release-notes: Dev10x:release-notes
+
+families:
+  - label: Pipeline
+    description: "Scope → branch → implement → PR"
+    skills:
+      - Dev10x:onboarding
+      - ticket:work-on
+      - Dev10x:playbook
+      - Dev10x:playbook-maintenance
+      - ticket:scope
+      - ticket:create
+      - ticket:branch
+
+  - label: Git
+    description: "Atomic commits, clean history"
+    skills:
+      - commit
+      - commit:split
+      - commit:fixup
+      - branch:groom
+      - commit:to-new-ticket
+
+  - label: PR
+    description: "Full PR lifecycle with review agents"
+    skills:
+      - pr:create
+      - pr:review
+      - pr:respond
+      - pr:monitor
+      - pr:request-review
+      - pr:triage
+      - pr:comment-fixup
+
+  - label: Session
+    description: "Track progress, defer & resume work"
+    skills:
+      - Dev10x:session-wrap-up
+      - Dev10x:park
+      - Dev10x:park-discover
+
+  - label: Testing
+    description: "pytest, e2e, QA"
+    skills:
+      - test
+      - test:fix-flaky
+      - tt:e2e-debug
+      - Dev10x:qa-scope
+      - Dev10x:qa-self
+
+  - label: Ops
+    description: "k8s logs, payment & device debugging"
+    skills:
+      - logs
+      - debug:payments
+      - debug:square-terminal
+      - Dev10x:investigate
+      - triage-sentry
+      - inbox:triage
+
+  - label: Data
+    description: "Schema context, safe queries, KPI"
+    skills:
+      - app-db
+      - Dev10x-db-psql
+      - report:pos-gpv
+
+  - label: Reports
+    description: "Standups, summaries, release notes"
+    skills:
+      - work:daily
+      - work:weekly
+      - work:summary
+      - release-notes
+      - release:safe-to-ship
+
+  - label: Meta
+    description: "Create skills, audit usage, code review"
+    skills:
+      - Dev10x:skill-create
+      - Dev10x:skill-audit
+      - Dev10x:skill-index
+      - Dev10x:memory-maintenance
+      - Dev10x:context-audit
+      - Dev10x:playbook-maintenance
+      - review

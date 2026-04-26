@@ -1,0 +1,98 @@
+#!/bin/bash
+#
+# Git commit-msg hook to validate fixup! commits have exactly one comment thread link.
+#
+# This enforces the "one fixup per comment" rule by requiring:
+# 1. Fixup commits must have a PR comment link in the body
+# 2. Only ONE comment link is allowed (prevents bundling multiple fixes)
+#
+# Install:
+#   ln -sf <plugin-path>/hooks/git/check-fixup-comment-link .git/hooks/commit-msg
+#
+# Or chain from commit-msg orchestrator (see hooks/git/commit-msg).
+#
+# Comment link format:
+#   https://github.com/{owner}/{repo}/pull/{pr}#discussion_r{comment_id}
+#
+
+COMMIT_MSG_FILE="$1"
+
+if [ ! -f "$COMMIT_MSG_FILE" ]; then
+    echo "Error: Commit message file not found: $COMMIT_MSG_FILE" >&2
+    exit 1
+fi
+
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+FIRST_LINE=$(head -1 "$COMMIT_MSG_FILE")
+
+# Check if this is a fixup commit
+if [[ ! "$FIRST_LINE" =~ ^fixup!\  ]]; then
+    exit 0
+fi
+
+# Allow bare fixup commits (human workflow: title-only, no body)
+# Claude always writes a body with context, so empty body = human commit
+BODY=$(tail -n +2 "$COMMIT_MSG_FILE" | sed '/^#/d')
+if [ -z "$(echo "$BODY" | tr -d '[:space:]')" ]; then
+    exit 0
+fi
+
+# Pattern matches: https://github.com/{owner}/{repo}/pull/{number}#discussion_r{id}
+# Also matches: https://github.com/{owner}/{repo}/pull/{number}#pullrequestreview-{id}
+COMMENT_LINK_PATTERN='https://github\.com/[^/]+/[^/]+/pull/[0-9]+#(discussion_r|pullrequestreview-)[0-9]+'
+STANDALONE_MARKER='Standalone fixup'
+
+# Allow standalone fixups (self-initiated, not tied to a review comment)
+if echo "$COMMIT_MSG" | grep -qF "$STANDALONE_MARKER"; then
+    exit 0
+fi
+
+# Count comment links in the message
+LINK_COUNT=$(echo "$COMMIT_MSG" | grep -oE "$COMMENT_LINK_PATTERN" | wc -l)
+
+if [ "$LINK_COUNT" -eq 0 ]; then
+    echo "" >&2
+    echo "ERROR: Fixup commit must reference a PR comment thread" >&2
+    echo "or be marked as a standalone fixup." >&2
+    echo "" >&2
+    echo "Option 1 — Address a review comment:" >&2
+    echo "" >&2
+    echo "  fixup! Original commit message" >&2
+    echo "" >&2
+    echo "  Addresses review comment:" >&2
+    echo "  https://github.com/owner/repo/pull/123#discussion_r456789" >&2
+    echo "" >&2
+    echo "Option 2 — Standalone fixup (self-initiated):" >&2
+    echo "" >&2
+    echo "  fixup! Original commit message" >&2
+    echo "" >&2
+    echo "  Standalone fixup" >&2
+    echo "  <description of what this fixes and why>" >&2
+    echo "" >&2
+    exit 1
+fi
+
+if [ "$LINK_COUNT" -gt 1 ]; then
+    echo "" >&2
+    echo "ERROR: Fixup commit must reference exactly ONE comment thread." >&2
+    echo "" >&2
+    echo "Found $LINK_COUNT comment links in your commit. This violates the" >&2
+    echo "'one fixup per comment' rule which helps reviewers verify fixes." >&2
+    echo "" >&2
+    echo "Instead of combining fixes, create separate fixup commits:" >&2
+    echo "" >&2
+    echo "  1. Stage changes for first comment" >&2
+    echo "  2. git commit -m 'fixup! ...' (with first comment link)" >&2
+    echo "  3. Stage changes for second comment" >&2
+    echo "  4. git commit -m 'fixup! ...' (with second comment link)" >&2
+    echo "" >&2
+    echo "Links found:" >&2
+    echo "$COMMIT_MSG" | grep -oE "$COMMENT_LINK_PATTERN" | while read -r link; do
+        echo "  - $link" >&2
+    done
+    echo "" >&2
+    exit 1
+fi
+
+# Exactly one comment link - valid fixup commit
+exit 0
