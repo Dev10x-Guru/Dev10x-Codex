@@ -5,7 +5,7 @@ description: Audit a session's skill usage, compliance, and extract lessons lear
 
 # Skill Audit
 
-Analyze a Claude Code session transcript for skill compliance, missed invocations,
+Analyze a Codex session transcript for skill compliance, missed invocations,
 user corrections, and process improvements worth persisting into skill definitions.
 
 ## Arguments
@@ -13,14 +13,12 @@ user corrections, and process improvements worth persisting into skill definitio
 The skill accepts one optional argument, resolved in this order:
 
 1. **JSONL path** — if arg ends in `.jsonl`, use it directly
-2. **Worktree path** — if arg is a directory (e.g., `/work/myproject/my-repo`), encode it
-   to a project directory and find the latest JSONL in it
-3. **`latest`** (or no arg) — encode the current working directory, find latest JSONL
+2. **Worktree path** — if arg is a directory (e.g., `/work/myproject/my-repo`),
+   find the latest Codex JSONL whose `session_meta.payload.cwd` equals it
+3. **`latest`** (or no arg) — find the latest Codex JSONL for the current
+   working directory
 
-**Path encoding**: `/work/myproject/my-repo` → `-work-myproject-my-repo` (replace leading `/` then
-all `/` with `-`).
-
-**Project directory**: `$HOME/.codex/projects/<encoded-path>/`
+**Session directory**: `$HOME/.codex/sessions/YYYY/MM/DD/*.jsonl`
 
 ## Proactive Triggers
 
@@ -73,60 +71,35 @@ When a trigger is detected, find the current session's JSONL path and suggest:
 
 > "I've noticed [trigger description]. Open a new terminal and run:
 > ```
-> claude 'Dev10x-skill-audit <jsonl-path>'
+> codex '$Dev10x-skill-audit <jsonl-path>'
 > ```
 > to capture these as improvements."
 
 To find the current session's JSONL path, use:
 ```bash
-ls -t $HOME/.codex/projects/<encoded-cwd>/*.jsonl | head -1
+$HOME/.codex/skills/Dev10x-skill-audit/scripts/resolve-session.py latest
 ```
 
 ## Workflow
 
 ### Step 1: Resolve session file
 
-```python
-import os, glob
+Use the resolver script instead of searching legacy project directories:
 
-arg = "$SKILL_ARG"  # from the invocation
-claude_dir = os.path.expanduser("~/.claude")
-
-if arg.endswith(".jsonl"):
-    session_file = arg
-elif arg and os.path.isdir(arg):
-    encoded = arg.replace("/", "-")
-    if encoded.startswith("-"):
-        pass  # already correct
-    project_dir = f"{claude_dir}/projects/{encoded}"
-    jsonls = sorted(glob.glob(f"{project_dir}/*.jsonl"), key=os.path.getmtime, reverse=True)
-    session_file = jsonls[0]  # latest
-else:
-    cwd = os.getcwd()
-    encoded = cwd.replace("/", "-")
-    project_dir = f"{claude_dir}/projects/{encoded}"
-    jsonls = sorted(glob.glob(f"{project_dir}/*.jsonl"), key=os.path.getmtime, reverse=True)
-    session_file = jsonls[0]  # latest
+```bash
+$HOME/.codex/skills/Dev10x-skill-audit/scripts/resolve-session.py "${SKILL_ARG:-latest}"
 ```
 
-Implement this logic using Bash (ls -t + head) rather than running Python inline.
-If resolution fails, ask the user to provide the JSONL path explicitly.
+If resolution fails, ask the user to provide the Codex JSONL path explicitly.
 
 ### Step 2: Extract transcript
 
 Create a unique output file:
-```bash
-/tmp/claude/bin/mktmp.sh skill-audit audit-transcript .md
-```
-Store the returned path, then run the extraction script:
+Use a unique path under `/private/tmp` or `/tmp`, then run the extraction script:
 ```bash
 $HOME/.codex/skills/Dev10x-skill-audit/scripts/extract-session.sh \
   "<session_file>" <unique-path>
 ```
-
-> **Note:** Do NOT prefix this with `mkdir -p ... &&` — the `mktmp.sh` script
-> creates the directory automatically. Prefixing with `mkdir &&` shifts
-> the command prefix to `mkdir`, breaking the `Bash($HOME/.codex/skills:*)` allow rule.
 
 ### Step 3: Read the transcript
 
@@ -135,10 +108,10 @@ This is the session you are auditing.
 
 ### Step 4: Detect project context
 
-From the transcript header, extract the **Project** path. Encode it to determine
-the correct memory directory:
+From the transcript header, extract the **Project** path. Use it when checking
+repo-local instructions and the Codex memory directory:
 ```
-$HOME/.codex/projects/<encoded-project-path>/memory/
+$HOME/.codex/memories/
 ```
 
 Also locate the skills directory: `$HOME/.codex/skills/`
@@ -279,7 +252,7 @@ a new rule). Structural friction needs skill updates and/or hooks.
 | `PREFIX_POISONED_ENVVAR` | `ENV=val command` | Prefix becomes `ENV=`, not `command` | Script sets env internally |
 | `PREFIX_POISONED_GIT_C` | `git -C /path log` | `git -C` doesn't match `Bash(git log:*)` | Use CWD, avoid `-C` |
 | `PREFIX_POISONED_COMMENT` | `# comment\ncommand` | `#` breaks all prefix matching | Use Bash `description` param |
-| `HOOK_BLOCKED_RETRY` | `cat <<'EOF'...` or `echo >` | Hook rejects it; Claude retries anyway | Update skill to use Write + `-F` |
+| `HOOK_BLOCKED_RETRY` | `cat <<'EOF'...` or `echo >` | Hook rejects it; Codex retries anyway | Update skill to use a script or `apply_patch` |
 | `NUISANCE_APPROVE` | Safe command prompted 3+ times | Allow rule exists but pattern doesn't match | Widen existing rule or add new one |
 | `UNNECESSARY_CD_WORKTREE` | `cd /worktree/path && command` | `cd` shifts prefix; CWD is already the worktree | Drop the `cd` — session is already there |
 | `WORKTREE_CWD_NOT_SWITCHED` | Commands run in main repo after worktree creation | Worktree creation should switch CWD | Investigate `Dev10x:git-worktree` — CWD switch may have failed |
@@ -308,7 +281,7 @@ a new rule). Structural friction needs skill updates and/or hooks.
 6. **Hook-blocked retries**: Cross-reference unmatched commands against
    known hook rejection patterns from `$HOME/.codex/settings.json`
    PreToolUse hooks and `$HOME/.codex/hooks/*.py`. If a command matches
-   a hook block regex, Claude should never have attempted it.
+   a hook block regex, Codex should never have attempted it.
    Read the hook scripts to extract their block patterns:
    - `validate-bash-security.py` blocks: `cat >`, `cat <<`, `echo >`,
      `printf >`, shell command substitution inside eval
@@ -354,7 +327,7 @@ encapsulates the toxic pattern:
 |---|---|---|
 | Git aliases | `git config --list \| grep alias\.` | `git develop-log` wraps `$(git merge-base develop HEAD)` |
 | Fish functions | `ls ~/.config/fish/functions/` | `fish_func.fish` wrapping a pipeline |
-| Claude tools | `ls $HOME/.codex/tools/` | `$HOME/.codex/tools/helper.sh` |
+| Codex tools | `ls $HOME/.codex/tools/` | `$HOME/.codex/tools/helper.sh` |
 | Skill scripts | `find $HOME/.codex/skills -name '*.sh'` | `scripts/fetch.sh` in a skill dir |
 
 Classify each finding:
@@ -404,7 +377,7 @@ as the canonical setup mechanism rather than proposing raw
 
 - **HOOK_BLOCKED_RETRY**: Update the SKILL.md to use the correct
   pattern. No new hook needed (existing hook already blocks). Add a
-  memory note so Claude stops attempting the blocked pattern.
+  memory note so Codex stops attempting the blocked pattern.
 
 - **NUISANCE_APPROVE**: Propose an allow rule (same as Step 4f).
 
@@ -425,9 +398,9 @@ Source: TICKET-58 audit — 3 user corrections for this pattern
 
 **Step 4d: Load existing permissions**
 
-Read `$HOME/.codex/settings.local.json` and any project-level
-`$HOME/.codex/projects/<encoded-path>/settings.local.json` to get the
-current `permissions.allow` list.
+Read `$HOME/.codex/config.toml`, `$HOME/.codex/AGENTS.md`, and any repo-local
+`AGENTS.md` instructions to understand the current permission and workflow
+constraints.
 
 **Step 4e: Match analysis**
 
@@ -526,7 +499,7 @@ Memory: "Use export-with-env.sh — sets env internally"
 For each HOOK_BLOCKED finding:
 1. Identify the skill that teaches the blocked pattern
 2. Propose a skill edit using the correct alternative
-3. Propose a memory note so Claude stops attempting the pattern
+3. Propose a memory note so Codex stops attempting the pattern
 4. No new hook needed — the existing hook already blocks it
 
 ```
@@ -660,7 +633,7 @@ pattern as skill scripts under `Bash($HOME/.codex/skills/<name>/scripts/:*)`.
 Review user corrections and `[CORRECTION]` markers:
 
 1. For each correction, determine:
-   - What did Claude do wrong?
+   - What did Codex do wrong?
    - What did the user want instead?
    - One-off preference or repeatable pattern?
    - Which skill should encode this lesson?

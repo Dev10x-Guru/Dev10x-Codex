@@ -3,7 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Extract Claude Code JSONL session transcript into readable markdown.
+"""Extract Codex JSONL session transcript into readable markdown.
 
 Usage:
     extract-session.py <jsonl-path> [output.md]
@@ -17,8 +17,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import TextIO
-
-SKIP_TYPES = {"file-history-snapshot", "progress", "system"}
 
 CORRECTION_PATTERNS = re.compile(
     r"(?im)"
@@ -51,58 +49,30 @@ def extract_text_from_content(content: list | str) -> str:
     for block in content:
         if isinstance(block, str):
             parts.append(block)
-        elif isinstance(block, dict) and block.get("type") == "text":
+        elif isinstance(block, dict) and block.get("type") in {
+            "input_text",
+            "output_text",
+            "text",
+        }:
             parts.append(block.get("text", ""))
     return "\n".join(parts)
 
 
-def extract_tool_uses(content: list) -> list[dict]:
-    if not isinstance(content, list):
-        return []
-    tools = []
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "tool_use":
-            tool_input = block.get("input", {})
-            if isinstance(tool_input, dict):
-                summary_parts = []
-                for k, v in tool_input.items():
-                    v_str = str(v)
-                    summary_parts.append(f"{k}={truncate(v_str, MAX_TOOL_INPUT_LEN)}")
-                input_summary = ", ".join(summary_parts)
-            else:
-                input_summary = truncate(str(tool_input), MAX_TOOL_INPUT_LEN)
-            tools.append(
-                {
-                    "name": block.get("name", "unknown"),
-                    "id": block.get("id", ""),
-                    "input_summary": input_summary,
-                }
-            )
-    return tools
+def summarize_arguments(arguments: object) -> str:
+    if isinstance(arguments, str):
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError:
+            return truncate(arguments, MAX_TOOL_INPUT_LEN)
+    else:
+        parsed = arguments
 
-
-def extract_tool_results(content: list) -> list[dict]:
-    if not isinstance(content, list):
-        return []
-    results = []
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "tool_result":
-            raw = block.get("content", "")
-            if isinstance(raw, list):
-                text_parts = []
-                for item in raw:
-                    if isinstance(item, dict):
-                        text_parts.append(item.get("text", ""))
-                    elif isinstance(item, str):
-                        text_parts.append(item)
-                raw = "\n".join(text_parts)
-            results.append(
-                {
-                    "tool_use_id": block.get("tool_use_id", ""),
-                    "content": truncate(str(raw), MAX_TOOL_RESULT_LEN),
-                }
-            )
-    return results
+    if isinstance(parsed, dict):
+        summary_parts = []
+        for key, value in parsed.items():
+            summary_parts.append(f"{key}={truncate(str(value), MAX_TOOL_INPUT_LEN)}")
+        return ", ".join(summary_parts)
+    return truncate(str(parsed), MAX_TOOL_INPUT_LEN)
 
 
 def check_correction(text: str) -> bool:
@@ -125,7 +95,6 @@ def process_jsonl(jsonl_path: str, out: TextIO) -> None:
 
     session_id = None
     cwd = None
-    git_branch = None
     turn_num = 0
 
     out.write("# Session Transcript\n\n")
@@ -142,75 +111,64 @@ def process_jsonl(jsonl_path: str, out: TextIO) -> None:
                 continue
 
     for msg in messages:
-        if msg.get("sessionId"):
-            session_id = msg["sessionId"]
-            cwd = msg.get("cwd", "unknown")
-            git_branch = msg.get("gitBranch", "")
+        if msg.get("type") == "session_meta":
+            payload = msg.get("payload", {})
+            session_id = payload.get("id")
+            cwd = payload.get("cwd", "unknown")
             break
 
     first_ts = ""
     for msg in messages:
-        if msg.get("timestamp") and msg.get("type") in ("user", "assistant"):
+        if msg.get("timestamp"):
             first_ts = msg["timestamp"]
             break
 
     out.write(f"- **Session**: `{session_id or 'unknown'}`\n")
     out.write(f"- **Project**: `{cwd or 'unknown'}`\n")
-    if git_branch:
-        out.write(f"- **Branch**: `{git_branch}`\n")
     out.write(f"- **Started**: {first_ts}\n")
     out.write(f"- **Source**: `{jsonl_path}`\n")
     out.write("\n---\n\n")
 
     for msg in messages:
-        msg_type = msg.get("type", "")
-        if msg_type in SKIP_TYPES:
+        if msg.get("type") != "response_item":
             continue
 
+        payload = msg.get("payload", {})
+        payload_type = payload.get("type", "")
         ts = format_timestamp(msg.get("timestamp", ""))
-        content = msg.get("message", {}).get("content", [])
 
-        if msg_type == "user":
-            text = extract_text_from_content(content)
-            tool_results = extract_tool_results(
-                content if isinstance(content, list) else []
-            )
+        if payload_type == "message":
+            raw_role = payload.get("role", "")
+            if raw_role not in {"user", "assistant"}:
+                continue
+            role = raw_role.upper()
+            text = extract_text_from_content(payload.get("content", []))
 
             if text.strip():
                 turn_num += 1
-                correction = check_correction(text.strip())
+                correction = role == "USER" and check_correction(text.strip())
                 marker = " **[CORRECTION]**" if correction else ""
-                out.write(f"## Turn {turn_num} [{ts}] USER{marker}\n\n")
+                out.write(f"## Turn {turn_num} [{ts}] {role}{marker}\n\n")
                 out.write(f"{text.strip()}\n\n")
 
-            if tool_results:
-                for tr in tool_results:
-                    out.write(
-                        f"<details><summary>Tool result ({tr['tool_use_id'][:12]}...)</summary>\n\n"
-                    )
-                    out.write(f"```\n{tr['content']}\n```\n")
-                    out.write("</details>\n\n")
-
-        elif msg_type == "assistant":
-            text = extract_text_from_content(content)
-            tool_uses = extract_tool_uses(content if isinstance(content, list) else [])
-
-            has_output = text.strip() or tool_uses
-            if not has_output:
-                continue
-
+        elif payload_type == "function_call":
             turn_num += 1
             out.write(f"## Turn {turn_num} [{ts}] ASSISTANT\n\n")
 
-            if text.strip():
-                out.write(f"{text.strip()}\n\n")
+            out.write(f"**Tool: `{payload.get('name', 'unknown')}`**\n")
+            arguments = summarize_arguments(payload.get("arguments", ""))
+            if arguments:
+                out.write(f"```\n{arguments}\n```\n")
+            out.write("\n")
 
-            if tool_uses:
-                for tu in tool_uses:
-                    out.write(f"**Tool: `{tu['name']}`**\n")
-                    if tu["input_summary"]:
-                        out.write(f"```\n{tu['input_summary']}\n```\n")
-                    out.write("\n")
+        elif payload_type == "function_call_output":
+            call_id = payload.get("call_id", "")
+            output = truncate(str(payload.get("output", "")), MAX_TOOL_RESULT_LEN)
+            out.write(
+                f"<details><summary>Tool result ({call_id[:12]}...)</summary>\n\n"
+            )
+            out.write(f"```\n{output}\n```\n")
+            out.write("</details>\n\n")
 
     out.write(f"\n---\n*Extracted {turn_num} turns from `{path.name}`*\n")
 
