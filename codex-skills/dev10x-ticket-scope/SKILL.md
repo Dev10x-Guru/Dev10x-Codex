@@ -155,6 +155,8 @@ Based on task type:
 When acceptance criteria include BDD-style scenarios, write the
 Gherkin keywords, scenario prose, and actor names in the project or
 ticket language instead of defaulting to English.
+State actors in third person; do not write BDD or user-story text from
+the first-person "I/we" perspective.
 Use Cucumber's official localisation reference for supported
 languages and keyword translations:
 https://cucumber.io/docs/gherkin/languages/
@@ -206,7 +208,7 @@ If user approves, update ticket with:
 # [TICKET-ID]: [Title]
 
 ## Job Story
-**When** [situation], **I want to** [motivation], **so I can** [expected outcome].
+**When** [situation], **[actor] wants to** [motivation], **so [beneficiary] can** [expected outcome].
 
 ## Objective
 [Business value and user impact]
@@ -275,7 +277,7 @@ Rationale:
 # [TICKET-ID]: [Title]
 
 ## Job Story
-**When** [situation], **I want to** [motivation], **so I can** [expected outcome].
+**When** [situation], **[actor] wants to** [motivation], **so [beneficiary] can** [expected outcome].
 
 ## Objective
 [Technical goal]
@@ -311,7 +313,7 @@ Rationale:
 # [TICKET-ID]: [Title]
 
 ## Job Story
-**When** [situation], **I want to** [motivation], **so I can** [expected outcome].
+**When** [situation], **[actor] wants to** [motivation], **so [beneficiary] can** [expected outcome].
 
 ## Problem Statement
 [What's broken]

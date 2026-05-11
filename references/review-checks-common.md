@@ -93,11 +93,10 @@ Before raising any of these, **verify actual code**:
     the block message but not the Why or How to recover. Do NOT skip the
     docs check.
 21. **JTBD voice violations** — when a PR body, commit message, or issue
-    title contains a Job Story using objective voice (e.g., "the developer
-    wants to"), flag as REQUIRED. First-person ("I want to") or explicit
-    third-party ("so [person] can") are required. Objective voice breaks
-    release notes parsing and is explicitly listed as wrong in
-    `references/git-jtbd.md` lines 31–45.
+    title contains a Job Story using first-person voice (e.g., "I want to"
+    or "so I can") or omits the actor, flag as REQUIRED. Third-person
+    actor and beneficiary names are required; see `references/git-jtbd.md`
+    § Voice Requirement.
 22. **Story language violations** — when a PR body, ticket, or acceptance
     criterion writes Job Stories, user stories, or BDD scenarios in the
     wrong project/ticket language, flag as REQUIRED. For BDD and

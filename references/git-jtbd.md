@@ -6,8 +6,9 @@ commit messages, and issue tickets.
 > **Scope**: This format governs Job Stories in commits and PR descriptions.
 > It also applies to issue titles and tickets.
 > **Critical dependency**: Release notes parsing requires precise JTBD
-> voice format (first-person "I want to" or explicit third-party "so X can").
-> Objective voice ("wants to") breaks automated release notes collection.
+> voice format with an explicit third-person actor and beneficiary.
+> First-person "I want to" / "so I can" breaks stakeholder clarity and
+> automated release notes collection.
 > Skills may define their own output formats in `references/`
 > documents. If a skill's reference doc diverges from this format,
 > verify the skill output is not used for PR/commit descriptions.
@@ -15,7 +16,7 @@ commit messages, and issue tickets.
 ## Format
 
 ```
-**When** [situation], **I want to** [motivation], **so I can** [expected outcome].
+**When** [situation], **[actor] wants to** [motivation], **so [beneficiary] can** [expected outcome].
 ```
 
 One sentence. No bullet points. No implementation details.
@@ -35,33 +36,22 @@ https://cucumber.io/docs/gherkin/languages/
 Feature-file-style blocks must include the matching `# language: <code>`
 header from the Cucumber language table.
 
-**Third-party outcome variant**: When the beneficiary of the outcome
-is a third party (e.g., a teammate, a CI system, an end user),
-`**so**` without "I can" is acceptable:
-
-```
-**When** ..., **I want to** ..., **so** [third party] can [outcome].
-```
-
-Example: "**so** reviewers can catch issues before merging."
-The canonical `**so I can**` form is preferred for first-person
-outcomes. Either form is accepted by the hygiene reviewer.
-
 ## Voice Requirement
 
-Job Stories must use first-person or explicit third-party voice.
-Objective voice ("wants to") is incorrect:
+Job Stories must name the actor and beneficiary in third person.
+First-person voice ("I want to", "so I can") is incorrect:
 
 | Form | Example | Status |
 |------|---------|--------|
-| ✅ First-person | **I want to** have Claude config copied | REQUIRED |
-| ✅ Third-party | **so** reviewers can catch issues | REQUIRED |
-| ❌ Objective voice | **wants to** have Claude config copied | WRONG |
-| ❌ Mixed voice | **I want to** X **so** reviewer wants Y | WRONG |
+| Correct | **the developer wants to** have Claude config copied | REQUIRED |
+| Correct | **so reviewers can** catch issues | REQUIRED |
+| Wrong | **I want to** have Claude config copied | WRONG |
+| Wrong | **so I can** catch issues | WRONG |
+| Wrong | **they want to** catch issues | WRONG |
 
-The difference: "I want to" (first-person) vs "wants to" (objective).
-When describing outcomes benefiting others, use explicit names:
-`**so** [person/system] can ...` — not just `**so**` alone.
+Use role, customer, team, or system names that make the stakeholder
+visible at a glance: `**the Carolina customer wants to** ... **so their
+clients can** ...`.
 
 ## Key Principles
 
@@ -79,17 +69,19 @@ The "When" clause describes the real-world context, not UI interactions.
 
 ### 3. Motivation Reveals Anxiety
 
-The "I want to" clause captures what the user is trying to accomplish.
+The "wants to" clause captures what the named actor is trying to
+accomplish.
 
-- Good: "I want to have Claude review code automatically"
+- Good: "the reviewer wants to have Claude review code automatically"
 - Bad:  "I want a new workflow file"
 
 ### 4. Expected Outcome Shows Value
 
-The "so I can" clause describes the measurable benefit or the problem
-that goes away. It should contrast with the current broken state.
+The "so [beneficiary] can" clause describes the measurable benefit or
+the problem that goes away. It should contrast with the current broken
+state.
 
-- Good: "so I can catch regressions before they reach production"
+- Good: "so reviewers can catch regressions before they reach production"
 - Bad:  "so the system has reviews"
 
 ## Anti-Patterns
@@ -101,13 +93,14 @@ that goes away. It should contrast with the current broken state.
 | CLI/command-invocation "When" | "When running `make release-features`" prescribes the tool | Describe the real-world trigger: "When a feature release produces skipped version numbers" |
 | Vague outcome | Not testable | Be specific about what improves |
 | No contrast with current state | Unclear why it matters | Show what's wrong today |
-| Solution-focused "I want to" | "I want to see X on separate lines" names the UI change, not the need | Describe the motivation: "I want to quickly triage incoming notifications" |
-| Solution-focused "I want to" (infra) | "I want to use stable, version-independent paths" names the technical fix, not the need | Describe the user motivation: "I want to run skills without being re-prompted for the same permission on every invocation" |
+| Solution-focused "wants to" | "the reviewer wants to see X on separate lines" names the UI change, not the need | Describe the motivation: "the reviewer wants to quickly triage incoming notifications" |
+| Solution-focused "wants to" (infra) | "the developer wants to use stable, version-independent paths" names the technical fix, not the need | Describe the user motivation: "the developer wants to run skills without repeated permission prompts" |
 
 ## Title Writing Principle
 
 Shift the perspective from what changed in the code to what it
-enables for the user. The "so I can" clause captures the outcome.
+enables for the user. The "so [beneficiary] can" clause captures the
+outcome.
 
 ### Common patterns
 
@@ -130,26 +123,26 @@ answer is your title.
 ## Examples
 
 ### Skill Feature
-**When** starting work on a new feature branch, **I want to**
-create an isolated worktree automatically, **so I can** avoid
-cross-indexing conflicts between branches in my IDE.
+**When** starting work on a new feature branch, **the developer wants to**
+create an isolated worktree automatically, **so the developer can** avoid
+cross-indexing conflicts between branches in the IDE.
 
 ### Code Review
-**When** reviewing PRs without automated checks, **I want to** have
-Claude review code for quality and patterns, **so I can** catch
-regressions before they reach production.
+**When** reviewing PRs without automated checks, **the reviewer wants to**
+have Claude review code for quality and patterns, **so the reviewer can**
+catch regressions before they reach production.
 
 ### Bug Fix
-**When** committing changes with heredoc syntax, **I want to** the
-security hook to recognize safe patterns, **so I can** commit without
-false positive blocks disrupting my workflow.
+**When** committing changes with heredoc syntax, **the developer wants**
+the security hook to recognize safe patterns, **so the developer can**
+commit without false positive blocks disrupting the workflow.
 
 ### Documentation
-**When** onboarding a new contributor, **I want to** have clear rules
-for naming skills, **so** contributors can follow conventions without
+**When** onboarding a new contributor, **the maintainer wants to** have
+clear rules for naming skills, **so contributors can** follow conventions without
 reading every existing skill directory.
 
 ### Release
-**When** a batch of features is ready, **I want to** publish a semver
-release, **so** users can pin to a stable version and get predictable
-updates.
+**When** a batch of features is ready, **the release manager wants to**
+publish a semver release, **so users can** pin to a stable version and get
+predictable updates.
