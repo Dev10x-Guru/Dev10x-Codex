@@ -151,6 +151,10 @@ Dispatch based on TRACKER:
 
 Search each source for the `**When**` / `**I want to**` / `**so I can**`
 pattern.
+For localized tickets, also search for translated structural labels in
+the project language. If a ticket or PR uses BDD/Gherkin-derived
+keywords, validate translations against Cucumber's official language
+reference: https://cucumber.io/docs/gherkin/languages/
 
 **Step 3c: Check commit messages (fallback)**
 
@@ -164,6 +168,8 @@ git log origin/develop..HEAD --format=%B
 
 If none found, generate a Job Story:
 
+- Use the project or ticket language for the Job Story and user-story
+  prose.
 - **For simple/trivial fixes** (flaky tests, typos, single-line changes):
   generate the Job Story inline in `**When** / **I want to** / **so I can**`
   format without invoking the full `Dev10x:jtbd` skill.

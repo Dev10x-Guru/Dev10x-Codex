@@ -76,6 +76,10 @@ invoke the skill without approving tool access each time. See
 - **Job Story voice** (REQUIRED): First-person "**I want to**" or explicit
   third-party "**so [name] can**" — never objective voice ("wants to")
   See `.claude/rules/essentials.md` and `references/git-jtbd.md` lines 31–45
+- **Story language**: write Job Stories, user stories, and BDD scenarios
+  in the project or ticket language. For Gherkin-derived keywords, use
+  Cucumber's official language reference:
+  https://cucumber.io/docs/gherkin/languages/
 - See `references/git-commits.md`, `git-pr.md`, `git-jtbd.md`
 
 ### Plugin Directory Renames
