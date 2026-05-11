@@ -150,6 +150,26 @@ Based on task type:
 - Acceptance Criteria
 - Story Points
 
+#### 5.3 BDD Scenario Language
+
+When acceptance criteria include BDD-style scenarios, write the
+Gherkin keywords, scenario prose, and actor names in the project or
+ticket language instead of defaulting to English.
+Use Cucumber's official localisation reference for supported
+languages and keyword translations:
+https://cucumber.io/docs/gherkin/languages/
+When producing a feature-file-style block, include the matching
+`# language: <code>` header from the Cucumber language table.
+
+Examples:
+- English: `Given`, `When`, `Then`, `And`, `But`
+- Polish (`# language: pl`): `Zakładając, że`, `Kiedy`, `Wtedy`,
+  `Oraz`, `Ale`
+
+If the target language is unclear, ask before finalizing BDD
+scenarios.
+Do not invent translated Gherkin keywords; use the Cucumber reference.
+
 ### Phase 6: User Review
 
 **Critical:** Present scoping to user before saving.
@@ -232,6 +252,12 @@ If user approves, update ticket with:
 ## Acceptance Criteria
 - [ ] Criterion 1
 - [ ] Criterion 2
+
+Use the project or ticket language for Job Stories, user-story prose,
+and BDD scenarios. Use localized Gherkin keywords when that language is
+not English; see
+https://cucumber.io/docs/gherkin/languages/.
+Include `# language: <code>` when writing feature-file-style blocks.
 
 ## Out of Scope
 - [What we're NOT doing]
