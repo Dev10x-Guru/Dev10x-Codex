@@ -164,6 +164,8 @@ Example:
 When acceptance criteria are written as BDD scenarios, use the
 project or ticket language for Gherkin keywords, scenario prose, and
 actor names.
+State actors in third person; do not write BDD or user-story text from
+the first-person "I/we" perspective.
 Reference Cucumber's official supported language list instead of
 inventing translations:
 https://cucumber.io/docs/gherkin/languages/

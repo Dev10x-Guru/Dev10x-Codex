@@ -73,9 +73,10 @@ invoke the skill without approving tool access each time. See
   (worktree: `username/TICKET-ID/worktree-name/short-description`)
 - **Commit format**: `<gitmoji> <TICKET-ID> <JTBD outcome>`
 - **Commit titles**: outcome-focused — "Enable X" not "Add X"
-- **Job Story voice** (REQUIRED): First-person "**I want to**" or explicit
-  third-party "**so [name] can**" — never objective voice ("wants to")
-  See `.claude/rules/essentials.md` and `references/git-jtbd.md` lines 31–45
+- **Job Story voice** (REQUIRED): third-person actor and beneficiary —
+  `**[actor] wants to** ... **so [beneficiary] can** ...`; never use
+  first-person "I want to" / "so I can"
+  See `.claude/rules/essentials.md` and `references/git-jtbd.md`
 - **Story language**: write Job Stories, user stories, and BDD scenarios
   in the project or ticket language. For Gherkin-derived keywords, use
   Cucumber's official language reference:

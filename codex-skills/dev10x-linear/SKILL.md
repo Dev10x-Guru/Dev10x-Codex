@@ -58,7 +58,7 @@ Before using Linear MCP tools, verify availability:
 To find an existing Job Story on a Linear ticket:
 
 1. Get issue: `mcp__claude_ai_Linear__get_issue(id: "TEAM-133")`
-2. Search the description for `**When**` / `**I want to**` / `**so I can**` pattern
+2. Search the description for `**When**` / `**[actor] wants to**` / `**so [beneficiary] can**` pattern
 3. For localized tickets, also search for translated structural labels in
    the ticket language
 4. If BDD or Gherkin-derived keywords appear, validate translations

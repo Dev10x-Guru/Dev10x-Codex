@@ -95,9 +95,9 @@ The body should be **compact** to avoid cluttering Slack previews.
 
 ### Examples
 
-**VOICE REQUIREMENT**: The "I want to" form is mandatory—never use objective
-voice like "wants to" or "the developer wants to". See
-`references/git-jtbd.md` § Voice Requirement (lines 35-50).
+**VOICE REQUIREMENT**: Job Stories must name the actor and beneficiary in
+third person. Never use first-person voice like "I want to" or "so I can".
+See `references/git-jtbd.md` § Voice Requirement.
 
 **LANGUAGE REQUIREMENT**: Write the Job Story and any user-story prose in
 the project or ticket language. When PR text includes BDD or
@@ -108,7 +108,7 @@ https://cucumber.io/docs/gherkin/languages/
 ```markdown
 ## Summary
 
-**When** reviewing code, **I want to** have automated checks, **so I can** catch issues.
+**When** reviewing code, **the reviewer wants to** have automated checks, **so the reviewer can** catch issues.
 
 [Details...]
 
@@ -117,7 +117,7 @@ Fixes: ...
 
 **CORRECT** — JTBD as absolute first element:
 ```markdown
-**When** reviewing code, **I want to** have automated checks, **so I can** catch issues.
+**When** reviewing code, **the reviewer wants to** have automated checks, **so the reviewer can** catch issues.
 
 [Details or commit list — optional...]
 
@@ -127,8 +127,9 @@ Fixes: ...
 ### Proper Format
 
 ```markdown
-**When** reviewing PRs without automated checks, **I want to** have
-Claude review code quality, **so I can** catch issues before merging.
+**When** reviewing PRs without automated checks, **the reviewer wants to**
+have Claude review code quality, **so the reviewer can** catch issues
+before merging.
 
 [`b3a015a`](REPO_URL/commit/HASH) ✨ GH-7 Enable code review
 [`fec4999`](REPO_URL/commit/HASH) 📝 GH-7 Document review agents

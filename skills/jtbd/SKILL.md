@@ -187,7 +187,7 @@ value.
 | Technical mechanism as motivation | "configure probes with the right semantics" | Name what actually changes: "detect failed deployments" |
 | Over-specific role when a generic term works | "merchants" when the check protects all users equally | Use "user experience" — don't narrow without reason |
 | Implementation detail as benefit | "avoid misrouted traffic during restarts" | State the real outcome: "prevent broken releases from degrading UX" |
-| `I want to` when the actor is ambiguous | "I" doesn't identify the stakeholder | Prefer a named role ("the merchant", "the DevOps team"); `I want to` is fine as a fallback when the actor is clear from context |
+| First-person actor | "I" doesn't identify the stakeholder | Name the actor in third person ("the merchant", "the DevOps team") |
 
 **The "why spend money" test:** Read the draft aloud. If a non-technical
 stakeholder would respond "so what?" or "why do I care?", the story
@@ -197,9 +197,10 @@ that connects to user impact, revenue risk, or operational cost.
 **Example — infrastructure PR (before and after):**
 
 Before (technical dress-up):
-> **When** deploying the app to Kubernetes, **I want to** have dedicated
-> liveness, readiness, and startup endpoints, **so I can** configure
-> probes with the right semantics and avoid misrouted traffic.
+> **When** deploying the app to Kubernetes, **the DevOps team wants to**
+> have dedicated liveness, readiness, and startup endpoints, **so the
+> DevOps team can** configure probes with the right semantics and avoid
+> misrouted traffic.
 
 After (real business value):
 > **When** releasing new features, **the DevOps team wants to**

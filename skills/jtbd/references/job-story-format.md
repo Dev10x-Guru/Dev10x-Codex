@@ -54,9 +54,8 @@ Bad:  "so the system supports ACH"
 
 ### 5. Name Actors Explicitly
 
-Prefer role names over "I", "we", or "they" — a named persona ("the
-merchant", "the billing admin") adds context at a glance. `I want to`
-is acceptable as a fallback when the actor is obvious from context.
+Use role names instead of "I", "we", or "they" — a named persona ("the
+merchant", "the billing admin") adds context at a glance.
 When the actor who triggers the action differs from the beneficiary
 who gains the value, name both:
 
@@ -71,7 +70,7 @@ Bad:  "I want to send them an SMS, so they can pay"
 | Solution-focused "When" | Prescribes implementation | Describe the real-world trigger |
 | Vague outcome | Not testable | Be specific about what improves |
 | No contrast with current state | Unclear why it matters | Show what's wrong today |
-| Using "I"/"they" when the actor is ambiguous | Hides who is impacted | Prefer a named role: "the cashier", "the customer"; `I want to` is fine when context is clear |
+| Using "I"/"they" instead of an actor | Hides who is impacted | Name the actor in third person: "the cashier", "the customer" |
 | Same actor when roles differ | Hides multi-stakeholder flow | Name both actor and beneficiary when they differ |
 
 ## Examples

@@ -25,8 +25,8 @@ Universal rules for every session. Detailed guides live in
 
 ## PR Body
 
-- First paragraph: JTBD Job Story (`**When** ... **wants to** ...
-  **so** ... **can** ...`)
+- First paragraph: JTBD Job Story with an explicit third-person actor
+  (`**When** ... **[actor] wants to** ... **so [beneficiary] can** ...`)
 - Use the project or ticket language for Job Stories and BDD scenarios.
   For Gherkin-derived keywords, use Cucumber's language reference:
   https://cucumber.io/docs/gherkin/languages/
