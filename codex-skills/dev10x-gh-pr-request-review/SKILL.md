@@ -4,33 +4,34 @@ description: Request review on a GitHub PR from teams or users
 ---
 
 Request reviews on GitHub pull requests from teams or individual users.
+Use the GitHub reviewer-assignment MCP tool. Do not call the removed
+`$HOME/.codex/tools/gh-request-review.py` helper.
 
 ## Usage
 
 ### Request review from a team
 
-```bash
-$HOME/.codex/tools/gh-request-review.py \
-  --pr PR_NUMBER \
-  --reviewer org-name/team-slug
+```text
+mcp__plugin_Dev10x_cli__request_review(
+    pr_number=PR_NUMBER,
+    reviewers=["org-name/team-slug"],
+    team=true)
 ```
 
 ### Request review from a user
 
-```bash
-$HOME/.codex/tools/gh-request-review.py \
-  --pr PR_NUMBER \
-  --reviewer username
+```text
+mcp__plugin_Dev10x_cli__request_review(
+    pr_number=PR_NUMBER,
+    reviewers=["username"])
 ```
 
 ### Request review from multiple reviewers
 
-```bash
-$HOME/.codex/tools/gh-request-review.py \
-  --pr PR_NUMBER \
-  --reviewer user1 \
-  --reviewer user2 \
-  --reviewer org-name/team-slug
+```text
+mcp__plugin_Dev10x_cli__request_review(
+    pr_number=PR_NUMBER,
+    reviewers=["user1", "user2"])
 ```
 
 ### With verification
@@ -42,6 +43,7 @@ gh pr view PR_NUMBER --json reviewRequests \
 
 ## Notes
 
-- Use `gh-request-review.py` for requesting reviews (handles both users and teams)
+- Use `mcp__plugin_Dev10x_cli__request_review` for reviewer assignment
 - Team format: `org-name/team-slug`
+- Mixed user and team requests require separate calls
 - Verify the review request was assigned by checking `reviewRequests`
