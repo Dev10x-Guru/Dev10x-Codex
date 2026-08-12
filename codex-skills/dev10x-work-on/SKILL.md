@@ -1,5 +1,5 @@
 ---
-name: Dev10x-work-on
+name: dev10x-work-on
 description: Start work on any input — ticket URL, PR link, Slack thread, Sentry issue, or free text. Classifies inputs, gathers context in parallel, builds a supervisor-approved task list, and executes adaptively with pause/resume support.
 ---
 
@@ -15,12 +15,40 @@ supervisor-approved work plan. It runs in four phases:
 3. **Plan** — build a task list for supervisor approval
 4. **Execute** — work through tasks, expanding epics on demand
 
-The supervisor sees progress via `TaskList`, can approve/edit
-the plan, and can pause at any point with `Dev10x:session-wrap-up`.
+The supervisor sees progress via Codex's visible plan
+(`update_plan`), can approve/edit the plan, and can pause at any
+point with `Dev10x:session-wrap-up`.
 
-**Rule: ALWAYS use `TaskCreate`** — even for single-task work.
-The visible task list is the supervisor's interface for adding
-new tasks mid-session. Skipping it removes that capability.
+**Rule: ALWAYS use `update_plan`** — even for single-task work.
+The visible plan is the supervisor's interface for tracking work
+and adding new tasks mid-session. Skipping it removes that
+capability.
+
+## Codex Tooling
+
+Use Codex-native planning and question tools throughout this workflow:
+
+- Use `update_plan` to create the top-level plan and to revise task
+  statuses as work progresses.
+- Treat the visible plan maintained by `update_plan` as the source of
+  truth for pending, active, and completed work.
+- Use `request_user_input` only when it is available in the active
+  collaboration mode; otherwise ask concise plain-text questions and
+  wait for the user's reply.
+- Use available multi-agent tools only when they are exposed in the
+  current session. For independent local reads and fetches, prefer
+  `multi_tool_use.parallel`.
+
+`update_plan` supports `pending`, `in_progress`, and `completed`
+statuses. It does not support task metadata or dependency fields.
+Preserve `detailed`/`epic` labels in the task text, for example
+`[detailed] Set up workspace` or `[epic] Implement changes`.
+Represent blockers in the task text when needed, for example
+`[epic] Verify CI (blocked: waiting for CI)`.
+
+Only use `request_user_input` when the tool is available for the
+current collaboration mode. In Default mode, ask the same question
+as ordinary assistant text and wait for the user's reply.
 
 ## Prerequisites
 
@@ -77,7 +105,10 @@ extracted identifiers. Collect all sources into a list for Phase 2.
 ## Phase 2: Gather (Quick & Parallel)
 
 Fetch context from all sources **in parallel** — no supervisor
-interaction needed. Use parallel tool calls or Agent subagents.
+interaction needed. Use parallel tool calls. In Codex, prefer
+`multi_tool_use.parallel` for independent developer-tool calls.
+Use multi-agent tools only when they are exposed in the current
+session.
 
 ### Fetch Dispatch
 
@@ -130,9 +161,9 @@ severity if applicable, related context from Slack/Sentry]
 
 ## Phase 3: Plan (Lightweight Steps)
 
-Build a **high-level task list** using `TaskCreate`. **This is
+Build a **high-level task list** using `update_plan`. **This is
 mandatory** — always create at least one task, even when the work
-seems trivial. The task list is the supervisor's interface for
+seems trivial. The visible plan is the supervisor's interface for
 tracking progress and adding new tasks during the session.
 
 The plan is adapted based on what was gathered — not a fixed
@@ -141,10 +172,10 @@ template.
 ### Step Types
 
 - **Detailed** — small, immediately executable (2-5 min).
-  Created with `metadata: {"type": "detailed"}`.
+  Prefix the task text with `[detailed]`.
 - **Epic** — placeholder for a phase expanded when reached.
-  Created with `metadata: {"type": "epic"}`. Description says
-  what the phase accomplishes, not how.
+  Prefix the task text with `[epic]`. Description says what the
+  phase accomplishes, not how.
 
 ### Generating the Plan
 
@@ -233,9 +264,10 @@ Acceptance criteria for this feature work:
 - Different criteria this time
 ```
 
-If the user picks a non-default option, ask whether to
-persist it (`AskUserQuestion` with "Always" / "Just this
-time"). Update the YAML file accordingly:
+If the user picks a non-default option, ask whether to persist it
+with "Always" / "Just this time". Use `request_user_input` when
+available; otherwise ask in plain text. Update the YAML file
+accordingly:
 - `persist: true` → add to `overrides` for future sessions
 - `persist: false` → add with `persist: false`; the skill
   removes consumed one-time overrides after use
@@ -287,22 +319,33 @@ time"). Update the YAML file accordingly:
 
 ### Supervisor Approval Gate
 
-Present the plan as a numbered list.
+Present the plan as a numbered list and create the same plan via
+`update_plan`.
 
-**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text).
+**REQUIRED: Ask for supervisor approval before execution.**
 
-1. `AskUserQuestion(questions=[{question: "How would you like to proceed with the work plan?", header: "Plan", options: [{label: "Approve (Recommended)", description: "Start execution immediately"}, {label: "Edit", description: "Describe what to change (add/remove/reorder steps)"}], multiSelect: false}])`
+Use `request_user_input` when it is available in the active mode:
 
-After approval, set task dependencies where appropriate (use
-`TaskUpdate` with `addBlockedBy`). Mark the first task as
-`in_progress` and begin Phase 4.
+```text
+Question: How would you like to proceed with the work plan?
+Options:
+- Approve (Recommended): Start execution immediately
+- Edit: Describe what to change (add/remove/reorder steps)
+```
+
+When `request_user_input` is unavailable, ask the same question in
+plain text and wait for the user's reply.
+
+After approval, mark the first task as `in_progress` via
+`update_plan` and begin Phase 4. Since Codex plans do not expose
+dependency fields, represent any blocker in the task text.
 
 ---
 
 ## Phase 4: Execute (Adaptive, Auto-Advance)
 
 Work through the approved task list. Update task status via
-`TaskUpdate` as work progresses.
+`update_plan` as work progresses.
 
 ### Auto-Advance Rule
 
@@ -341,7 +384,7 @@ Run the task directly. Common detailed tasks delegate to skills:
 | Monitor CI | `Dev10x:gh-pr-monitor` skill |
 
 After completing a detailed task, mark it `completed` via
-`TaskUpdate` and move to the next task.
+`update_plan` and move to the next task.
 
 ### Expanding Epic Tasks
 
@@ -351,8 +394,9 @@ When reaching an epic task:
 2. **Generate sub-tasks** — break the epic into detailed steps.
    This may involve:
    - Reading code to understand scope
-   - `AskUserQuestion` for A/B decisions (e.g., "approach X
-     vs approach Y?") — but only when the choice genuinely
+   - Ask the user for A/B decisions (e.g., "approach X vs
+     approach Y?") — use `request_user_input` when available,
+     otherwise plain text — but only when the choice genuinely
      cannot be inferred from context
    - Follow-up information gathering
 3. **Present sub-tasks** briefly (inline, not a new approval
@@ -360,7 +404,9 @@ When reaching an epic task:
    approval if the expansion reveals unexpected scope or
    trade-offs the supervisor should weigh in on.
 4. **Check for parallelism** — if sub-tasks are independent,
-   ask the supervisor before launching parallel agents
+   ask the supervisor before launching multi-agent tools. Use
+   local parallel tool calls without an approval gate for
+   independent read/fetch operations.
 5. **Execute sub-tasks**, marking each completed as they finish.
    Auto-advance between sub-tasks (same rule as top-level).
 6. **Mark the epic completed** when all sub-tasks are done
@@ -379,7 +425,7 @@ concurrently and why they're independent:
 ```
 Tasks 4a and 4b are independent (different files, no shared state).
 Run them in parallel?
-- Yes, launch parallel agents (Recommended)
+- Yes, launch parallel work (Recommended)
 - No, run sequentially
 ```
 
@@ -387,7 +433,8 @@ Run them in parallel?
 
 **Workspace setup:**
 - If in main repo (`.git` is directory): offer "Work here" or
-  "New worktree" via `AskUserQuestion`
+  "New worktree" via `request_user_input` when available, or
+  plain text otherwise
 - If in worktree (`.git` is file): offer "Work here" or
   "New worktree"
 - For worktree path: compute branch name, invoke `Dev10x:git-worktree`
@@ -397,7 +444,7 @@ Run them in parallel?
 - For work-here path: delegate to `Dev10x:ticket-branch` skill
 
 **Job Story drafting:**
-- MUST invoke `Skill(Dev10x:jtbd)` explicitly — never draft inline
+- MUST use the `Dev10x:jtbd` skill explicitly — never draft inline
 - Pass gathered context to avoid redundant API calls
 - If approved, write back to the ticket:
 
@@ -421,11 +468,11 @@ Run them in parallel?
 At any pause signal ("wrap up", "pause", "that's enough for
 today", end-of-session):
 
-1. Invoke `Dev10x:session-wrap-up` — it reads `TaskList` and discovers all
-   open tasks automatically
+1. Invoke `Dev10x:session-wrap-up` — it reads the visible plan if
+   available and discovers open tasks automatically
 2. `Dev10x:session-wrap-up` handles routing each open item (PR bookmark,
    TODO.md, Slack DM, etc.)
-3. The task list itself serves as resume context — when the user
+3. The visible plan itself serves as resume context — when the user
    resumes work, they can invoke `Dev10x:discover` to find deferred
    items and `Dev10x:tasks` to see the saved task list
 
@@ -436,9 +483,9 @@ and `Dev10x:park` infrastructure.
 
 ## Important Notes
 
-- **Always create tasks via `TaskCreate`** — never skip the task
-  list, even for single-step work. The supervisor uses it to add
-  new tasks mid-session.
+- **Always create tasks via `update_plan`** — never skip the
+  visible plan, even for single-step work. The supervisor uses it
+  to add new tasks mid-session.
 - Always verify ticket exists before creating a branch
 - If ticket is "Done"/"Canceled" (Linear) or "closed" (GitHub),
   warn the user before proceeding
@@ -537,7 +584,7 @@ User is at task 4 of 7 and says "let's wrap up for today".
 
 1. Skill detects pause signal
 2. Invokes `Dev10x:session-wrap-up`
-3. `Dev10x:session-wrap-up` reads `TaskList` — sees 3 pending tasks
+3. `Dev10x:session-wrap-up` reads the visible plan — sees 3 pending tasks
 4. Routes each via `Dev10x:park` (e.g., PR bookmark, TODO.md)
 5. Session ends with bookmark saved
 
