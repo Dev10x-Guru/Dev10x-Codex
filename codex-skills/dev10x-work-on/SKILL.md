@@ -103,7 +103,7 @@ extracted identifiers. Collect all sources into a list for Phase 2.
 ## Phase 2: Gather (Quick & Parallel)
 
 Fetch context from all sources **in parallel** — no supervisor
-interaction needed. Use parallel tool calls. In Codex, prefer
+interaction needed. Use parallel tool calls. Prefer
 `multi_tool_use.parallel` for independent developer-tool calls.
 Use multi-agent tools only when they are exposed in the current
 session.
