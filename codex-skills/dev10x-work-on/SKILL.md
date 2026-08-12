@@ -1,5 +1,5 @@
 ---
-name: dev10x-work-on
+name: Dev10x-work-on
 description: Start work on any input — ticket URL, PR link, Slack thread, Sentry issue, or free text. Classifies inputs, gathers context in parallel, builds a supervisor-approved task list, and executes adaptively with pause/resume support.
 ---
 
