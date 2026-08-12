@@ -1,8 +1,8 @@
 # Database configuration for Dev10x:db-psql skill.
 #
 # Place this file as databases.yaml in:
-#   ~/.claude/memory/databases.yaml    (global, user-level)
-#   ~/.claude/skills/<project>:db/     (project-specific)
+#   ~/.codex/memory/databases.yaml    (global, user-level)
+#   ~/.codex/skills/<project>:db/     (project-specific)
 #
 # DSN backends:
 #   env     — reads DSN from an environment variable

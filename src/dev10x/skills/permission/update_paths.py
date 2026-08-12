@@ -11,7 +11,7 @@ Modes:
   - --generalize: Replace session-specific args with wildcard patterns
 
 Config lookup order:
-  1. ~/.claude/skills/Dev10x:permission-maintenance/projects.yaml (userspace)
+  1. ~/.codex/skills/Dev10x:permission-maintenance/projects.yaml (userspace)
   2. ${CLAUDE_PLUGIN_ROOT}/skills/permission-maintenance/projects.yaml (plugin default)
 """
 
@@ -24,7 +24,7 @@ from pathlib import Path
 import yaml
 
 USERSPACE_CONFIG = (
-    Path.home() / ".claude" / "skills" / "Dev10x:permission-maintenance" / "projects.yaml"
+    Path.home() / ".codex" / "skills" / "Dev10x:permission-maintenance" / "projects.yaml"
 )
 PLUGIN_CONFIG = (
     Path(__file__).resolve().parents[4] / "skills" / "permission-maintenance" / "projects.yaml"
@@ -84,11 +84,11 @@ def find_settings_files(
 ) -> list[Path]:
     files: list[Path] = []
     if include_user:
-        user_settings = Path.home() / ".claude" / "settings.local.json"
+        user_settings = Path.home() / ".codex" / "settings.local.json"
         if user_settings.exists():
             files.append(user_settings)
 
-    project_settings_dir = Path.home() / ".claude" / "projects"
+    project_settings_dir = Path.home() / ".codex" / "projects"
     if project_settings_dir.is_dir():
         for settings_file in project_settings_dir.rglob("settings.local.json"):
             files.append(settings_file)
@@ -97,7 +97,7 @@ def find_settings_files(
         root_path = Path(root).expanduser()
         if not root_path.is_dir():
             continue
-        for settings_file in root_path.rglob(".claude/settings.local.json"):
+        for settings_file in root_path.rglob(".codex/settings.local.json"):
             files.append(settings_file)
 
     seen: set[Path] = set()
@@ -366,7 +366,7 @@ def main() -> int:
 
 
 def _load_global_allow_rules() -> set[str]:
-    global_settings = Path.home() / ".claude" / "settings.json"
+    global_settings = Path.home() / ".codex" / "settings.json"
     if not global_settings.is_file():
         return set()
     try:
@@ -465,9 +465,9 @@ KNOWN_PLUGIN_DIRS = ("Dev10x", "dev10x-claude")
 
 
 def _detect_plugin_cache() -> str:
-    cache_root = Path.home() / ".claude" / "plugins" / "cache"
+    cache_root = Path.home() / ".codex" / "plugins" / "cache"
     if not cache_root.is_dir():
-        return "~/.claude/plugins/cache/Dev10x-Guru/Dev10x"
+        return "~/.codex/plugins/cache/Dev10x-Guru/Dev10x"
     candidates: list[Path] = []
     for org_dir in cache_root.iterdir():
         if not org_dir.is_dir():
@@ -478,13 +478,13 @@ def _detect_plugin_cache() -> str:
                 candidates.append(plugin_dir)
                 break
     if len(candidates) == 1:
-        return f"~/.claude/plugins/cache/{candidates[0].parent.name}/{candidates[0].name}"
+        return f"~/.codex/plugins/cache/{candidates[0].parent.name}/{candidates[0].name}"
     if len(candidates) > 1:
         names = ", ".join(f"{c.parent.name}/{c.name}" for c in candidates)
         print(f"Multiple plugin cache entries found: {names}")
         print(f"Using first match: {candidates[0].parent.name}/{candidates[0].name}")
-        return f"~/.claude/plugins/cache/{candidates[0].parent.name}/{candidates[0].name}"
-    return "~/.claude/plugins/cache/Dev10x-Guru/Dev10x"
+        return f"~/.codex/plugins/cache/{candidates[0].parent.name}/{candidates[0].name}"
+    return "~/.codex/plugins/cache/Dev10x-Guru/Dev10x"
 
 
 def _init_userspace_config() -> int:
@@ -498,7 +498,7 @@ def _init_userspace_config() -> int:
     content = PLUGIN_CONFIG.read_text()
     detected_cache = _detect_plugin_cache()
     content = content.replace(
-        "~/.claude/plugins/cache/Dev10x-Guru/dev10x-claude",
+        "~/.codex/plugins/cache/Dev10x-Guru/dev10x-claude",
         detected_cache,
     )
     USERSPACE_CONFIG.write_text(content)

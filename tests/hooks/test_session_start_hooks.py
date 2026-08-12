@@ -234,7 +234,7 @@ class TestMigrateRules:
     def test_preserves_unmatched_rules(self) -> None:
         from dev10x.hooks.session import _migrate_rules
 
-        rules = ["Read", "Write", "Bash(~/.claude/tools/:*)"]
+        rules = ["Read", "Write", "Bash(~/.codex/tools/:*)"]
         result, count = _migrate_rules(rules=rules, replacements=[("/old/", "/new/")])
 
         assert count == 0
@@ -281,7 +281,7 @@ class TestSessionMigratePermissions:
         fake_plugin_root.mkdir(parents=True)
         fake_old_version.mkdir(parents=True)
 
-        settings_dir = tmp_path / ".claude"
+        settings_dir = tmp_path / ".codex"
         settings_dir.mkdir()
         settings_file = settings_dir / "settings.json"
         settings_file.write_text(

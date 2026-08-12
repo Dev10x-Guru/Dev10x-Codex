@@ -62,7 +62,7 @@ discover_configs() {
 
   load_config "$SKILL_DIR/databases.yaml"
 
-  load_config "$HOME/.claude/memory/databases.yaml"
+  load_config "$HOME/.codex/memory/databases.yaml"
 
   for cfg in "$SKILLS_DIR"/*/databases.yaml; do
     [[ -f "$cfg" ]] || continue
@@ -70,7 +70,7 @@ discover_configs() {
     load_config "$cfg"
   done
 
-  for cfg in "$HOME/.claude/skills"/*/databases.yaml; do
+  for cfg in "$HOME/.codex/skills"/*/databases.yaml; do
     [[ -f "$cfg" ]] || continue
     load_config "$cfg"
   done
@@ -80,7 +80,7 @@ discover_configs
 
 if [[ ${#DB_BACKEND[@]} -eq 0 ]]; then
   echo "ERROR: No databases configured." >&2
-  echo "Create databases.yaml in ~/.claude/memory/ or a skill directory." >&2
+  echo "Create databases.yaml in ~/.codex/memory/ or a skill directory." >&2
   echo "See: $SKILL_DIR/databases.yaml.example" >&2
   exit 1
 fi

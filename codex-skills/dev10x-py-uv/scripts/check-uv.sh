@@ -39,8 +39,8 @@ done
 echo ""
 echo "=== SCRIPT_AUDIT ==="
 
-SKILLS_DIR="${HOME}/.claude/skills"
-TOOLS_DIR="${HOME}/.claude/tools"
+SKILLS_DIR="${HOME}/.codex/skills"
+TOOLS_DIR="${HOME}/.codex/tools"
 WRONG_SHEBANG_COUNT=0
 NOT_EXECUTABLE_COUNT=0
 TOTAL_PY=0
@@ -54,7 +54,7 @@ scan_directory() {
         TOTAL_PY=$((TOTAL_PY + 1))
         local basename
         basename="$(basename "$pyfile")"
-        local relpath="${pyfile#"$HOME"/.claude/}"
+        local relpath="${pyfile#"$HOME"/.codex/}"
         local shebang
         shebang="$(head -1 "$pyfile" 2>/dev/null || true)"
 

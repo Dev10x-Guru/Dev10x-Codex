@@ -12,7 +12,7 @@ the right pattern on the first attempt.
 | `cd "$(git rev-parse --show-toplevel)" && ...` | Subshell + chaining, git works from any CWD | Run command directly, or `git rev-parse` then `cd` separately |
 | `ENV=value git ...` (any env prefix) | Env prefix shifts effective prefix, breaks allow rules | Drop prefix or use `git develop-rebase` alias |
 | `cat <<'EOF'` / `cat >` / `echo >` | Heredocs/redirects blocked by security hook | Write tool + reference file (`git commit -F`) |
-| `python3 -c "..."` inline code | Inline execution blocked | Extract to `~/.claude/tools/script.py` with uv shebang |
+| `python3 -c "..."` inline code | Inline execution blocked | Extract to `~/.codex/tools/script.py` with uv shebang |
 
 ## Permission-Friction Anti-Patterns (advisory)
 
@@ -50,8 +50,8 @@ prompts or brittle command matching.
 - Hook validates verb choice automatically
 
 ### Script invocation
-- Scripts in `~/.claude/skills/` and `~/.claude/tools/` are self-executing
-- Call directly: `~/.claude/tools/script.py args`
+- Scripts in `~/.codex/skills/` and `~/.codex/tools/` are self-executing
+- Call directly: `~/.codex/tools/script.py args`
 - Never prefix with `uv run --script` — the shebang handles it
 
 ### Worktrees

@@ -22,7 +22,7 @@ class TestSessionPersist:
     def test_creates_state_file(self, runner: CliRunner, tmp_path: Path) -> None:
         import dev10x.hooks.session as mod
 
-        state_dir = tmp_path / ".claude" / "projects" / "_session_state"
+        state_dir = tmp_path / ".codex" / "projects" / "_session_state"
 
         def fake_toplevel() -> str:
             return str(tmp_path / "myproject")
@@ -45,7 +45,7 @@ class TestSessionPersist:
                 )
 
         assert result.exit_code == 0
-        state_files = list((tmp_path / ".claude" / "projects" / "_session_state").glob("*.json"))
+        state_files = list((tmp_path / ".codex" / "projects" / "_session_state").glob("*.json"))
         assert len(state_files) == 1
 
     def test_state_file_schema(
@@ -70,7 +70,7 @@ class TestSessionPersist:
         )
 
         assert result.exit_code == 0
-        state_files = list((tmp_path / ".claude" / "projects" / "_session_state").glob("*.json"))
+        state_files = list((tmp_path / ".codex" / "projects" / "_session_state").glob("*.json"))
         assert len(state_files) == 1
         state = json.loads(state_files[0].read_text())
 
@@ -128,7 +128,7 @@ class TestSessionPersist:
             input=json.dumps({"session_id": "sess-perms-test"}),
         )
 
-        state_dir = tmp_path / ".claude" / "projects" / "_session_state"
+        state_dir = tmp_path / ".codex" / "projects" / "_session_state"
         assert state_dir.exists()
         assert state_dir.stat().st_mode & 0o777 == 0o700
 
@@ -153,7 +153,7 @@ class TestSessionGoodbye:
         )
 
         assert result.exit_code == 0
-        assert "claude --resume my-session-id" in result.output
+        assert "codex --resume my-session-id" in result.output
 
     def test_no_resume_command_without_session_id(self, runner: CliRunner) -> None:
         result = runner.invoke(
@@ -163,7 +163,7 @@ class TestSessionGoodbye:
         )
 
         assert result.exit_code == 0
-        assert "claude --resume" not in result.output
+        assert "codex --resume" not in result.output
 
     def test_handles_invalid_json_gracefully(self) -> None:
         from dev10x.hooks.session import session_goodbye
@@ -181,7 +181,7 @@ class TestSessionGoodbye:
 
         output = captured.getvalue()
         assert "Dev10x" in output
-        assert "claude --resume" not in output
+        assert "codex --resume" not in output
 
     def test_outputs_ansi_hyperlink(self, runner: CliRunner) -> None:
         result = runner.invoke(

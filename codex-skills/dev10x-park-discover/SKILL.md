@@ -38,7 +38,7 @@ by source.
 
 #### 2a. Project TODO file
 
-Read `.claude/TODO.md` in the repo root. Extract pending items
+Read `.codex/TODO.md` in the repo root. Extract pending items
 (`- [ ]` lines). If the file doesn't exist, note "No project TODO
 file."
 
@@ -124,7 +124,7 @@ Group results by source in a scannable format:
 ```markdown
 ## Deferred Items — [project name]
 
-### .claude/TODO.md
+### .codex/TODO.md
 (items or "No project TODO file")
 
 ### Slack DM Reminders

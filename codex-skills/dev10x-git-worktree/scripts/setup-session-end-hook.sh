@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Configure a SessionEnd hook in a worktree's .claude/settings.local.json
+# Configure a SessionEnd hook in a worktree's .codex/settings.local.json
 # that prompts the user to remove the worktree when the session ends.
 #
 # Usage: setup-session-end-hook.sh <worktree-path>
@@ -9,9 +9,9 @@ set -euo pipefail
 WORKTREE_PATH="${1:?Usage: setup-session-end-hook.sh <worktree-path>}"
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLEANUP_SCRIPT="$SKILL_DIR/scripts/session-end-cleanup.sh"
-SETTINGS_FILE="$WORKTREE_PATH/.claude/settings.local.json"
+SETTINGS_FILE="$WORKTREE_PATH/.codex/settings.local.json"
 
-mkdir -p "$WORKTREE_PATH/.claude"
+mkdir -p "$WORKTREE_PATH/.codex"
 
 HOOK_COMMAND="$CLEANUP_SCRIPT $WORKTREE_PATH"
 HOOK_ENTRY=$(jq -n --arg cmd "$HOOK_COMMAND" '{

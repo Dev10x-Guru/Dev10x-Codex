@@ -60,7 +60,7 @@ class TestPython3Inline:
         assert result is None
 
     def test_allows_approved_path(self, validator: ExecutionSafetyValidator) -> None:
-        inp = _make_input(command="python3 ~/.claude/tools/script.py")
+        inp = _make_input(command="python3 ~/.codex/tools/script.py")
         result = validator.validate(inp=inp)
         assert result is None
 

@@ -266,7 +266,7 @@ class TestAndChaining:
         return PrefixFrictionValidator()
 
     def test_blocks_setup_and_path_based(self, validator: PrefixFrictionValidator) -> None:
-        inp = _make_input(command="mkdir -p /tmp/foo && ~/.claude/tools/script.sh arg1")
+        inp = _make_input(command="mkdir -p /tmp/foo && ~/.codex/tools/script.sh arg1")
         result = validator.validate(inp=inp)
         assert result is not None
         assert "&&" in result.message

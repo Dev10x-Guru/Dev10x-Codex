@@ -11,8 +11,8 @@ Subcommands:
     prepare  — Resolve project config, format message, output JSON.
     send     — Post message via slack-notify.py.
 
-Config: ~/.claude/memory/slack-config-code-review-requests.yaml
-Slack config: ~/.claude/memory/slack-config.yaml
+Config: ~/.codex/memory/slack-config-code-review-requests.yaml
+Slack config: ~/.codex/memory/slack-config.yaml
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-CONFIG_PATH = Path.home() / ".claude" / "memory" / "slack-config-code-review-requests.yaml"
-SLACK_CONFIG_PATH = Path.home() / ".claude" / "memory" / "slack-config.yaml"
+CONFIG_PATH = Path.home() / ".codex" / "memory" / "slack-config-code-review-requests.yaml"
+SLACK_CONFIG_PATH = Path.home() / ".codex" / "memory" / "slack-config.yaml"
 
 
 def load_yaml(path: Path) -> dict:

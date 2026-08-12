@@ -15,7 +15,7 @@ settings.json, and reports:
 Usage:
     analyze-permissions.py <transcript.md> [settings.json] [output.md]
 
-If settings.json is omitted, uses ~/.claude/settings.local.json.
+If settings.json is omitted, uses ~/.codex/settings.local.json.
 If output.md is omitted, writes to stdout.
 """
 
@@ -465,7 +465,7 @@ def main() -> None:
     settings_path = (
         sys.argv[2]
         if len(sys.argv) >= 3 and sys.argv[2].endswith(".json")
-        else os.path.expanduser("~/.claude/settings.local.json")
+        else os.path.expanduser("~/.codex/settings.local.json")
     )
     output_path = None
     if len(sys.argv) >= 3 and sys.argv[-1].endswith(".md"):
@@ -477,8 +477,8 @@ def main() -> None:
     findings = analyze_permissions(calls=calls, rules=rules)
     findings = count_nuisance_patterns(findings=findings)
 
-    skills_dir = os.path.expanduser("~/.claude/skills")
-    tools_dir = os.path.expanduser("~/.claude/tools")
+    skills_dir = os.path.expanduser("~/.codex/skills")
+    tools_dir = os.path.expanduser("~/.codex/tools")
     hygiene = audit_script_hygiene(skills_dir=skills_dir, tools_dir=tools_dir)
 
     proposals = propose_allow_rules(findings=findings)

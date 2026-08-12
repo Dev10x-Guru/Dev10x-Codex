@@ -28,9 +28,9 @@ SHELL_WRITE_RE = re.compile(
 ENV_VAR_RE = re.compile(r"^[A-Z_][A-Z0-9_]*=\S*$")
 
 APPROVED_ABS_PREFIXES = (
-    os.path.expanduser("~/.claude/tools/"),
-    os.path.expanduser("~/.claude/skills/"),
-    os.path.expanduser("~/.claude/hooks/"),
+    os.path.expanduser("~/.codex/tools/"),
+    os.path.expanduser("~/.codex/skills/"),
+    os.path.expanduser("~/.codex/hooks/"),
 )
 
 SHELL_WRITE_MSG = (

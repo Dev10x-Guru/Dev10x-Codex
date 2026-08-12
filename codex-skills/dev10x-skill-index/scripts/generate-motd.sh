@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Generate ~/.claude/SKILLS.md — family-grouped, adaptive-density skill index.
+# Generate ~/.codex/SKILLS.md — family-grouped, adaptive-density skill index.
 # Sources: local skills, installed Dev10x plugin, official plugins.
 # Pass --force to regenerate even when cache is fresh.
 set -euo pipefail
 
-SKILLS_MD="${HOME}/.claude/SKILLS.md"
-OLD_MOTD="${HOME}/.claude/.skills-motd.txt"
+SKILLS_MD="${HOME}/.codex/SKILLS.md"
+OLD_MOTD="${HOME}/.codex/.skills-motd.txt"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAMILIES_FILE="${SCRIPT_DIR}/families.yaml"
 HIDDEN_FILE="${SCRIPT_DIR}/hidden.yaml"
@@ -19,10 +19,10 @@ if ! command -v "$YQ" &>/dev/null; then
 fi
 
 # ── Resolve skill source directories ────────────────────────────
-LOCAL_DIR="${HOME}/.claude/skills"
+LOCAL_DIR="${HOME}/.codex/skills"
 
 resolve_Dev10x_dir() {
-    local cache_base="${HOME}/.claude/plugins/cache"
+    local cache_base="${HOME}/.codex/plugins/cache"
     [[ -d "$cache_base" ]] || return 0
 
     find "$cache_base" -mindepth 4 -maxdepth 4 -type d -name skills 2>/dev/null \
@@ -38,7 +38,7 @@ resolve_Dev10x_dir() {
 
 DEV10X_DIR="$(resolve_Dev10x_dir)"
 
-OFFICIAL_BASE="${HOME}/.claude/plugins/cache/claude-plugins-official"
+OFFICIAL_BASE="${HOME}/.codex/plugins/cache/claude-plugins-official"
 
 # ── Cache check ─────────────────────────────────────────────────
 if [[ "${1:-}" != "--force" && -f "$SKILLS_MD" ]]; then

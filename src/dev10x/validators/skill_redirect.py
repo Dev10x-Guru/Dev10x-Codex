@@ -11,7 +11,7 @@ Supports three friction levels:
 
 The YAML is the single source of truth shared with
 Dev10x:skill-reinforcement. User overrides:
-  ~/.claude/memory/Dev10x/skill-reinforcement.yaml
+  ~/.codex/memory/Dev10x/skill-reinforcement.yaml
 """
 
 from __future__ import annotations

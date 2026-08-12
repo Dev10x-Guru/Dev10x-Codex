@@ -32,12 +32,12 @@ def _run_hook(
 
 
 def _plan_files(tmp_path: Path) -> list[Path]:
-    """Find plan.yaml in any .claude/session/ under CWD (the git repo)."""
+    """Find plan.yaml in any .codex/session/ under CWD (the git repo)."""
     toplevel = subprocess.check_output(
         ["git", "rev-parse", "--show-toplevel"],
         text=True,
     ).strip()
-    plan_path = Path(toplevel) / ".claude" / "session" / "plan.yaml"
+    plan_path = Path(toplevel) / ".codex" / "session" / "plan.yaml"
     if plan_path.exists():
         return [plan_path]
     return []
@@ -60,7 +60,7 @@ def _cleanup_plan() -> None:
         ["git", "rev-parse", "--show-toplevel"],
         text=True,
     ).strip()
-    plan_path = Path(toplevel) / ".claude" / "session" / "plan.yaml"
+    plan_path = Path(toplevel) / ".codex" / "session" / "plan.yaml"
     if plan_path.exists():
         plan_path.unlink()
     session_dir = plan_path.parent
@@ -451,7 +451,7 @@ class TestArchive:
             ["git", "rev-parse", "--show-toplevel"],
             text=True,
         ).strip()
-        archive_dir = Path(toplevel) / ".claude" / "session" / "archive"
+        archive_dir = Path(toplevel) / ".codex" / "session" / "archive"
         if archive_dir.exists():
             import shutil
 
@@ -482,7 +482,7 @@ class TestArchive:
             ["git", "rev-parse", "--show-toplevel"],
             text=True,
         ).strip()
-        archive_dir = Path(toplevel) / ".claude" / "session" / "archive"
+        archive_dir = Path(toplevel) / ".codex" / "session" / "archive"
         _run_cli("--archive")
         assert archive_dir.exists()
         archives = list(archive_dir.glob("plan-*.yaml"))
@@ -523,7 +523,7 @@ class TestYamlRoundtrip:
         )
         files = _plan_files(tmp_path=None)
         assert len(files) == 1
-        assert ".claude/session/plan.yaml" in str(files[0])
+        assert ".codex/session/plan.yaml" in str(files[0])
 
     def test_json_summary_mode(self) -> None:
         _run_hook(

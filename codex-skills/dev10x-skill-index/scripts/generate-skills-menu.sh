@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Generate ~/.claude/.skills-menu.txt — compact terminal-friendly skill index.
+# Generate ~/.codex/.skills-menu.txt — compact terminal-friendly skill index.
 # Sourced from families.yaml and skill definitions with Dev10x: prefix invocations.
 set -euo pipefail
 
-SKILLS_MENU="${HOME}/.claude/.skills-menu.txt"
+SKILLS_MENU="${HOME}/.codex/.skills-menu.txt"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAMILIES_FILE="${SCRIPT_DIR}/families.yaml"
 HIDDEN_FILE="${SCRIPT_DIR}/hidden.yaml"
@@ -15,10 +15,10 @@ if ! command -v "$YQ" &>/dev/null; then
 fi
 
 # ── Resolve skill source directories ────────────────────────────
-LOCAL_DIR="${HOME}/.claude/skills"
+LOCAL_DIR="${HOME}/.codex/skills"
 
 resolve_Dev10x_dir() {
-    local cache_base="${HOME}/.claude/plugins/cache"
+    local cache_base="${HOME}/.codex/plugins/cache"
     [[ -d "$cache_base" ]] || return 0
 
     find "$cache_base" -mindepth 4 -maxdepth 4 -type d -name skills 2>/dev/null \

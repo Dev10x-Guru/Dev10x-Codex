@@ -82,7 +82,7 @@ class TestSkillMetrics:
         )
 
         assert result.exit_code == 0
-        metrics_files = list((tmp_path / ".claude" / "projects" / "_metrics").glob("*.jsonl"))
+        metrics_files = list((tmp_path / ".codex" / "projects" / "_metrics").glob("*.jsonl"))
         assert len(metrics_files) == 1
 
     def test_metrics_entry_schema(
@@ -107,7 +107,7 @@ class TestSkillMetrics:
             ),
         )
 
-        metrics_files = list((tmp_path / ".claude" / "projects" / "_metrics").glob("*.jsonl"))
+        metrics_files = list((tmp_path / ".codex" / "projects" / "_metrics").glob("*.jsonl"))
         lines = metrics_files[0].read_text().strip().splitlines()
         assert len(lines) == 1
         entry = json.loads(lines[0])
@@ -152,7 +152,7 @@ class TestSkillMetrics:
         monkeypatch.setattr(mod, "_get_toplevel", lambda: str(tmp_path))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        metrics_dir = tmp_path / ".claude" / "projects" / "_metrics"
+        metrics_dir = tmp_path / ".codex" / "projects" / "_metrics"
         metrics_dir.mkdir(parents=True)
 
         old_file = metrics_dir / "old_2020-01-01.jsonl"

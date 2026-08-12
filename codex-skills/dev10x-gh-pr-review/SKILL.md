@@ -67,7 +67,7 @@ DTOs):
 Load project review guidelines from `references/`:
 - `review-guidelines.md` — workflow, threads, summaries
 - `review-checks-common.md` — false positive prevention
-- Domain-specific agents from `.claude/agents/` based on file types
+- Domain-specific reviewer docs from the repo's agent directories based on file types
 
 Apply the **False Positive Prevention Gate** before drafting any
 inline comment:

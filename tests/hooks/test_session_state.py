@@ -40,7 +40,7 @@ def _run_reload(
 def _create_state_file(*, home: Path, session_id: str) -> None:
     toplevel = _git_toplevel()
     project_hash = hashlib.md5(toplevel.encode()).hexdigest()
-    state_dir = home / ".claude" / "projects" / "_session_state"
+    state_dir = home / ".codex" / "projects" / "_session_state"
     state_dir.mkdir(parents=True, exist_ok=True)
     state = {
         "session_id": session_id,
@@ -77,7 +77,7 @@ class TestSessionStartReload:
 
     def test_cleans_up_state_after_reload(self, tmp_path: Path) -> None:
         _create_state_file(home=tmp_path, session_id="cleanup-test")
-        state_dir = tmp_path / ".claude" / "projects" / "_session_state"
+        state_dir = tmp_path / ".codex" / "projects" / "_session_state"
         assert len(list(state_dir.glob("*.json"))) == 1
         _run_reload(env={"HOME": str(tmp_path)})
         assert len(list(state_dir.glob("*.json"))) == 0
