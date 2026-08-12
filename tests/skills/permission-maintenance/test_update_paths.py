@@ -12,9 +12,9 @@ class TestExtractCachePublisher:
     @pytest.mark.parametrize(
         "plugin_cache,expected",
         [
-            ("~/.claude/plugins/cache/Dev10x-Guru/Dev10x", "Dev10x-Guru"),
-            ("~/.claude/plugins/cache/WooYek/Dev10x", "WooYek"),
-            ("~/.claude/plugins/cache/Dev10x-Guru/dev10x-claude", "Dev10x-Guru"),
+            ("~/.codex/plugins/cache/Dev10x-Guru/Dev10x", "Dev10x-Guru"),
+            ("~/.codex/plugins/cache/WooYek/Dev10x", "WooYek"),
+            ("~/.codex/plugins/cache/Dev10x-Guru/dev10x-claude", "Dev10x-Guru"),
         ],
     )
     def test_extracts_publisher(self, plugin_cache: str, expected: str) -> None:
@@ -24,7 +24,7 @@ class TestExtractCachePublisher:
         assert extract_cache_publisher("/no/cache/here") is None
 
     def test_returns_none_for_path_ending_at_cache(self) -> None:
-        assert extract_cache_publisher("~/.claude/plugins/cache") is None
+        assert extract_cache_publisher("~/.codex/plugins/cache") is None
 
 
 class TestUpdateFilePublisher:
@@ -38,7 +38,7 @@ class TestUpdateFilePublisher:
                 {
                     "permissions": {
                         "allow": [
-                            "Bash(~/.claude/plugins/cache/WooYek/Dev10x/0.48.0/skills/foo.sh:*)",
+                            "Bash(~/.codex/plugins/cache/WooYek/Dev10x/0.48.0/skills/foo.sh:*)",
                         ]
                     }
                 }
@@ -66,7 +66,7 @@ class TestUpdateFilePublisher:
                 {
                     "permissions": {
                         "allow": [
-                            "Bash(~/.claude/plugins/cache/WooYek/Dev10x/0.54.0/skills/foo.sh:*)",
+                            "Bash(~/.codex/plugins/cache/WooYek/Dev10x/0.54.0/skills/foo.sh:*)",
                         ]
                     }
                 }
@@ -93,7 +93,7 @@ class TestUpdateFilePublisher:
                 {
                     "permissions": {
                         "allow": [
-                            "Bash(~/.claude/plugins/cache/Dev10x-Guru/Dev10x/0.54.0/skills/foo.sh:*)",
+                            "Bash(~/.codex/plugins/cache/Dev10x-Guru/Dev10x/0.54.0/skills/foo.sh:*)",
                         ]
                     }
                 }
@@ -117,7 +117,7 @@ class TestUpdateFilePublisher:
                 {
                     "permissions": {
                         "allow": [
-                            "Bash(~/.claude/plugins/cache/WooYek/Dev10x/0.48.0/skills/foo.sh:*)",
+                            "Bash(~/.codex/plugins/cache/WooYek/Dev10x/0.48.0/skills/foo.sh:*)",
                         ]
                     }
                 }
@@ -140,7 +140,7 @@ class TestUpdateFilePublisher:
                 {
                     "permissions": {
                         "allow": [
-                            "Bash(~/.claude/plugins/cache/WooYek/dev10x-claude/0.30.0/scripts/x.sh:*)",
+                            "Bash(~/.codex/plugins/cache/WooYek/dev10x-claude/0.30.0/scripts/x.sh:*)",
                         ]
                     }
                 }
@@ -167,9 +167,9 @@ class TestUpdateFilePublisher:
                 {
                     "permissions": {
                         "allow": [
-                            "Bash(~/.claude/plugins/cache/WooYek/Dev10x/0.48.0/skills/a.sh:*)",
+                            "Bash(~/.codex/plugins/cache/WooYek/Dev10x/0.48.0/skills/a.sh:*)",
                             "Bash(git log:*)",
-                            "Bash(~/.claude/plugins/cache/WooYek/Dev10x/0.48.0/skills/b.sh:*)",
+                            "Bash(~/.codex/plugins/cache/WooYek/Dev10x/0.48.0/skills/b.sh:*)",
                         ]
                     }
                 }
@@ -192,7 +192,7 @@ class TestUpdateFilePublisher:
             {
                 "permissions": {
                     "allow": [
-                        "Bash(~/.claude/plugins/cache/WooYek/Dev10x/0.48.0/skills/foo.sh:*)",
+                        "Bash(~/.codex/plugins/cache/WooYek/Dev10x/0.48.0/skills/foo.sh:*)",
                     ]
                 }
             }

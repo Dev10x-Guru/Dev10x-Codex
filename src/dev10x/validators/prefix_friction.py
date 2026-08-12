@@ -27,17 +27,17 @@ SETUP_TOKENS = frozenset(
 )
 
 PATH_PREFIXES = (
-    os.path.expanduser("~/.claude/skills/"),
-    os.path.expanduser("~/.claude/tools/"),
-    os.path.expanduser("~/.claude/hooks/"),
-    "~/.claude/skills/",
-    "~/.claude/tools/",
-    "~/.claude/hooks/",
+    os.path.expanduser("~/.codex/skills/"),
+    os.path.expanduser("~/.codex/tools/"),
+    os.path.expanduser("~/.codex/hooks/"),
+    "~/.codex/skills/",
+    "~/.codex/tools/",
+    "~/.codex/hooks/",
 )
 
 SETTINGS_FILES = [
-    os.path.expanduser("~/.claude/settings.local.json"),
-    os.path.expanduser("~/.claude/settings.json"),
+    os.path.expanduser("~/.codex/settings.local.json"),
+    os.path.expanduser("~/.codex/settings.json"),
 ]
 
 GIT_C_RE = re.compile(r'\bgit\s+-C\s+("(?:[^"]+)"|\'(?:[^\']+)\'|\S+)')
@@ -94,13 +94,13 @@ Fix this by finding or creating a wrapper:
   2. Existing git aliases:
        git config --list | grep alias\\.
 
-  3. Existing Claude tools / skill scripts:
-       ls ~/.claude/tools/
-       find ~/.claude/skills -name '*.sh' | head -20
+  3. Existing Codex tools / skill scripts:
+       ls ~/.codex/tools/
+       find ~/.codex/skills -name '*.sh' | head -20
 
-  4. If no wrapper exists, create ~/.claude/tools/<name>.sh that
+  4. If no wrapper exists, create ~/.codex/tools/<name>.sh that
      handles both the setup and the command internally, then add:
-       Bash(~/.claude/tools/<name>:*)   to settings.local.json allow rules
+       Bash(~/.codex/tools/<name>:*)   to settings.local.json allow rules
 
   5. For independent steps, use separate Bash tool calls instead of &&.
 

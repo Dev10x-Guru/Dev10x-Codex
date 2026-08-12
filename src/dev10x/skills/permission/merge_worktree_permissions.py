@@ -22,7 +22,7 @@ from pathlib import Path
 import yaml
 
 USERSPACE_CONFIG = (
-    Path.home() / ".claude" / "skills" / "Dev10x:permission-maintenance" / "projects.yaml"
+    Path.home() / ".codex" / "skills" / "Dev10x:permission-maintenance" / "projects.yaml"
 )
 PLUGIN_CONFIG = (
     Path(__file__).resolve().parents[4] / "skills" / "permission-maintenance" / "projects.yaml"
@@ -114,7 +114,7 @@ def find_worktree_groups(roots: list[str]) -> dict[Path, list[Path]]:
         for wt_dir in sorted(worktrees_dir.iterdir()):
             if not wt_dir.is_dir():
                 continue
-            settings = wt_dir / ".claude" / "settings.local.json"
+            settings = wt_dir / ".codex" / "settings.local.json"
             if not settings.exists():
                 continue
             main_project = resolve_main_project(wt_dir)
@@ -141,13 +141,13 @@ def merge_permissions(
     worktree_dirs: list[Path],
     dry_run: bool = False,
 ) -> tuple[int, list[str]]:
-    main_settings = main_project / ".claude" / "settings.local.json"
+    main_settings = main_project / ".codex" / "settings.local.json"
     main_data = load_permissions(main_settings)
     main_allow = extract_allow_set(main_data)
 
     new_entries: set[str] = set()
     for wt_dir in worktree_dirs:
-        wt_settings = wt_dir / ".claude" / "settings.local.json"
+        wt_settings = wt_dir / ".codex" / "settings.local.json"
         wt_data = load_permissions(wt_settings)
         wt_allow = extract_allow_set(wt_data)
         new_entries |= wt_allow - main_allow

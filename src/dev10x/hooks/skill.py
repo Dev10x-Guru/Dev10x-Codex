@@ -62,7 +62,7 @@ def skill_metrics() -> None:
     timestamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     date_tag = now.strftime("%Y-%m-%d")
 
-    metrics_dir = Path.home() / ".claude" / "projects" / "_metrics"
+    metrics_dir = Path.home() / ".codex" / "projects" / "_metrics"
     metrics_dir.mkdir(parents=True, exist_ok=True)
 
     metrics_file = metrics_dir / f"{project_hash}_{date_tag}.jsonl"

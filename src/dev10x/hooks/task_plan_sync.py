@@ -4,7 +4,7 @@ Triggered on TaskCreate and TaskUpdate. Maintains a per-project
 plan file that survives context compaction and session restarts.
 
 Plan file location:
-    <git-toplevel>/.claude/session/plan.yaml
+    <git-toplevel>/.codex/session/plan.yaml
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ def get_toplevel() -> str | None:
 
 
 def get_plan_path(*, toplevel: str) -> Path:
-    return Path(toplevel) / ".claude" / "session" / "plan.yaml"
+    return Path(toplevel) / ".codex" / "session" / "plan.yaml"
 
 
 def read_plan(*, plan_path: Path) -> dict[str, Any]:
@@ -68,7 +68,7 @@ def cmd_archive() -> None:
         sys.exit(0)
 
     plan = Plan.load(path=plan_path)
-    archive_dir = Path(toplevel) / ".claude" / "session" / "archive"
+    archive_dir = Path(toplevel) / ".codex" / "session" / "archive"
     archive_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")

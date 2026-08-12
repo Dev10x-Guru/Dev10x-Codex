@@ -25,9 +25,9 @@ class TestIsCoveredByWildcard:
                 "mcp__claude_ai_Linear__*",
             ),
             (
-                "Bash(/home/user/.claude/plugins/cache/Dev10x-Guru/dev10x-claude/0.30.0/scripts/foo.sh:*)",
-                {"Bash(/home/user/.claude/plugins/cache/Dev10x-Guru/dev10x-claude/*:*)"},
-                "Bash(/home/user/.claude/plugins/cache/Dev10x-Guru/dev10x-claude/*:*)",
+                "Bash(/home/user/.codex/plugins/cache/Dev10x-Guru/dev10x-claude/0.30.0/scripts/foo.sh:*)",
+                {"Bash(/home/user/.codex/plugins/cache/Dev10x-Guru/dev10x-claude/*:*)"},
+                "Bash(/home/user/.codex/plugins/cache/Dev10x-Guru/dev10x-claude/*:*)",
             ),
             (
                 "mcp__plugin_Dev10x_cli__detect_tracker",
@@ -100,12 +100,12 @@ class TestIsShellFragment:
 
 class TestIsOldVersion:
     def test_detects_old_version(self) -> None:
-        rule = "Bash(/home/user/.claude/plugins/cache/Dev10x-Guru/dev10x-claude/0.16.0/scripts/foo.sh:*)"
+        rule = "Bash(/home/user/.codex/plugins/cache/Dev10x-Guru/dev10x-claude/0.16.0/scripts/foo.sh:*)"
 
         assert clean_mod.is_old_version(rule, "0.33.0") is True
 
     def test_current_version_is_not_old(self) -> None:
-        rule = "Bash(/home/user/.claude/plugins/cache/Dev10x-Guru/dev10x-claude/0.33.0/scripts/foo.sh:*)"
+        rule = "Bash(/home/user/.codex/plugins/cache/Dev10x-Guru/dev10x-claude/0.33.0/scripts/foo.sh:*)"
 
         assert clean_mod.is_old_version(rule, "0.33.0") is False
 
@@ -113,13 +113,13 @@ class TestIsOldVersion:
         assert clean_mod.is_old_version("Bash(git log:*)", "0.33.0") is False
 
     def test_returns_false_when_no_current_version(self) -> None:
-        rule = "Bash(/home/user/.claude/plugins/cache/Dev10x-Guru/dev10x-claude/0.16.0/scripts/foo.sh:*)"
+        rule = "Bash(/home/user/.codex/plugins/cache/Dev10x-Guru/dev10x-claude/0.16.0/scripts/foo.sh:*)"
 
         assert clean_mod.is_old_version(rule, None) is False
 
     def test_detects_old_version_with_alternate_org(self) -> None:
         rule = (
-            "Bash(/home/user/.claude/plugins/cache/WooYek/dev10x-claude/0.16.0/scripts/foo.sh:*)"
+            "Bash(/home/user/.codex/plugins/cache/WooYek/dev10x-claude/0.16.0/scripts/foo.sh:*)"
         )
 
         assert clean_mod.is_old_version(rule, "0.33.0") is True
@@ -212,7 +212,7 @@ class TestClassifyRules:
 
     def test_classifies_old_versions(self) -> None:
         rules = [
-            "Bash(/home/u/.claude/plugins/cache/Dev10x-Guru/dev10x-claude/0.4.0/scripts/foo.sh:*)",
+            "Bash(/home/u/.codex/plugins/cache/Dev10x-Guru/dev10x-claude/0.4.0/scripts/foo.sh:*)",
         ]
 
         result = clean_mod.classify_rules(
@@ -318,7 +318,7 @@ class TestClassifyRules:
         rules = [
             "Bash(git log:*)",
             "mcp__claude_ai_Linear__get_issue",
-            "Bash(/home/u/.claude/plugins/cache/Dev10x-Guru/dev10x-claude/0.4.0/x.sh:*)",
+            "Bash(/home/u/.codex/plugins/cache/Dev10x-Guru/dev10x-claude/0.4.0/x.sh:*)",
             "Bash(GIT_SEQUENCE_EDITOR=: git rebase)",
             "Bash(fi)",
             "Read(//work/example/file.py)",
@@ -477,14 +477,14 @@ class TestIsStalePublisher:
     def test_detects_stale_publisher(self, tmp_path: Path) -> None:
         cache_root = tmp_path / "cache"
         (cache_root / "Dev10x-Guru").mkdir(parents=True)
-        rule = "Bash(~/.claude/plugins/cache/WooYek/Dev10x/0.48.0/skills/foo.sh:*)"
+        rule = "Bash(~/.codex/plugins/cache/WooYek/Dev10x/0.48.0/skills/foo.sh:*)"
 
         assert clean_mod.is_stale_publisher(rule, cache_root=cache_root) is True
 
     def test_returns_false_for_existing_publisher(self, tmp_path: Path) -> None:
         cache_root = tmp_path / "cache"
         (cache_root / "Dev10x-Guru").mkdir(parents=True)
-        rule = "Bash(~/.claude/plugins/cache/Dev10x-Guru/Dev10x/0.54.0/skills/foo.sh:*)"
+        rule = "Bash(~/.codex/plugins/cache/Dev10x-Guru/Dev10x/0.54.0/skills/foo.sh:*)"
 
         assert clean_mod.is_stale_publisher(rule, cache_root=cache_root) is False
 
@@ -495,14 +495,14 @@ class TestIsStalePublisher:
         assert clean_mod.is_stale_publisher("Bash(git log:*)", cache_root=cache_root) is False
 
     def test_returns_false_when_cache_root_is_none(self) -> None:
-        rule = "Bash(~/.claude/plugins/cache/WooYek/Dev10x/0.48.0/skills/foo.sh:*)"
+        rule = "Bash(~/.codex/plugins/cache/WooYek/Dev10x/0.48.0/skills/foo.sh:*)"
 
         assert clean_mod.is_stale_publisher(rule, cache_root=None) is False
 
     def test_matches_dev10x_claude_plugin_name(self, tmp_path: Path) -> None:
         cache_root = tmp_path / "cache"
         (cache_root / "Dev10x-Guru").mkdir(parents=True)
-        rule = "Bash(~/.claude/plugins/cache/WooYek/dev10x-claude/0.30.0/scripts/x.sh:*)"
+        rule = "Bash(~/.codex/plugins/cache/WooYek/dev10x-claude/0.30.0/scripts/x.sh:*)"
 
         assert clean_mod.is_stale_publisher(rule, cache_root=cache_root) is True
 
@@ -514,7 +514,7 @@ class TestClassifyRulesStalePublisher:
         cache_root = tmp_path / "cache"
         (cache_root / "Dev10x-Guru").mkdir(parents=True)
         rules = [
-            "Bash(~/.claude/plugins/cache/WooYek/Dev10x/0.48.0/skills/foo.sh:*)",
+            "Bash(~/.codex/plugins/cache/WooYek/Dev10x/0.48.0/skills/foo.sh:*)",
         ]
 
         result = clean_mod.classify_rules(
@@ -534,7 +534,7 @@ class TestClassifyRulesStalePublisher:
         cache_root = tmp_path / "cache"
         (cache_root / "Dev10x-Guru").mkdir(parents=True)
         rules = [
-            "Bash(~/.claude/plugins/cache/WooYek/Dev10x/0.30.0/skills/foo.sh:*)",
+            "Bash(~/.codex/plugins/cache/WooYek/Dev10x/0.30.0/skills/foo.sh:*)",
         ]
 
         result = clean_mod.classify_rules(

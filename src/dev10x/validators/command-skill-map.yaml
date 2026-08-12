@@ -7,7 +7,7 @@
 #   - Dev10x:skill-reinforcement (skill — advisory only)
 #
 # Per-project override: place a custom version at:
-#   ~/.claude/memory/Dev10x/skill-reinforcement.yaml
+#   ~/.codex/memory/Dev10x/skill-reinforcement.yaml
 # The hook merges override rules (user entries take precedence).
 #
 # Schema:
@@ -381,7 +381,7 @@ rules:
 
   - name: eval-in-skills
     matcher: "Edit|Write"
-    file_pattern: '/\.claude/skills/.*\.(md|sh)$'
+    file_pattern: '/\.codex/skills/.*\.(md|sh)$'
     content_pattern: '\beval\s+["$]'
     hook_block: true
     message: >

@@ -35,8 +35,8 @@ class TestEvalInSkills:
     @pytest.mark.parametrize(
         "file_path",
         [
-            "/home/user/.claude/skills/deploy/SKILL.md",
-            "/home/user/.claude/skills/deploy/run.sh",
+            "/home/user/.codex/skills/deploy/SKILL.md",
+            "/home/user/.codex/skills/deploy/run.sh",
         ],
     )
     def test_blocks_eval_in_skill_files(self, file_path: str) -> None:
@@ -53,7 +53,7 @@ class TestEvalInSkills:
     def test_blocks_eval_with_dollar_sign(self) -> None:
         result = _run_hook(
             tool_name="Write",
-            file_path="/home/user/.claude/skills/test/run.sh",
+            file_path="/home/user/.codex/skills/test/run.sh",
             content="eval $(generate_command)",
         )
         assert result.returncode == 2
@@ -61,7 +61,7 @@ class TestEvalInSkills:
     def test_allows_skill_file_without_eval(self) -> None:
         result = _run_hook(
             tool_name="Write",
-            file_path="/home/user/.claude/skills/deploy/run.sh",
+            file_path="/home/user/.codex/skills/deploy/run.sh",
             content="echo 'safe content'",
         )
         assert result.returncode == 0
@@ -125,7 +125,7 @@ class TestToolFiltering:
     def test_ignores_non_edit_tools(self) -> None:
         result = _run_hook(
             tool_name="Read",
-            file_path="/home/user/.claude/skills/test.sh",
+            file_path="/home/user/.codex/skills/test.sh",
             content='eval "$COMMAND"',
         )
         assert result.returncode == 0

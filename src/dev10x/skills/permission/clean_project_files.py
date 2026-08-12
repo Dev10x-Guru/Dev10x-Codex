@@ -5,7 +5,7 @@
 # ///
 """Clean redundant permission rules from project settings.local.json files.
 
-Compares project-level allow rules against global ~/.claude/settings.json
+Compares project-level allow rules against global ~/.codex/settings.json
 and strips rules that are:
   - Exact duplicates of global rules
   - Covered by global wildcard patterns (MCP families, plugin path wildcards)
@@ -17,7 +17,7 @@ and strips rules that are:
 Also flags rules containing leaked secrets (env vars with plaintext values).
 
 Config lookup order:
-  1. ~/.claude/skills/Dev10x:permission-maintenance/projects.yaml (userspace)
+  1. ~/.codex/skills/Dev10x:permission-maintenance/projects.yaml (userspace)
   2. ${CLAUDE_PLUGIN_ROOT}/skills/permission-maintenance/projects.yaml (plugin default)
 """
 
@@ -31,12 +31,12 @@ from pathlib import Path
 import yaml
 
 USERSPACE_CONFIG = (
-    Path.home() / ".claude" / "skills" / "Dev10x:permission-maintenance" / "projects.yaml"
+    Path.home() / ".codex" / "skills" / "Dev10x:permission-maintenance" / "projects.yaml"
 )
 PLUGIN_CONFIG = (
     Path(__file__).resolve().parents[4] / "skills" / "permission-maintenance" / "projects.yaml"
 )
-GLOBAL_SETTINGS = Path.home() / ".claude" / "settings.json"
+GLOBAL_SETTINGS = Path.home() / ".codex" / "settings.json"
 
 PLUGIN_NAMES = r"(?:Dev10x|dev10x-claude)"
 VERSION_PATTERN = re.compile(rf"plugins/cache/[^/]+/{PLUGIN_NAMES}/(\d+\.\d+\.\d+)")
@@ -346,7 +346,7 @@ def _format_messages(result: RemovalResult) -> list[str]:
 def find_settings_files(roots: list[str]) -> list[Path]:
     files: list[Path] = []
 
-    project_settings_dir = Path.home() / ".claude" / "projects"
+    project_settings_dir = Path.home() / ".codex" / "projects"
     if project_settings_dir.is_dir():
         for settings_file in project_settings_dir.rglob("settings.local.json"):
             files.append(settings_file)
@@ -355,7 +355,7 @@ def find_settings_files(roots: list[str]) -> list[Path]:
         root_path = Path(root).expanduser()
         if not root_path.is_dir():
             continue
-        for settings_file in root_path.rglob(".claude/settings.local.json"):
+        for settings_file in root_path.rglob(".codex/settings.local.json"):
             files.append(settings_file)
 
     seen: set[Path] = set()

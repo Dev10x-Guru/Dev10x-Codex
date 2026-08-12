@@ -51,10 +51,11 @@ if [ "$1" = "0000000000000000000000000000000000000000" ]; then
 
     # ── FILES TO COPY (add new entries here) ────────────────────────
     copy_clean ".env"
-    copy_clean ".codex/"
+    copy_clean ".codex/" worktrees
 
     if [ ! -d .codex ]; then
         mkdir -p .codex
+        echo '{}' > .codex/settings.local.json
     fi
 
     rm -f "$DIRTY_LIST"

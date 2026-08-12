@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate both ~/.claude/.skills-menu.txt and ~/.claude/SKILLS.md
+# Generate both ~/.codex/.skills-menu.txt and ~/.codex/SKILLS.md
 # Pass --force to regenerate even when cache is fresh.
 set -euo pipefail
 

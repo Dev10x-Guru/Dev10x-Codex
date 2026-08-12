@@ -47,7 +47,7 @@ Build target list based on detected context. Always available:
 
 | # | Target | When it surfaces |
 |---|--------|-----------------|
-| 1 | `.claude/TODO.md` | Next Claude session in this project |
+| 1 | `.codex/TODO.md` | Next Claude session in this project |
 | 2 | Slack DM to self | When clearing Slack messages |
 | 3 | Create issue | When triaging backlog or planning sprint |
 
@@ -70,7 +70,7 @@ For each selected target:
 
 | Target | Action |
 |--------|--------|
-| `.claude/TODO.md` | Invoke `Dev10x:park-todo` (project file mode) |
+| `.codex/TODO.md` | Invoke `Dev10x:park-todo` (project file mode) |
 | Slack DM | Invoke `Dev10x:park-remind` |
 | Create issue | Ask user which tracker (Linear, GitHub Issues, Jira, etc.) then create the issue with the deferred item as description |
 | Issue tracker comment | Post comment via the appropriate tracker MCP or CLI tool |
@@ -85,7 +85,7 @@ Report which targets received the item:
 
 ```
 Deferred "Add order confirmation email":
-  ✓ .claude/TODO.md (project)
+  ✓ .codex/TODO.md (project)
   ✓ Slack DM sent
 ```
 
@@ -112,7 +112,7 @@ _Session: YYYY-MM-DD_
 **PR session bookmark (rich metadata):**
 
 Use this format when deferring work on a PR to the next session. It
-provides enough context for `claude --resume` to pick up where the
+provides enough context for `codex --resume` to pick up where the
 session left off.
 
 Gather this data before composing:
@@ -140,7 +140,7 @@ Compose the comment:
 > **Automated reminder** — @{reviewer} session bookmark for
 > picking up this review tomorrow.
 > Session ID: `{session_id}`
-> Resume with: `claude --resume {session_id}`
+> Resume with: `codex --resume {session_id}`
 
 ---
 

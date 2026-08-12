@@ -69,9 +69,9 @@ def session_reload() -> None:
         sys.exit(0)
 
     project_hash = hashlib.md5(toplevel.encode()).hexdigest()
-    state_dir = Path.home() / ".claude" / "projects" / "_session_state"
+    state_dir = Path.home() / ".codex" / "projects" / "_session_state"
     state_file = state_dir / f"{project_hash}.json"
-    plan_file = Path(toplevel) / ".claude" / "session" / "plan.yaml"
+    plan_file = Path(toplevel) / ".codex" / "session" / "plan.yaml"
 
     has_state = state_file.exists()
     has_plan = plan_file.exists()
@@ -115,7 +115,7 @@ def session_reload() -> None:
             context += f"\n\nModified files:\n{modified_str}"
             context += f"\n\nStaged files:\n{staged_str}"
             context += f"\n\nRecent commits:\n{commits_str}"
-            context += f"\n\nResume prior session with: claude --resume {session_id}"
+            context += f"\n\nResume prior session with: codex --resume {session_id}"
 
     if has_plan:
         plan = _read_plan_summary(toplevel=toplevel)
@@ -193,7 +193,7 @@ def context_compact() -> None:
     recent_commits = _run_git("log", "--oneline", "-5")
 
     plugin_root = Path(__file__).parents[3]
-    essentials_file = plugin_root / ".claude" / "rules" / "essentials.md"
+    essentials_file = plugin_root / ".codex" / "rules" / "essentials.md"
     essentials = ""
     if essentials_file.exists():
         essentials = essentials_file.read_text()
@@ -217,7 +217,7 @@ def context_compact() -> None:
     if essentials:
         summary += f"\n\n## Essential Conventions (from essentials.md)\n{essentials}"
 
-    plan_file = Path(toplevel) / ".claude" / "session" / "plan.yaml"
+    plan_file = Path(toplevel) / ".codex" / "session" / "plan.yaml"
     if plan_file.exists():
         plan = _read_plan_summary(toplevel=toplevel)
         plan_meta = plan.get("plan", {})
@@ -426,8 +426,8 @@ def session_migrate_permissions() -> None:
     settings_files = [
         f
         for f in [
-            home_path / ".claude" / "settings.json",
-            home_path / ".claude" / "settings.local.json",
+            home_path / ".codex" / "settings.json",
+            home_path / ".codex" / "settings.local.json",
         ]
         if f.exists()
     ]
@@ -485,7 +485,7 @@ def session_persist() -> None:
         sys.exit(0)
 
     project_hash = hashlib.md5(toplevel.encode()).hexdigest()
-    state_dir = Path.home() / ".claude" / "projects" / "_session_state"
+    state_dir = Path.home() / ".codex" / "projects" / "_session_state"
     state_dir.mkdir(parents=True, exist_ok=True)
     state_dir.chmod(0o700)
     state_file = state_dir / f"{project_hash}.json"
@@ -501,7 +501,7 @@ def session_persist() -> None:
     staged = _run_git("diff", "--cached", "--name-only").splitlines()[:20]
     recent_commits = _run_git("log", "--oneline", "-5").splitlines()
 
-    has_plan = (Path(toplevel) / ".claude" / "session" / "plan.yaml").exists()
+    has_plan = (Path(toplevel) / ".codex" / "session" / "plan.yaml").exists()
 
     timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -536,4 +536,4 @@ def session_goodbye() -> None:
     if session_id:
         print()
         print("Resume this session with:")
-        print(f"  claude --resume {session_id}")
+        print(f"  codex --resume {session_id}")

@@ -110,7 +110,7 @@ needed (e.g., `trunk`), add a parallel set: `trunk-log`, `trunk-diff`,
 
 ## settings.local.json wiring
 
-Add to your project's `.claude/settings.local.json`:
+Add to your project's `.codex/settings.local.json`:
 
 ```json
 {

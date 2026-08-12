@@ -13,12 +13,14 @@ user corrections, and process improvements worth persisting into skill definitio
 The skill accepts one optional argument, resolved in this order:
 
 1. **JSONL path** — if arg ends in `.jsonl`, use it directly
-2. **Worktree path** — if arg is a directory (e.g., `/work/myproject/my-repo`),
-   find the latest Codex JSONL whose `session_meta.payload.cwd` equals it
-3. **`latest`** (or no arg) — find the latest Codex JSONL for the current
-   working directory
+2. **Worktree path** — if arg is a directory (e.g., `/work/myproject/my-repo`), encode it
+   to a project directory and find the latest JSONL in it
+3. **`latest`** (or no arg) — encode the current working directory, find latest JSONL
 
-**Session directory**: `$HOME/.codex/sessions/YYYY/MM/DD/*.jsonl`
+**Path encoding**: `/work/myproject/my-repo` → `-work-myproject-my-repo` (replace leading `/` then
+all `/` with `-`).
+
+**Project directory**: `$HOME/.codex/projects/<encoded-path>/`
 
 ## Proactive Triggers
 
@@ -77,29 +79,54 @@ When a trigger is detected, find the current session's JSONL path and suggest:
 
 To find the current session's JSONL path, use:
 ```bash
-$HOME/.codex/skills/Dev10x-skill-audit/scripts/resolve-session.py latest
+ls -t $HOME/.codex/projects/<encoded-cwd>/*.jsonl | head -1
 ```
 
 ## Workflow
 
 ### Step 1: Resolve session file
 
-Use the resolver script instead of searching legacy project directories:
+```python
+import os, glob
 
-```bash
-$HOME/.codex/skills/Dev10x-skill-audit/scripts/resolve-session.py "${SKILL_ARG:-latest}"
+arg = "$SKILL_ARG"  # from the invocation
+codex_dir = os.path.expanduser("~/.codex")
+
+if arg.endswith(".jsonl"):
+    session_file = arg
+elif arg and os.path.isdir(arg):
+    encoded = arg.replace("/", "-")
+    if encoded.startswith("-"):
+        pass  # already correct
+    project_dir = f"{codex_dir}/projects/{encoded}"
+    jsonls = sorted(glob.glob(f"{project_dir}/*.jsonl"), key=os.path.getmtime, reverse=True)
+    session_file = jsonls[0]  # latest
+else:
+    cwd = os.getcwd()
+    encoded = cwd.replace("/", "-")
+    project_dir = f"{codex_dir}/projects/{encoded}"
+    jsonls = sorted(glob.glob(f"{project_dir}/*.jsonl"), key=os.path.getmtime, reverse=True)
+    session_file = jsonls[0]  # latest
 ```
 
-If resolution fails, ask the user to provide the Codex JSONL path explicitly.
+Implement this logic using Bash (ls -t + head) rather than running Python inline.
+If resolution fails, ask the user to provide the JSONL path explicitly.
 
 ### Step 2: Extract transcript
 
 Create a unique output file:
-Use a unique path under `/private/tmp` or `/tmp`, then run the extraction script:
+```bash
+/tmp/claude/bin/mktmp.sh skill-audit audit-transcript .md
+```
+Store the returned path, then run the extraction script:
 ```bash
 $HOME/.codex/skills/Dev10x-skill-audit/scripts/extract-session.sh \
   "<session_file>" <unique-path>
 ```
+
+> **Note:** Do NOT prefix this with `mkdir -p ... &&` — the `mktmp.sh` script
+> creates the directory automatically. Prefixing with `mkdir &&` shifts
+> the command prefix to `mkdir`, breaking the `Bash($HOME/.codex/skills:*)` allow rule.
 
 ### Step 3: Read the transcript
 
@@ -108,10 +135,10 @@ This is the session you are auditing.
 
 ### Step 4: Detect project context
 
-From the transcript header, extract the **Project** path. Use it when checking
-repo-local instructions and the Codex memory directory:
+From the transcript header, extract the **Project** path. Encode it to determine
+the correct memory directory:
 ```
-$HOME/.codex/memories/
+$HOME/.codex/projects/<encoded-project-path>/memory/
 ```
 
 Also locate the skills directory: `$HOME/.codex/skills/`
@@ -252,7 +279,7 @@ a new rule). Structural friction needs skill updates and/or hooks.
 | `PREFIX_POISONED_ENVVAR` | `ENV=val command` | Prefix becomes `ENV=`, not `command` | Script sets env internally |
 | `PREFIX_POISONED_GIT_C` | `git -C /path log` | `git -C` doesn't match `Bash(git log:*)` | Use CWD, avoid `-C` |
 | `PREFIX_POISONED_COMMENT` | `# comment\ncommand` | `#` breaks all prefix matching | Use Bash `description` param |
-| `HOOK_BLOCKED_RETRY` | `cat <<'EOF'...` or `echo >` | Hook rejects it; Codex retries anyway | Update skill to use a script or `apply_patch` |
+| `HOOK_BLOCKED_RETRY` | `cat <<'EOF'...` or `echo >` | Hook rejects it; Codex retries anyway | Update skill to use Write + `-F` |
 | `NUISANCE_APPROVE` | Safe command prompted 3+ times | Allow rule exists but pattern doesn't match | Widen existing rule or add new one |
 | `UNNECESSARY_CD_WORKTREE` | `cd /worktree/path && command` | `cd` shifts prefix; CWD is already the worktree | Drop the `cd` — session is already there |
 | `WORKTREE_CWD_NOT_SWITCHED` | Commands run in main repo after worktree creation | Worktree creation should switch CWD | Investigate `Dev10x:git-worktree` — CWD switch may have failed |
@@ -398,9 +425,9 @@ Source: TICKET-58 audit — 3 user corrections for this pattern
 
 **Step 4d: Load existing permissions**
 
-Read `$HOME/.codex/config.toml`, `$HOME/.codex/AGENTS.md`, and any repo-local
-`AGENTS.md` instructions to understand the current permission and workflow
-constraints.
+Read `$HOME/.codex/settings.local.json` and any project-level
+`$HOME/.codex/projects/<encoded-path>/settings.local.json` to get the
+current `permissions.allow` list.
 
 **Step 4e: Match analysis**
 

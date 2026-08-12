@@ -81,7 +81,7 @@ def plan_set_context(pairs: tuple[str, ...]) -> None:
 
 @plan.command(name="archive")
 def plan_archive() -> None:
-    """Archive completed plan to .claude/session/archive/."""
+    """Archive completed plan to .codex/session/archive/."""
     from dev10x.hooks.task_plan_sync import cmd_archive
 
     cmd_archive()

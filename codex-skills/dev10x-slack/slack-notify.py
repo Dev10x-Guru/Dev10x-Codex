@@ -18,7 +18,7 @@ Token resolution order:
     2. SLACK_TOKEN environment variable
 
 Configuration:
-    ~/.claude/memory/slack-config.yaml — user groups, self_user_id, bot_username
+    ~/.codex/memory/slack-config.yaml — user groups, self_user_id, bot_username
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from slack_sdk import WebClient
 
-CONFIG_PATH = pathlib.Path.home() / ".claude" / "memory" / "slack-config.yaml"
+CONFIG_PATH = pathlib.Path.home() / ".codex" / "memory" / "slack-config.yaml"
 
 
 def _load_config() -> dict:
@@ -47,7 +47,7 @@ def _load_config() -> dict:
 _config = _load_config()
 
 SELF_USER_ID = os.environ.get("SLACK_SELF_USER_ID", _config.get("self_user_id", ""))
-BOT_USERNAME = _config.get("bot_username", "Claude AI")
+BOT_USERNAME = _config.get("bot_username", "Codex AI")
 USER_GROUPS: dict[str, str] = _config.get("user_groups", {})
 
 

@@ -48,7 +48,7 @@ gh pr list --head "$(git branch --show-current)" --state open \
 
 ### 1e. Project TODO file
 
-Read `.claude/TODO.md` if it exists. Extract pending items (lines
+Read `.codex/TODO.md` if it exists. Extract pending items (lines
 matching `- [ ]`).
 
 ### 1f. MEMORY.md in-progress section
@@ -142,7 +142,7 @@ Session is ready to close.
 
 If the user has many items (>5), offer batch operations:
 
-- "Defer all to .claude/TODO.md" — sends all remaining to project file
+- "Defer all to .codex/TODO.md" — sends all remaining to project file
 - "Defer all to Slack" — sends all as one combined Slack DM
 - "Triage one by one" — standard per-item flow
 

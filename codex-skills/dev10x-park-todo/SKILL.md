@@ -38,7 +38,7 @@ WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
 ### 2. Project TODO File
 
-When no specific file is relevant, append to `.claude/TODO.md` in the
+When no specific file is relevant, append to `.codex/TODO.md` in the
 current repository root.
 
 **Format:**
@@ -52,13 +52,13 @@ current repository root.
 
 **How to append:**
 
-1. Read `.claude/TODO.md` if it exists
+1. Read `.codex/TODO.md` if it exists
 2. Check if a section for today's date + current branch already exists
 3. If yes, append the new item to that section
 4. If no, create a new section header and add the item
 5. Write the updated file
 
-**If `.claude/TODO.md` does not exist, create it with a header:**
+**If `.codex/TODO.md` does not exist, create it with a header:**
 
 ```markdown
 # Project TODO — Deferred Items
@@ -87,4 +87,4 @@ deferrals; `Dev10x:park-discover` is for *reading them back*.
 ## Used By
 
 - `Dev10x:park` — when user picks "project TODO" or "inline code"
-- `Dev10x:session-wrap-up` — Phase 1 scans `.claude/TODO.md` for existing items
+- `Dev10x:session-wrap-up` — Phase 1 scans `.codex/TODO.md` for existing items

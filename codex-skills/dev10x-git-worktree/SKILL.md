@@ -1,6 +1,6 @@
 ---
 name: Dev10x-git-worktree
-description: Create external git worktrees for clean Codex workspace isolation.
+description: Create git worktrees for clean workspace isolation. Offers two modes: native EnterWorktree (switches CWD in current session) or external worktree (IDE-isolated, requires restarting codex in new dir).
 ---
 
 # Git Worktree
@@ -19,41 +19,75 @@ The branch name is needed by both paths. Follow project naming conventions:
 - worktree: `username/TICKET-ID/worktree-name/slug`
   (worktree name = basename of the worktree directory, e.g. `app-pos-7`)
 
-### Step 2: Determine Worktree Location
+### Step 2: Choose Worktree Mode
+
+Present the two options with AskUserQuestion:
+
+- **Same session** (Recommended) — native `EnterWorktree` tool switches CWD
+  immediately; all subsequent git commands and skills (`commit`, `Dev10x:gh-pr-create`,
+  `branch:groom`) work without flags; worktree lives inside `.codex/worktrees/`
+  (excluded from hook copies and `.gitignore`)
+- **External + new session** — worktree created at `../.worktrees/<project>-NN`
+  outside the project; IDE won't cross-index sibling worktrees; requires closing
+  this session and opening a new one in the worktree directory
+
+Continue to **Path A** or **Path B** based on the choice.
+
+---
+
+## Path A — Same Session (EnterWorktree)
+
+### Step A1: Check post-checkout Hook
+
+Read `.git/hooks/post-checkout` (or `.husky/post-checkout`) if it exists.
+If it handles worktree setup adequately (uv sync, yarn install, env copy),
+skip to Step A2.
+
+If missing or incomplete, detect project type and propose the appropriate
+template from the **Hook Templates** section below. Present to the user for
+approval before writing. The hook must always ensure `.codex` exists —
+either by copying from the source repo or creating an empty scaffold.
+
+### Step A2: Create Worktree (native tool)
+
+Call the native `EnterWorktree` tool:
+- `name`: use the branch slug (e.g. `fix-railway-deployment`)
+
+After `EnterWorktree` runs the session CWD is the new worktree. All
+subsequent Bash calls, git commands, and skills operate inside it.
+
+### Step A3: Continue Workflow
+
+The session is now in the worktree. Resume the calling skill's next step
+(ticket status, job story, summary). No restart needed.
+
+---
+
+## Path B — External + New Session
+
+### Step B1: Determine Worktree Location
 
 Default pattern: `../.worktrees/<project-basename>-NN`
 
 Calculate the next available path:
 
 ```bash
-$HOME/.codex/skills/dev10x-git-worktree/scripts/next-worktree-name.sh
+$HOME/.codex/skills/Dev10x-git-worktree/scripts/next-worktree-name.sh
 ```
 
-Use the calculated path unless the user already provided a custom location.
-Otherwise, ask one concise plain-text question that offers the calculated
-path as the default and lets the user provide a custom location if they
-want one.
+Ask user to confirm (AskUserQuestion):
+- **Create at `<calculated-path>`** (Recommended)
+- **Custom location** — let user specify
 
-Example:
+### Step B2: Check post-checkout Hook
 
-```text
-Create the worktree at ../.worktrees/<project-basename>-NN, or use a custom path?
-```
+Same as Step A1 — read, verify, and propose a template if needed.
+See **Hook Templates** section below.
 
-### Step 3: Check post-checkout Hook
-
-Read `.git/hooks/post-checkout` (or `.husky/post-checkout`) if it exists.
-If it handles worktree setup adequately (uv sync, yarn install, env copy),
-skip to Step 4.
-
-If missing or incomplete, detect project type and propose the appropriate
-template from the **Hook Templates** section below. Present to the user for
-approval before writing. The hook must always ensure `.codex` exists.
-
-### Step 4: Create the Worktree
+### Step B3: Create the Worktree
 
 ```bash
-$HOME/.codex/skills/dev10x-git-worktree/scripts/create-worktree.sh \
+$HOME/.codex/skills/Dev10x-git-worktree/scripts/create-worktree.sh \
   <worktree-path> <branch-name> [repo-root]
 ```
 
@@ -62,16 +96,25 @@ $HOME/.codex/skills/dev10x-git-worktree/scripts/create-worktree.sh \
 
 The `post-checkout` hook fires automatically after this script runs.
 
-### Step 5: Hand Off — STOP HERE
+### Step B4: Install SessionEnd Cleanup Hook
 
-Codex sessions have a fixed workspace. Continuing in the original
-workspace makes follow-up git commands and skills run against the wrong
-repository path unless every command is manually overridden.
+```bash
+$HOME/.codex/skills/Dev10x-git-worktree/scripts/setup-session-end-hook.sh <worktree-path>
+```
+
+This writes a SessionEnd hook into `<worktree-path>/.codex/settings.local.json`
+that prompts the user to remove the worktree when the new session ends.
+
+### Step B5: Hand Off — STOP HERE
+
+Codex sessions have a fixed CWD. `cd` inside a Bash call does not
+persist, so every subsequent git command would need `git -C <path>` and
+skills like `Dev10x:gh-pr-create` (whose `verify-state.sh` runs plain `git`) would fail.
 
 Print this message and **stop — do not continue with ticket workflow steps**:
 
 ```
-Worktree ready
+✅ Worktree ready
    Path:   <worktree-path>
    Branch: <branch-name>
 
@@ -125,14 +168,14 @@ Husky overwrites `.git/hooks/` on every `yarn/npm install`. Writing to
 
 Source: [`templates/post-checkout-python-uv.sh`](./templates/post-checkout-python-uv.sh)
 
-Copies `.env`, `development.secrets.env`, `.codex/`, `.idea/`,
+Copies `.env`, `development.secrets.env`, `.codex/` (excluding WIP), `.idea/`,
 and runs `uv sync`.
 
 ### Template B: Node.js + Husky (write to `.husky/post-checkout`)
 
 Source: [`templates/post-checkout-node-husky.sh`](./templates/post-checkout-node-husky.sh)
 
-Copies `.env`, `.codex/`, and runs `yarn install --frozen-lockfile`.
+Copies `.env`, `.codex/` (excluding WIP), and runs `yarn install --frozen-lockfile`.
 
 For monorepos (yarn workspaces), run `yarn install --frozen-lockfile` from
 the repo root — this installs all workspace packages in one pass.
@@ -141,7 +184,7 @@ the repo root — this installs all workspace packages in one pass.
 
 Source: [`templates/post-checkout-node.sh`](./templates/post-checkout-node.sh)
 
-Copies `.env`, `.codex/`, and runs `yarn install` or `npm ci`.
+Copies `.env`, `.codex/` (excluding WIP), and runs `yarn install` or `npm ci`.
 
 Make executable: `chmod +x .git/hooks/post-checkout`
 
@@ -152,6 +195,13 @@ worktree mutates the shared directory. Always run `yarn install --frozen-lockfil
 ---
 
 ## Cleanup
+
+The SessionEnd hook installed by Path B prompts:
+
+> This session used worktree at `<path>`. Remove it? [y/N]
+
+If yes: `git worktree remove <path>`
+If no: the worktree persists for future sessions.
 
 Manual removal:
 
