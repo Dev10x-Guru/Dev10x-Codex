@@ -26,8 +26,6 @@ capability.
 
 ## Codex Tooling
 
-Use Codex-native planning and question tools throughout this workflow:
-
 - Use `update_plan` to create the top-level plan and to revise task
   statuses as work progresses.
 - Treat the visible plan maintained by `update_plan` as the source of
