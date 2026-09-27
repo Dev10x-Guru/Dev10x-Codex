@@ -1,6 +1,6 @@
 {
   "name": "Dev10x",
-  "version": "0.105.0",
+  "version": "0.105.0+codex.1",
   "description": "Dev10x for Codex — MCP tools and command-safety hooks for structured commits, PR lifecycle, branch hygiene, and ticket management.",
   "author": {
     "name": "Janusz Skonieczny",
