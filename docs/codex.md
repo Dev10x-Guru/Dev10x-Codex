@@ -24,14 +24,21 @@ Until then, ask Codex for the outcome and it will use the MCP tools.
 
 ## Install
 
-From GitHub:
+From GitHub, fetching only the folders the plugin runs from:
 
 ```bash
-codex plugin marketplace add Dev10x-Guru/Dev10x-Codex
+codex plugin marketplace add Dev10x-Guru/Dev10x-Codex --sparse .agents --sparse .codex-plugin --sparse hooks --sparse servers --sparse src --sparse skills --sparse bin --sparse references --sparse codex
 codex plugin add Dev10x@Dev10x-Codex
 ```
 
-From a local checkout (for development):
+Add `--ref <branch>` to try an unreleased branch.
+Every folder in that list is needed at runtime: the MCP tools launch
+scripts from `skills/` and `bin/`, and read `references/`.
+Dropping `--sparse` entirely also works; it just fetches the tests and
+docs too.
+
+From a local checkout (for development — Codex copies the whole
+directory, including `.venv` and `.git`):
 
 ```bash
 codex plugin marketplace add /path/to/Dev10x-Codex
