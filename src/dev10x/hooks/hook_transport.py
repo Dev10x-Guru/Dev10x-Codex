@@ -64,7 +64,21 @@ def _record_attribution(*, rule_id: str, reason: str) -> None:
         )
 
 
+def _render_for_codex(
+    result: HookResult | HookAllow | HookAsk | HookRetry,
+) -> HookResult | HookAllow | HookAsk | HookRetry:
+    from dataclasses import replace
+
+    from dev10x.validators.codex_messages import adapt_message_for_codex
+
+    rendered = replace(result, message=adapt_message_for_codex(result.message))
+    if isinstance(rendered, HookAsk) and rendered.reason:
+        rendered = replace(rendered, reason=adapt_message_for_codex(rendered.reason))
+    return rendered
+
+
 def _emit_codex(result: HookResult | HookAllow | HookAsk | HookRetry) -> NoReturn:
+    result = _render_for_codex(result)
     if isinstance(result, HookResult):
         _record_attribution(rule_id=result.rule_id, reason=result.message)
         print(result.message, file=sys.stderr)

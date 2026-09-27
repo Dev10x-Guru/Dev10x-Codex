@@ -29,7 +29,9 @@ from dev10x.domain.common.branch_name import PROTECTED_BRANCHES
 from dev10x.domain.documents.config_document import Config
 from dev10x.domain.profile_tier import ProfileTier
 from dev10x.domain.rules.validation_rule import Compensation, MatchingRule
+from dev10x.harness import is_codex
 from dev10x.validators.base import ValidatorBase
+from dev10x.validators.codex_messages import format_codex_skill_block
 
 if TYPE_CHECKING:
     from dev10x.domain import HookRetry
@@ -516,6 +518,8 @@ def _format_skill_msg(
     agent that cannot reach the sanctioned path always sees what to do
     instead.
     """
+    if comp.type == "use-skill" and is_codex():
+        return format_codex_skill_block(label=label, comp=comp)
     file_issue_hint = (
         f"\n\nIf you are inside a skill that instructed this command, "
         f"file an issue at {plugin_repo} — the skill needs updating."

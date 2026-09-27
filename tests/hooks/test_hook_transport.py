@@ -170,6 +170,40 @@ class TestEmitUnderCodex:
         assert captured.err == ""
 
 
+CLAUDE_WORDED_DENY = (
+    "Use `mcp__plugin_Dev10x_cli__pr_get` or `Skill(Dev10x:git)`; "
+    "file an issue at https://github.com/Dev10x-Guru/dev10x-claude"
+)
+
+
+class TestCodexEmitAdaptsClaudeWording:
+    @pytest.mark.usefixtures("codex_harness")
+    def test_deny_reason_is_rendered_for_codex(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit):
+            emit(HookResult(message=CLAUDE_WORDED_DENY))
+        err = capsys.readouterr().err
+        assert "`mcp__cli__pr_get`" in err
+        assert "`mcp__cli__push_safe`" in err
+        assert "https://github.com/Dev10x-Guru/Dev10x-Codex" in err
+        assert "Skill(" not in err
+
+    @pytest.mark.usefixtures("codex_harness")
+    def test_ask_reason_is_rendered_for_codex(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit):
+            emit(HookAsk(message="m", reason="see mcp__plugin_Dev10x_db__query"))
+        output = json.loads(capsys.readouterr().out)
+        assert output["hookSpecificOutput"]["permissionDecisionReason"] == "see mcp__db__query"
+
+    def test_claude_deny_message_is_emitted_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.delenv("DEV10X_HARNESS", raising=False)
+        with pytest.raises(SystemExit):
+            emit(HookResult(message=CLAUDE_WORDED_DENY))
+        payload = json.loads(capsys.readouterr().err)
+        assert payload["systemMessage"] == CLAUDE_WORDED_DENY
+
+
 class TestReadHookInput:
     def test_parses_tool_name_and_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
         payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git status"}})
