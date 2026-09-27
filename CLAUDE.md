@@ -31,7 +31,13 @@ claude --plugin-dir .          # load plugin locally
 claude plugin validate         # validate plugin structure
 dev10x --help                  # CLI entry point
 uv run --extra dev pytest      # run tests with coverage
+uv run --extra dev pre-commit install      # one-time: enable lint-on-commit
+uv run --extra dev pre-commit run --all-files  # run the canonical lint suite
 ```
+
+Linting/formatting (ruff, mypy, shellcheck) runs via `pre-commit`,
+never inline — `.pre-commit-config.yaml` is the single source of truth
+(GH-619). Skills defer to `pre-commit run` (GH-592, GH-596).
 
 MCP migration: shell scripts → MCP tools. See `.claude/rules/mcp-tools.md`.
 
@@ -45,6 +51,9 @@ allowed-tools:
   - Bash(${CLAUDE_PLUGIN_ROOT}/skills/<name>/scripts/:*)
 ```
 
+When a skill delegates to an `instructions.md` file, verify `allowed-tools:` in
+SKILL.md covers ALL external tool calls in both SKILL.md AND instructions.md.
+
 Missing declarations cause per-invocation approval friction — users cannot
 invoke the skill without approving tool access each time. See
 `.claude/rules/mcp-tools.md` for MCP vs. direct script trade-offs.
@@ -54,6 +63,44 @@ invoke the skill without approving tool access each time. See
 - **Python scripts**: ruff + black (line-length 99)
 - **Shell scripts**: shellcheck, `set -e`, POSIX-compatible where possible
 - **Markdown**: one sentence per line, 80-char soft wrap
+- **Data-retrieval naming**: prefer `get_*` for functions that fetch and
+  return data. Use `load_*` for reading and parsing config/catalog files
+  (`load_yaml`, `load_json`, `load_config`) and `read_*` for byte- or
+  line-level file I/O (`read_applied_version`, `read_plugin_version`) —
+  both are blessed, dominant conventions, not exceptions. Reserve
+  `fetch_*` for names carrying protocol/domain semantics (`git fetch`,
+  HTTP fetch) or documented exceptions such as `fetch_mergeable` and
+  `fetch_merged_prs` (`skills/release/collect_prs.py`). Do not
+  rename-sweep existing `load_*`/`read_*` functions to `get_*`.
+
+## Rule Documentation Standards
+
+When documenting new rules in `.claude/rules/*.md`:
+- Expand reviewer checklists with concrete checks before they accumulate as
+  lint suggestions (a new rule invites new edge cases; document them when the
+  rule lands to prevent silent divergence)
+- Document acceptable exceptions explicitly (e.g., when `sys.exit()` is OK in
+  a domain function): future consolidations need clear guidance on what violates
+  the rule vs. what is an documented exception
+- Use numbered lists in checklists (not bullets) to signal mandatory sequential
+  verification steps to reviewers
+
+### CWD Discipline (GH-979)
+
+Route subprocess/CWD access through `subprocess_utils` (`run`,
+`async_run`, `effective_cwd()`) and `GitContext()` — never bare
+`subprocess.run` / `os.getcwd()` / module-scope `GitContext()`. Standalone
+uv-scripts are exempt. Full rules: `.claude/rules/cwd-discipline.md`.
+
+### uv-Script Dependency Pins (GH-916)
+
+Every PEP 723 `# dependencies = [...]` entry and every `pyproject.toml`
+dependency array entry needs an upper bound or exact pin (e.g.
+`pyyaml>=6.0,<7`) — an unbounded requirement lets a new major release
+silently change a script's behaviour (GH-914: unbounded `mcp` broke
+both MCP servers). `requires-python` is the one exception (lower-bound
+only, by design). Enforced by `bin/check-dependency-pins.py` via
+`.pre-commit-config.yaml`. Full rules: `.claude/rules/uv-script-dependency-pins.md`.
 
 ## Skill Naming Convention
 
@@ -73,10 +120,12 @@ invoke the skill without approving tool access each time. See
   (worktree: `username/TICKET-ID/worktree-name/short-description`)
 - **Commit format**: `<gitmoji> <TICKET-ID> <JTBD outcome>`
 - **Commit titles**: outcome-focused — "Enable X" not "Add X"
-- **Job Story voice** (REQUIRED): third-person actor and beneficiary —
-  `**[actor] wants to** ... **so [beneficiary] can** ...`; never use
-  first-person "I want to" / "so I can"
-  See `.claude/rules/essentials.md` and `references/git-jtbd.md`
+- **Job Story voice** (REQUIRED): Third-person domain actor —
+  "**[actor] wants to** ... **so [beneficiary] can** ..." with concrete
+  roles (service writer, dealer, admin, wholesaler) — never first-person
+  ("I want to") or a faceless "the user wants to". See
+  `.claude/rules/essentials.md` and `references/git-jtbd.md`
+  § Choosing the Actor
 - **Story language**: write Job Stories, user stories, and BDD scenarios
   in the project or ticket language. For Gherkin-derived keywords, use
   Cucumber's official language reference:

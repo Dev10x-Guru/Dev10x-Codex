@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import traceback
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import click
 
 _DEBUG = os.environ.get("HOOK_DEBUG", "") != ""
+
+# Tools whose `tool_input.command` is a shell command and so belongs on the
+# validator chain. `Monitor` is here because its command is a Bash command in
+# every respect a validator cares about — omitting it let a hand-rolled poll
+# loop routed through Monitor bypass DX001-DX016 entirely, which is what made
+# the GH-1138 `Monitor` matcher in hooks.json inert (GH-1211, GH-1212).
+_COMMAND_TOOLS = frozenset({"Bash", "Monitor"})
 
 
 @click.group()
@@ -17,34 +26,30 @@ def hook() -> None:
 
 @hook.command(name="validate-bash")
 def validate_bash() -> None:
-    """Validate Bash commands via the unified validator registry.
+    """Validate Bash and Monitor commands via the unified validator registry.
 
     Reads JSON from stdin, dispatches to registered validators.
     Exit codes: 0=allow, 2=block.
     """
-    from dev10x.domain import HookInput
-    from dev10x.validators import get_validators
+    from dev10x.domain.events.hook_event import HookEventName
+    from dev10x.hooks.audit_emit import audit_hook
 
-    inp = HookInput.from_stdin()
-    if inp.tool_name != "Bash":
+    _run = audit_hook(name="validate-bash", event=HookEventName.PRE_TOOL_USE)(_validate_bash_body)
+    _run()
+
+
+def _validate_bash_body() -> None:
+    from dev10x.hooks.hook_transport import emit, read_hook_input
+    from dev10x.validators import get_chain
+
+    inp = read_hook_input()
+    if inp.tool_name not in _COMMAND_TOOLS:
         sys.exit(0)
     if not inp.command:
         sys.exit(0)
 
-    for validator in get_validators():
-        try:
-            if validator.should_run(inp=inp):
-                result = validator.validate(inp=inp)
-                if result is not None:
-                    result.emit()
-        except Exception:
-            if _DEBUG:
-                print(
-                    f"[HOOK_DEBUG] {validator.name} raised:",
-                    file=sys.stderr,
-                )
-                traceback.print_exc(file=sys.stderr)
-            continue
+    for result in get_chain().run(inp=inp):
+        emit(result)
 
     sys.exit(0)
 
@@ -81,7 +86,7 @@ def plan_set_context(pairs: tuple[str, ...]) -> None:
 
 @plan.command(name="archive")
 def plan_archive() -> None:
-    """Archive completed plan to .codex/session/archive/."""
+    """Archive completed plan to .claude/session/archive/."""
     from dev10x.hooks.task_plan_sync import cmd_archive
 
     cmd_archive()
@@ -94,35 +99,42 @@ def permission_denied() -> None:
     Reads JSON from stdin, dispatches to validators that implement
     correct(). Returns retry=true with corrective guidance when a
     validator recognizes the denied command.
+
+    Also runs permission diagnostics to explain *why* a pre-approved
+    tool was prompted (settings override semantics, missing rules).
     Exit codes: 0 always (retry decision is in JSON output).
     """
-    from dev10x.domain import HookInput
-    from dev10x.validators import get_validators
-    from dev10x.validators.base import Corrector
+    from dev10x.hooks.hook_transport import emit, read_hook_input
+    from dev10x.validators import get_chain
 
-    inp = HookInput.from_stdin()
-    if not inp.command:
-        sys.exit(0)
+    inp = read_hook_input()
 
-    for validator in get_validators():
-        try:
-            if not validator.should_run(inp=inp):
-                continue
-            if not isinstance(validator, Corrector):
-                continue
-            result = validator.correct(inp=inp)
-            if result is not None:
-                result.emit()
-        except Exception:
-            if _DEBUG:
-                print(
-                    f"[HOOK_DEBUG] {validator.name} correct() raised:",
-                    file=sys.stderr,
-                )
-                traceback.print_exc(file=sys.stderr)
-            continue
+    if inp.command:
+        result = get_chain().correct(inp=inp)
+        if result is not None:
+            emit(result)
 
+    _run_permission_diagnostics(raw=inp.raw, cwd=inp.cwd)
     sys.exit(0)
+
+
+def _run_permission_diagnostics(*, raw: dict, cwd: str) -> None:
+    try:
+        from dev10x.hooks.permission_diagnostics import diagnose, format_diagnostic
+
+        result = diagnose(raw=raw, cwd=cwd)
+        if result is None:
+            return
+        message = format_diagnostic(result=result)
+        if message:
+            print(
+                json.dumps({"systemMessage": message}),
+                file=sys.stderr,
+            )
+    except Exception:
+        if _DEBUG:
+            print("[HOOK_DEBUG] permission_diagnostics raised:", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
 
 
 @hook.command(name="validate-edit")
@@ -251,3 +263,81 @@ def ruff_format_cmd() -> None:
     from dev10x.hooks.skill import ruff_format
 
     ruff_format()
+
+
+@hook.group(name="audit")
+def audit_group() -> None:
+    """Hook execution audit commands (GH-860)."""
+
+
+@audit_group.command(name="summary")
+@click.option(
+    "--since",
+    "since",
+    default=None,
+    help="Relative window (e.g., 24h, 7d). Default: all records in retention.",
+)
+@click.option(
+    "--hook",
+    "hook_filter",
+    default=None,
+    help="Filter by hook name prefix.",
+)
+def audit_summary(since: str | None, hook_filter: str | None) -> None:
+    """Summarize hook execution timing by hook name."""
+
+    from dev10x.audit import iter_records, summarize
+
+    since_dt = None
+    if since:
+        since_dt = _parse_since(value=since)
+
+    records = iter_records(since=since_dt)
+    stats = summarize(records=records)
+    if hook_filter:
+        stats = {k: v for k, v in stats.items() if k.startswith(hook_filter)}
+
+    if not stats:
+        click.echo("No audit records found.")
+        return
+
+    header = (
+        f"{'hook':<30} {'count':>6} {'body_ms':>9} {'total_ms':>9} "
+        f"{'startup_ms':>11} {'err':>4} {'blk':>4}"
+    )
+    click.echo(header)
+    click.echo("-" * len(header))
+    for name in sorted(stats.keys()):
+        s = stats[name]
+        click.echo(
+            f"{name:<30} {s['count']:>6} {s['body_ms_avg']:>9} "
+            f"{s['total_ms_avg']:>9} {s['startup_ms_avg']:>11} "
+            f"{s['error_count']:>4} {s['block_count']:>4}"
+        )
+
+
+@audit_group.command(name="prune")
+@click.option("--days", type=int, default=None, help="Override retention days.")
+def audit_prune(days: int | None) -> None:
+    """Delete log files older than the retention window."""
+    from dev10x.audit import prune
+
+    deleted = prune(retain_days=days)
+    click.echo(f"Deleted {deleted} log file(s).")
+
+
+def _parse_since(*, value: str) -> datetime | None:
+    """Parse a relative time window like '24h' or '7d'."""
+    value = value.strip().lower()
+    if not value:
+        return None
+    try:
+        if value.endswith("h"):
+            return datetime.now(UTC) - timedelta(hours=int(value[:-1]))
+        if value.endswith("d"):
+            return datetime.now(UTC) - timedelta(days=int(value[:-1]))
+        if value.endswith("m"):
+            return datetime.now(UTC) - timedelta(minutes=int(value[:-1]))
+    except ValueError:
+        return None
+    return None

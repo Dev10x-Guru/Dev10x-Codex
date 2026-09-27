@@ -43,11 +43,28 @@ ${CLAUDE_PLUGIN_ROOT}/skills/git-alias-setup/scripts/git-alias-setup.sh
 
 ## Aliases Configured
 
+`git nopager` / `git nocolor` are the sanctioned non-paging / non-color
+reads — use them instead of the `git -c core.pager=cat <verb>` and
+`git -c color.ui=never <verb>` prefixes that DX007 blocks (the `-c <kv>`
+prefix shifts the matched command string, GH-488 S19).
+
 Each base branch gets three comparison aliases (`{base}-log`, `{base}-diff`,
 `{base}-rebase`) plus a non-interactive autosquash alias (`autosquash-{base}`).
 
+`{base}-rebase` is a **grooming** alias: it squashes `fixup!` commits back
+to the merge-base, interactively (`-i`), against the **local** `{base}` ref.
+It is not a rebase-onto-a-moved-base tool, and it is unusable unattended —
+no editor is attached, and a stale local ref lets it print "Successfully
+rebased" while HEAD never leaves stale ancestry (GH-964). Background agents
+groom with the non-interactive `rebase_groom` MCP tool (or
+`autosquash-{base}`, which resolves against `origin/{base}`), and catch up
+with a moved base using `git fetch origin` then `git rebase origin/{base}`,
+asserting `git merge-base --is-ancestor origin/{base} HEAD` exits 0.
+
 | Alias                | Equivalent                                                  |
 |----------------------|-------------------------------------------------------------|
+| `git nopager <verb>` | `git --no-pager <verb>` (non-paging read; matches `Bash(git nopager:*)`) |
+| `git nocolor <verb>`  | `git -c color.ui=never <verb>` (non-color read; matches `Bash(git nocolor:*)`) |
 | `git develop-log`    | `git log --oneline $(git merge-base develop HEAD)..HEAD`    |
 | `git develop-diff`   | `git diff $(git merge-base develop HEAD)..HEAD`             |
 | `git develop-rebase` | `git rebase -i --autosquash $(git merge-base develop HEAD)` |

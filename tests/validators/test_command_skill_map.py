@@ -1,0 +1,662 @@
+"""Schema validation tests for command-skill-map.yaml.
+
+Asserts that every rule entry contains the required fields and that
+every hook-block rule has at least one compensation entry.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+
+from tests.validators.loop_shapes import BARE_POLL_LOOP
+
+_YAML_PATH = (
+    Path(__file__).resolve().parent.parent.parent
+    / "src"
+    / "dev10x"
+    / "validators"
+    / "command-skill-map.yaml"
+)
+
+_REQUIRED_RULE_FIELDS: frozenset[str] = frozenset(
+    {"name", "hook_block", "compensations", "reason"}
+)
+
+
+def _load_rules() -> list[dict[str, Any]]:
+    data: dict[str, Any] = yaml.safe_load(_YAML_PATH.read_text()) or {}
+    return data.get("rules", [])
+
+
+def _hook_block_rules() -> list[dict[str, Any]]:
+    return [r for r in _load_rules() if r.get("hook_block") is True]
+
+
+def _all_rule_ids() -> list[str]:
+    return [r.get("name", f"<unnamed-{i}>") for i, r in enumerate(_load_rules())]
+
+
+def _hook_block_rule_ids() -> list[str]:
+    return [r.get("name", f"<unnamed-{i}>") for i, r in enumerate(_hook_block_rules())]
+
+
+class TestYamlFileAccessible:
+    def test_yaml_file_exists(self) -> None:
+        assert _YAML_PATH.exists(), f"YAML not found at {_YAML_PATH}"
+
+    def test_yaml_parses_without_error(self) -> None:
+        data = yaml.safe_load(_YAML_PATH.read_text())
+        assert isinstance(data, dict)
+
+    def test_rules_list_is_non_empty(self) -> None:
+        rules = _load_rules()
+        assert len(rules) > 0
+
+
+class TestRequiredFields:
+    @pytest.mark.parametrize("rule_name", _all_rule_ids())
+    def test_rule_has_name(self, rule_name: str) -> None:
+        rules = {r.get("name", f"<unnamed-{i}>"): r for i, r in enumerate(_load_rules())}
+        rule = rules[rule_name]
+        assert "name" in rule, f"Rule {rule_name!r} is missing 'name'"
+
+    @pytest.mark.parametrize("rule_name", _all_rule_ids())
+    def test_rule_has_hook_block(self, rule_name: str) -> None:
+        rules = {r.get("name", f"<unnamed-{i}>"): r for i, r in enumerate(_load_rules())}
+        rule = rules[rule_name]
+        assert "hook_block" in rule, f"Rule {rule_name!r} is missing 'hook_block'"
+
+    @pytest.mark.parametrize("rule_name", _all_rule_ids())
+    def test_rule_has_compensations(self, rule_name: str) -> None:
+        rules = {r.get("name", f"<unnamed-{i}>"): r for i, r in enumerate(_load_rules())}
+        rule = rules[rule_name]
+        assert "compensations" in rule, f"Rule {rule_name!r} is missing 'compensations'"
+
+    @pytest.mark.parametrize("rule_name", _all_rule_ids())
+    def test_rule_has_reason(self, rule_name: str) -> None:
+        rules = {r.get("name", f"<unnamed-{i}>"): r for i, r in enumerate(_load_rules())}
+        rule = rules[rule_name]
+        assert "reason" in rule, f"Rule {rule_name!r} is missing 'reason'"
+
+
+class TestHookBlockCompensations:
+    @pytest.mark.parametrize("rule_name", _hook_block_rule_ids())
+    def test_hook_block_rule_has_non_empty_compensations(self, rule_name: str) -> None:
+        rules = {r.get("name", f"<unnamed-{i}>"): r for i, r in enumerate(_hook_block_rules())}
+        rule = rules[rule_name]
+        compensations = rule.get("compensations", [])
+        assert isinstance(compensations, list), (
+            f"Rule {rule_name!r} 'compensations' must be a list"
+        )
+        assert len(compensations) > 0, (
+            f"Hook-block rule {rule_name!r} must have at least one compensation"
+        )
+
+    @pytest.mark.parametrize("rule_name", _hook_block_rule_ids())
+    def test_hook_block_compensation_has_type(self, rule_name: str) -> None:
+        rules = {r.get("name", f"<unnamed-{i}>"): r for i, r in enumerate(_hook_block_rules())}
+        rule = rules[rule_name]
+        for idx, comp in enumerate(rule.get("compensations", [])):
+            assert "type" in comp, f"Rule {rule_name!r} compensation[{idx}] is missing 'type'"
+
+
+def _rule_by_name(name: str) -> dict[str, Any]:
+    for rule in _load_rules():
+        if rule.get("name") == name:
+            return rule
+    raise AssertionError(f"Rule {name!r} not found in command-skill-map.yaml")
+
+
+def _matches_any_pattern(*, rule: dict[str, Any], command: str) -> bool:
+    return any(re.search(pattern, command) for pattern in rule.get("patterns", []))
+
+
+def _compensation_targets(rule: dict[str, Any]) -> set[str]:
+    targets: set[str] = set()
+    for comp in rule.get("compensations", []):
+        targets.update(str(comp[field]) for field in ("tool", "skill") if field in comp)
+    return targets
+
+
+class TestGh609RoutingEntries:
+    """Each net-new raw shape (GH-609) is recognized and routes to a wrapper/tool."""
+
+    def test_handrolled_ci_loop_recognized(self) -> None:
+        rule = _rule_by_name("ci-loop-handrolled")
+        assert _matches_any_pattern(
+            rule=rule, command="while true; do gh pr checks; sleep 10; done"
+        )
+
+    def test_handrolled_ci_loop_routes_to_ci_check_status(self) -> None:
+        rule = _rule_by_name("ci-loop-handrolled")
+        assert "mcp__plugin_Dev10x_cli__ci_check_status" in _compensation_targets(rule)
+        assert "Dev10x:gh-pr-monitor" in _compensation_targets(rule)
+
+    def test_cat_grep_pipeline_recognized(self) -> None:
+        rule = _rule_by_name("cat-grep-pipeline")
+        assert _matches_any_pattern(rule=rule, command="cat notes.txt | grep TODO")
+
+    def test_grep_brace_expansion_recognized(self) -> None:
+        rule = _rule_by_name("cat-grep-pipeline")
+        assert _matches_any_pattern(rule=rule, command="grep -n foo src/app.{py,md}")
+
+    def test_cat_grep_routes_to_grep_tool(self) -> None:
+        rule = _rule_by_name("cat-grep-pipeline")
+        assert "Grep" in _compensation_targets(rule)
+
+    def test_fish_interactive_abbr_recognized(self) -> None:
+        rule = _rule_by_name("fish-interactive-abbr")
+        assert _matches_any_pattern(rule=rule, command="fish -ic gco")
+
+    def test_version_pinned_plugin_script_recognized(self) -> None:
+        rule = _rule_by_name("version-pinned-plugin-script")
+        cmd = "/home/u/.claude/plugins/cache/Dev10x/0.79.0/skills/x/scripts/y.py"
+        assert _matches_any_pattern(rule=rule, command=cmd)
+
+
+class TestGh1028GitDirWorktreePinning:
+    """The `git --git-dir` shape workers improvise is recognized (GH-1028)."""
+
+    def test_improvised_worker_shape_recognized(self) -> None:
+        rule = _rule_by_name("git-dir-worktree-pinning")
+        cmd = (
+            "git --git-dir=/repo/.git/worktrees/wt-3 "
+            "--work-tree=/repo/../wt-3 commit -F /tmp/msg.txt"
+        )
+        assert _matches_any_pattern(rule=rule, command=cmd)
+
+    def test_space_separated_form_recognized(self) -> None:
+        rule = _rule_by_name("git-dir-worktree-pinning")
+        assert _matches_any_pattern(rule=rule, command="git --git-dir /repo/.git status")
+
+    def test_work_tree_alone_recognized(self) -> None:
+        rule = _rule_by_name("git-dir-worktree-pinning")
+        assert _matches_any_pattern(rule=rule, command="git --work-tree=/wt-3 status")
+
+    def test_pinned_shape_not_flagged(self) -> None:
+        rule = _rule_by_name("git-dir-worktree-pinning")
+        assert not _matches_any_pattern(rule=rule, command="git -C /wt-3 status --short")
+
+    def test_is_advisory_not_blocking(self) -> None:
+        # Blocking would strand an unattended worker with no reachable
+        # alternative; the preventive fixes are the crew template and the
+        # Phase 0.4 probe. This entry is the diag-friction steer.
+        rule = _rule_by_name("git-dir-worktree-pinning")
+        assert rule["hook_block"] is False
+
+    def test_steers_to_git_c(self) -> None:
+        rule = _rule_by_name("git-dir-worktree-pinning")
+        descriptions = " ".join(str(comp.get("description", "")) for comp in rule["compensations"])
+        assert "git -C <worktree-path>" in descriptions
+
+    def test_steers_to_the_mode_self_test_not_an_unconditional_pin(self) -> None:
+        """GH-1050: `git -C` is denied as redundant when CWD already matches."""
+        rule = _rule_by_name("git-dir-worktree-pinning")
+        descriptions = " ".join(str(comp.get("description", "")) for comp in rule["compensations"])
+        assert "pwd" in descriptions
+        assert "redundant" in descriptions
+
+
+class TestGh1052NodeBuildScripts:
+    """Build/check web-tooling shapes route to run_node_tests(script=…)."""
+
+    def _first_matching_rule_name(self, command: str) -> str:
+        for rule in _load_rules():
+            if _matches_any_pattern(rule=rule, command=command):
+                return str(rule.get("name"))
+        return ""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "pnpm run build",
+            "npm run check:i18n",
+            "yarn run lint:tsc",
+            "npx vite build",
+            "vite build --mode staging",
+            "svelte-kit sync",
+            "node scripts/generate.mjs",
+            "node tools/seed.ts",
+        ],
+    )
+    def test_build_and_check_shapes_recognized(self, command: str) -> None:
+        rule = _rule_by_name("node-build-scripts")
+        assert _matches_any_pattern(rule=rule, command=command)
+
+    @pytest.mark.parametrize("command", ["pnpm test", "npm run test", "yarn test", "vitest run"])
+    def test_test_shapes_stay_on_the_node_tests_rule(self, command: str) -> None:
+        """First-match-wins: the test rule is listed first and keeps these."""
+        assert self._first_matching_rule_name(command) == "node-tests"
+
+    def test_routes_to_run_node_tests(self) -> None:
+        rule = _rule_by_name("node-build-scripts")
+        tools = {comp.get("tool") for comp in rule["compensations"]}
+        assert "mcp__plugin_Dev10x_cli__run_node_tests" in tools
+
+    def test_compensation_names_the_script_parameter(self) -> None:
+        rule = _rule_by_name("node-build-scripts")
+        descriptions = " ".join(str(comp.get("description", "")) for comp in rule["compensations"])
+        assert "script=" in descriptions
+
+    def test_is_advisory_not_blocking(self) -> None:
+        # Blocking a web-tooling shape strands an unattended worker the same
+        # way the unmatched prompt did (GH-1052); the wrapper is the steer.
+        rule = _rule_by_name("node-build-scripts")
+        assert rule["hook_block"] is False
+
+    def test_patterns_compile(self) -> None:
+        rule = _rule_by_name("node-build-scripts")
+        for pattern in rule["patterns"]:
+            re.compile(pattern)
+
+
+class TestGh879WatchLoopEntry:
+    """Inline watch/poll loop shapes (GH-879) are recognized and steered."""
+
+    def test_while_true_sleep_recognized(self) -> None:
+        rule = _rule_by_name("watch-loop-handrolled")
+        cmd = "while true; do ls -t /run | head -1; sleep 300; done"
+        assert _matches_any_pattern(rule=rule, command=cmd)
+
+    def test_while_test_sleep_recognized(self) -> None:
+        rule = _rule_by_name("watch-loop-handrolled")
+        cmd = "while [ ! -f done.flag ]; do sleep 30; done"
+        assert _matches_any_pattern(rule=rule, command=cmd)
+
+    def test_watch_n_recognized(self) -> None:
+        rule = _rule_by_name("watch-loop-handrolled")
+        assert _matches_any_pattern(rule=rule, command="watch -n 60 git status")
+
+    def test_until_sleep_recognized(self) -> None:
+        rule = _rule_by_name("watch-loop-handrolled")
+        cmd = "until grep -q Ready dev.log; do sleep 1; done"
+        assert _matches_any_pattern(rule=rule, command=cmd)
+
+    def test_ci_shaped_loop_left_to_ci_rule_by_ordering(self) -> None:
+        """Ordering routes it, not an `except` carve-out (GH-1212).
+
+        The rule used to exempt `gh pr checks` / `gh pr view` so those
+        shapes landed on ci-loop-handrolled's richer compensation.
+        First-match-wins already does that, so the carve-out only ever
+        fired when ci-loop-handrolled had NOT matched — letting a loop
+        escape both rules by merely naming `gh pr view`.
+        """
+        names = _all_rule_ids()
+        assert names.index("ci-loop-handrolled") < names.index("watch-loop-handrolled")
+
+    def test_ci_shaped_loop_is_still_matched_by_this_rules_patterns(self) -> None:
+        """No longer exempt — the shape matches; ordering picks the rule."""
+        rule = _rule_by_name("watch-loop-handrolled")
+        cmd = "while true; do gh pr checks 42; sleep 30; done"
+        assert _matches_any_pattern(rule=rule, command=cmd)
+
+    def test_no_except_carve_out_remains(self) -> None:
+        assert _rule_by_name("watch-loop-handrolled").get("except", []) == []
+
+    def test_multiline_loop_matches(self) -> None:
+        """Patterns compile without DOTALL, so `(?s)` carries the newline.
+
+        Every real poll loop is multiline; the single-line shapes this
+        replaced could not see a `sleep` below `do` at all (GH-1212).
+        """
+        rule = _rule_by_name("watch-loop-handrolled")
+        assert _matches_any_pattern(rule=rule, command=BARE_POLL_LOOP)
+
+    def test_is_blocking_since_gh_1138(self) -> None:
+        # Was advisory. An advisory setting on a shape that can never be
+        # approved deterministically neither prevents the prompt nor
+        # answers it — and unattended, the prompt is a silent wedge.
+        rule = _rule_by_name("watch-loop-handrolled")
+        assert rule["hook_block"] is True
+
+    def test_routes_to_ci_check_status_for_ci_shapes(self) -> None:
+        rule = _rule_by_name("watch-loop-handrolled")
+        assert "mcp__plugin_Dev10x_cli__ci_check_status" in _compensation_targets(rule)
+
+    def test_alternative_names_foreman_watch(self) -> None:
+        rule = _rule_by_name("watch-loop-handrolled")
+        descriptions = " ".join(str(comp.get("description", "")) for comp in rule["compensations"])
+        assert "dev10x foreman watch" in descriptions
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "cat-grep-pipeline",
+            "fish-interactive-abbr",
+            "version-pinned-plugin-script",
+        ],
+    )
+    def test_new_entries_are_advisory(self, name: str) -> None:
+        # These are diag-friction routing hints, not enforced hook blocks.
+        # `ci-loop-handrolled` left this list in GH-1138 — see
+        # test_loop_shapes_are_denied_not_advised.
+        assert _rule_by_name(name)["hook_block"] is False
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "ci-loop-handrolled",
+            "cat-grep-pipeline",
+            "fish-interactive-abbr",
+            "version-pinned-plugin-script",
+        ],
+    )
+    def test_new_entry_patterns_compile(self, name: str) -> None:
+        for pattern in _rule_by_name(name)["patterns"]:
+            re.compile(pattern)
+
+    def test_find_exec_search_recognized(self) -> None:
+        rule = _rule_by_name("find-search")
+        assert _matches_any_pattern(
+            rule=rule, command=r"find . -name '*.py' -exec grep -l yaml {} \;"
+        )
+
+    def test_find_name_search_recognized(self) -> None:
+        rule = _rule_by_name("find-search")
+        assert _matches_any_pattern(rule=rule, command="find /hooks -type f -name '*.sh'")
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            r"find apps/web/src/routes/\(app\)/class-health/\[classId\]/print -type f",
+            "find 'apps/web/src/routes/(app)/class-health' -type f",
+            r'find "apps/web/src/routes/(app)" -type d',
+        ],
+    )
+    def test_find_over_route_group_path_recognized(self, command: str) -> None:
+        # GH-1059: no -name/-path/-exec, so the older patterns miss it —
+        # yet this exact shape wedged two unattended workers silently.
+        assert _matches_any_pattern(rule=_rule_by_name("find-search"), command=command)
+
+    def test_plain_find_without_parens_not_matched(self) -> None:
+        # Guard the widened patterns against over-reach: an ordinary
+        # `find <path> -type f` stays out of scope.
+        assert not _matches_any_pattern(
+            rule=_rule_by_name("find-search"), command="find apps/web/src -type f"
+        )
+
+    def test_gh_issue_comment_fallback_is_not_self_blocked(self) -> None:
+        # GH-1068 F6: the hint used to name `gh issue comment --body-file`,
+        # a shape this same rule denies — steering a blocked caller straight
+        # back into the block.
+        rule = _rule_by_name("gh-issue-comment")
+        hint = " ".join(comp.get("description", "") for comp in rule["compensations"])
+        assert "-F body=@" in hint
+        assert not _matches_any_pattern(
+            rule=rule,
+            command="gh api repos/o/r/issues/1/comments -F body=@/tmp/b.txt",
+        )
+
+    def test_find_search_routes_to_grep_and_glob(self) -> None:
+        targets = _compensation_targets(_rule_by_name("find-search"))
+        assert "Grep" in targets
+        assert "Glob" in targets
+
+    def test_find_search_tool_compensations_carry_a_fallback(self) -> None:
+        # GH-1087: a recommended tool is not guaranteed to exist in every
+        # session — `Glob` answered "No such tool available". Every
+        # use-tool compensation must name what to do when it is absent.
+        for comp in _rule_by_name("find-search")["compensations"]:
+            if comp["type"] == "use-tool":
+                assert comp.get("fallback"), f"{comp['tool']} compensation has no fallback"
+
+    def test_find_search_fallbacks_never_steer_back_to_find(self) -> None:
+        # The harness's own suggestion ("use `find` via the Bash tool")
+        # reinstates the friction this rule removes.
+        for comp in _rule_by_name("find-search")["compensations"]:
+            fallback = comp.get("fallback", "")
+            assert "rg " in fallback or not fallback
+            assert not _matches_any_pattern(rule=_rule_by_name("find-search"), command=fallback)
+
+    def test_find_search_offers_a_tool_surface_independent_alternative(self) -> None:
+        alternatives = [
+            comp
+            for comp in _rule_by_name("find-search")["compensations"]
+            if comp["type"] == "use-alternative"
+        ]
+        assert alternatives, "find-search needs an rg shape usable without Glob/Grep"
+        assert "rg --files" in alternatives[0]["description"]
+
+    def test_find_search_is_advisory(self) -> None:
+        # find is structurally un-allowable — a hook block would dead-end;
+        # this is a diag-friction steer, not an enforced block.
+        assert _rule_by_name("find-search")["hook_block"] is False
+
+    def test_find_search_patterns_compile(self) -> None:
+        for pattern in _rule_by_name("find-search")["patterns"]:
+            re.compile(pattern)
+
+    def test_graphql_variants_already_routed(self) -> None:
+        # GH-609 also lists the 3 gh api graphql variants; GH-598 already
+        # covers them via gh-review-threads-graphql → unresolved_threads.
+        rule = _rule_by_name("gh-review-threads-graphql")
+        assert "mcp__plugin_Dev10x_cli__unresolved_threads" in _compensation_targets(rule)
+
+
+class TestNpmMonorepoBlock:
+    """GH-880: scoped monorepo `npm --prefix <dir> test` is hard-blocked and
+    steered to run_node_tests; generic node test shapes stay advisory."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "npm --prefix apps/web test -- NavList",
+            "npm --prefix=apps/web test",
+            "npm -C apps/web test",
+            "npm -w web test",
+            "npm --workspace web test",
+            "npm --prefix apps/web test -- NavList 2>&1 | tail -30",
+        ],
+    )
+    def test_monorepo_shapes_recognized(self, command: str) -> None:
+        rule = _rule_by_name("node-tests-npm-monorepo")
+        assert _matches_any_pattern(rule=rule, command=command)
+
+    @pytest.mark.parametrize(
+        "command",
+        ["npm test", "npm run test", "yarn test", "jest", "pnpm test"],
+    )
+    def test_generic_shapes_not_matched(self, command: str) -> None:
+        rule = _rule_by_name("node-tests-npm-monorepo")
+        assert not _matches_any_pattern(rule=rule, command=command)
+
+    def test_routes_to_run_node_tests(self) -> None:
+        rule = _rule_by_name("node-tests-npm-monorepo")
+        assert "mcp__plugin_Dev10x_cli__run_node_tests" in _compensation_targets(rule)
+
+    def test_is_hook_block(self) -> None:
+        assert _rule_by_name("node-tests-npm-monorepo")["hook_block"] is True
+
+    def test_generic_node_tests_stays_advisory(self) -> None:
+        assert _rule_by_name("node-tests")["hook_block"] is False
+
+    def test_patterns_compile(self) -> None:
+        for pattern in _rule_by_name("node-tests-npm-monorepo")["patterns"]:
+            re.compile(pattern)
+
+    def test_precedes_generic_node_tests(self) -> None:
+        names = [r.get("name") for r in _load_rules()]
+        assert names.index("node-tests-npm-monorepo") < names.index("node-tests")
+
+    def test_compensation_carries_cwd_translation(self) -> None:
+        rule = _rule_by_name("node-tests-npm-monorepo")
+        desc = " ".join(c.get("description", "") for c in rule["compensations"])
+        assert 'cwd="' in desc
+
+
+class TestGh1117ForLoopEntry:
+    """GH-1117: a plain loop batching individually allow-listed commands is
+    recognized and steered to parallel single-shot calls."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "for b in a b c\n  git rev-list --count origin/develop..$b\nend",
+            "for f in *.py; do git log --oneline $f; done",
+            "git ls-files | xargs wc -l",
+        ],
+    )
+    def test_loop_shapes_recognized(self, command: str) -> None:
+        rule = _rule_by_name("for-loop-handrolled")
+        assert _matches_any_pattern(rule=rule, command=command)
+
+    @pytest.mark.parametrize(
+        "command",
+        ["git rev-list --count origin/develop..HEAD", "git diff --shortstat"],
+    )
+    def test_single_shot_commands_not_matched(self, command: str) -> None:
+        rule = _rule_by_name("for-loop-handrolled")
+        assert not _matches_any_pattern(rule=rule, command=command)
+
+    def test_ci_shaped_loop_left_to_ci_rule(self) -> None:
+        rule = _rule_by_name("for-loop-handrolled")
+        cmd = "for i in 1 2 3; do gh pr checks 42; done"
+        assert any(exc in cmd for exc in rule["except"])
+
+    def test_routes_to_split_commands_first(self) -> None:
+        rule = _rule_by_name("for-loop-handrolled")
+        assert rule["compensations"][0]["type"] == "split-commands"
+
+    def test_offers_grep_for_search_shapes(self) -> None:
+        assert "Grep" in _compensation_targets(_rule_by_name("for-loop-handrolled"))
+
+    def test_is_advisory_not_blocking(self) -> None:
+        # Genuine shell orchestration over an unknown-at-authoring-time list
+        # is legitimate; a hard block would misfire on it (GH-1117).
+        assert _rule_by_name("for-loop-handrolled")["hook_block"] is False
+
+    def test_patterns_compile(self) -> None:
+        for pattern in _rule_by_name("for-loop-handrolled")["patterns"]:
+            re.compile(pattern)
+
+    @pytest.mark.parametrize("specific", ["ci-loop-handrolled", "watch-loop-handrolled"])
+    def test_follows_the_specific_loop_rules(self, specific: str) -> None:
+        # `;\s*do\b` also matches the CI/watch shapes — first-match-wins must
+        # keep those on the rule carrying the richer compensation.
+        names = [r.get("name") for r in _load_rules()]
+        assert names.index(specific) < names.index("for-loop-handrolled")
+
+    def test_names_diag_friction_as_related(self) -> None:
+        assert "Dev10x:diag-friction" in _rule_by_name("for-loop-handrolled")["related"]
+
+
+def _fallback_text(rule: dict[str, Any]) -> str:
+    return " ".join(
+        str(comp.get(field, ""))
+        for comp in rule.get("compensations", [])
+        for field in ("description", "fallback")
+    )
+
+
+# A fallback may name the denied command in order to warn AGAINST it —
+# `gh-issue-comment` says "NOT `gh issue comment --body-file`" and
+# `gh-pr-merge` says "rather than running raw `gh pr merge`". Those are
+# the fix, not the defect. `\bnot\b` deliberately does not match
+# `not_planned`, a literal `--reason` value in gh-issue-close's hint.
+_NEGATION = re.compile(r"\b(?:not|never|instead\s+of|rather\s+than)\b", re.IGNORECASE)
+
+
+def _recommends_a_denied_command(rule: dict[str, Any]) -> bool:
+    for clause in re.split(r"[.;\n]", _fallback_text(rule)):
+        if _matches_any_pattern(rule=rule, command=clause) and not _NEGATION.search(clause):
+            return True
+    return False
+
+
+def _self_denying_rule_ids() -> list[str]:
+    return [rule["name"] for rule in _hook_block_rules() if _recommends_a_denied_command(rule)]
+
+
+class TestSelfDenyingFallbacks:
+    """GH-1266: a hint that is itself denied reads as sanctioned.
+
+    GH-1068 F6 fixed this for `gh-issue-comment` alone; six more rules in
+    the same family still named, in their own fallback, a command their
+    own pattern denied. With the MCP server down that made every issue
+    read, close, edit and comment path a dead end pointing at another
+    dead end. These tests generalize the one-off fix into an invariant
+    over every blocking rule, so the class cannot silently return.
+    """
+
+    @pytest.mark.parametrize(
+        "rule_name",
+        [
+            "gh-issue-close",
+            "gh-issue-reopen",
+            "gh-issue-edit",
+            "gh-pr-edit",
+            "gh-pr-ready",
+            "gh-pr-view",
+        ],
+    )
+    def test_detector_still_sees_the_known_self_denying_rules(self, rule_name: str) -> None:
+        # Non-vacuity guard (the GH-1215 lesson): the two assertions below
+        # only mean something while the detector still classifies these
+        # rules as self-denying. If a wording change makes the detector go
+        # blind, they would pass while checking nothing — fail loudly here
+        # instead.
+        assert rule_name in _self_denying_rule_ids(), (
+            f"{rule_name} is no longer detected as self-denying — the escape "
+            "assertions have gone vacuous for it"
+        )
+
+    def test_self_denying_fallback_carries_an_escape(self) -> None:
+        offenders = [
+            name for name in _self_denying_rule_ids() if not _rule_by_name(name).get("except")
+        ]
+        assert not offenders, (
+            "these blocking rules name their own denied command as the "
+            f"fallback and offer no `except` escape: {offenders}"
+        )
+
+    def test_self_denying_fallback_names_its_escape(self) -> None:
+        # An escape the caller is never told about is only half a fix —
+        # they still burn a round trip discovering the hint is denied.
+        offenders = [
+            name
+            for name in _self_denying_rule_ids()
+            if not any(
+                str(token) in _fallback_text(_rule_by_name(name))
+                for token in _rule_by_name(name).get("except", [])
+            )
+        ]
+        assert not offenders, (
+            "these blocking rules carry an `except` escape but their "
+            f"fallback text never names it: {offenders}"
+        )
+
+    @pytest.mark.parametrize(
+        "rule_name",
+        [
+            "gh-issue-close",
+            "gh-issue-reopen",
+            "gh-issue-edit",
+            "gh-pr-edit",
+            "gh-pr-ready",
+        ],
+    )
+    def test_write_rules_use_a_write_scoped_marker(self, rule_name: str) -> None:
+        # A read escape must never authorize a mutation: `gh-pr-view`'s
+        # `raw-gh-pr` marker is carried by verify-acc-dod DoD checks, which
+        # are cleared to read a PR, not to edit one.
+        markers = _rule_by_name(rule_name)["except"]
+        assert markers, f"{rule_name} has no escape marker"
+        assert all(str(marker).endswith("-write") for marker in markers), (
+            f"{rule_name} must use a write-scoped marker, got {markers}"
+        )
+
+    def test_issue_view_keeps_a_read_scoped_escape(self) -> None:
+        # GH-1266 floats making this advisory. It stays blocking on
+        # purpose: `gh issue view 42` is the fixture carrying GH-957's
+        # MCP-disconnect guidance, so an advisory rule would drop the
+        # reconnect hint exactly when the MCP server is down. The escape
+        # is read-scoped — it must not end in `-write`.
+        rule = _rule_by_name("gh-issue-view")
+        assert rule["hook_block"] is True
+        assert rule["except"] == ["cli-friction: allow raw-gh-issue"]
+        assert not any(str(marker).endswith("-write") for marker in rule["except"])

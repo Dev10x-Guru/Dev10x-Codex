@@ -50,12 +50,91 @@ Workflows should reference these files rather than duplicating content.
 
 ## Conditional Execution Pattern
 
-### Two-Layer Filtering
+### Three-Layer Filtering
+
+Expensive PR-triggered workflows use a three-layer filtering
+strategy to prevent wasted CI execution:
 
 1. **Event-level filtering** (`paths:`) — prevents workflow from
    queuing, saving GitHub Actions minutes
 2. **Step-level conditional** (`if:`) — skips steps when no relevant
    files changed, providing additional safety
+3. **Runtime PR state validation** — exits before expensive operations
+   (checkout, Claude API calls) if PR is already merged/closed
+
+### Runtime PR State Validation
+
+Add a state-check step early in your workflow to gate expensive
+operations:
+
+```yaml
+- id: pr-state
+  name: Check PR state
+  run: |
+    STATE=$(gh pr view ${{ github.event.pull_request.number }} \
+      --json state -q '.state')
+    if [ "$STATE" != "OPEN" ]; then
+      echo "skip=true" >> $GITHUB_OUTPUT
+    fi
+  env:
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+Chain this check into downstream step conditionals to prevent
+wasted operations on merged/closed PRs.
+
+### Guard Output Chaining
+
+When multiple guard conditions exist, chain them using AND logic:
+
+```yaml
+- name: Expensive operation
+  if: >-
+    steps.dedup.outputs.skip != 'true' &&
+    steps.pr-state.outputs.skip != 'true'
+  run: expensive-operation
+```
+
+Each guard step sets `skip=true` in `$GITHUB_OUTPUT`. Downstream
+steps reference all guards with `&&`.
+
+### Race Condition Limitations
+
+The PR state check protects against PRs merged *before* the
+expensive step runs. A small race window remains if a PR is merged
+*during* an in-flight step. This is acceptable — the 99% case is
+prevented, and the 1% case causes only redundant review comments.
+
+### Fork PRs Cannot Mint an OIDC Token (GH-1226)
+
+A job that authenticates via OIDC — anything running
+`anthropics/claude-code-action` — **cannot work on a `pull_request`
+run from a fork**. GitHub refuses to issue the token (and withholds
+secrets) for fork-triggered runs. That is a platform security
+restriction, not a misconfiguration, and the resulting error is
+actively misleading: `Could not fetch an OIDC token. Did you remember
+to add id-token: write…` when `id-token: write` is declared right
+there in the job.
+
+Guard such a job rather than letting it fail:
+
+```yaml
+if: >-
+  !github.event.pull_request.draft
+  && !github.event.pull_request.head.repo.fork
+```
+
+*Why skip rather than fix?* Two permanently-red non-required checks
+train reviewers to read a red CI as "just the fork thing" — which is
+the state a genuine failure slips through. Skipping costs the review
+coverage that was never actually happening and buys back a check
+column that means something.
+
+Getting real coverage on fork PRs takes a `workflow_run` split (the
+privileged job runs after the untrusted build, with fork code kept out
+of the privileged context) or `pull_request_target` (which grants
+base-repo credentials and must never check out or execute fork-supplied
+code). Neither is a trigger swap; both need deliberate guarding.
 
 ## Concurrency Groups
 

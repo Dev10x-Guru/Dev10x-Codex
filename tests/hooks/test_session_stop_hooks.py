@@ -20,16 +20,12 @@ def runner() -> CliRunner:
 
 class TestSessionPersist:
     def test_creates_state_file(self, runner: CliRunner, tmp_path: Path) -> None:
-        import dev10x.hooks.session as mod
-
-        state_dir = tmp_path / ".codex" / "projects" / "_session_state"
+        import dev10x.hooks.session_dispatch as mod
 
         def fake_toplevel() -> str:
             return str(tmp_path / "myproject")
 
         (tmp_path / "myproject").mkdir(parents=True)
-
-        original_home = Path.home
 
         def fake_home() -> Path:
             return tmp_path
@@ -45,7 +41,7 @@ class TestSessionPersist:
                 )
 
         assert result.exit_code == 0
-        state_files = list((tmp_path / ".codex" / "projects" / "_session_state").glob("*.json"))
+        state_files = list((tmp_path / ".claude" / "projects" / "_session_state").glob("*.json"))
         assert len(state_files) == 1
 
     def test_state_file_schema(
@@ -54,14 +50,14 @@ class TestSessionPersist:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        import dev10x.hooks.session as mod
+        import dev10x.hooks.session_dispatch as mod
 
         project_dir = tmp_path / "myproject"
         project_dir.mkdir(parents=True)
 
         monkeypatch.setattr(mod, "_get_toplevel", lambda: str(project_dir))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(mod, "_run_git", lambda *a: "")
+        monkeypatch.setattr(mod, "_run_git_safe", lambda git, *a: "")
 
         result = runner.invoke(
             cli,
@@ -70,7 +66,7 @@ class TestSessionPersist:
         )
 
         assert result.exit_code == 0
-        state_files = list((tmp_path / ".codex" / "projects" / "_session_state").glob("*.json"))
+        state_files = list((tmp_path / ".claude" / "projects" / "_session_state").glob("*.json"))
         assert len(state_files) == 1
         state = json.loads(state_files[0].read_text())
 
@@ -113,14 +109,14 @@ class TestSessionPersist:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        import dev10x.hooks.session as mod
+        import dev10x.hooks.session_dispatch as mod
 
         project_dir = tmp_path / "myproject"
         project_dir.mkdir(parents=True)
 
         monkeypatch.setattr(mod, "_get_toplevel", lambda: str(project_dir))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(mod, "_run_git", lambda *a: "")
+        monkeypatch.setattr(mod, "_run_git_safe", lambda git, *a: "")
 
         runner.invoke(
             cli,
@@ -128,9 +124,40 @@ class TestSessionPersist:
             input=json.dumps({"session_id": "sess-perms-test"}),
         )
 
-        state_dir = tmp_path / ".codex" / "projects" / "_session_state"
+        state_dir = tmp_path / ".claude" / "projects" / "_session_state"
         assert state_dir.exists()
         assert state_dir.stat().st_mode & 0o777 == 0o700
+
+
+class TestRunGitSafe:
+    def test_returns_git_output(self) -> None:
+        import dev10x.hooks.session_dispatch as mod
+
+        class FakeGit:
+            def run(self, *args: str) -> str:
+                return "main"
+
+        assert mod._run_git_safe(FakeGit(), "rev-parse", "--abbrev-ref", "HEAD") == "main"
+
+    def test_swallows_called_process_error(self) -> None:
+        import subprocess
+
+        import dev10x.hooks.session_dispatch as mod
+
+        class FailGit:
+            def run(self, *args: str) -> str:
+                raise subprocess.CalledProcessError(1, "git")
+
+        assert mod._run_git_safe(FailGit(), "status") == ""
+
+    def test_swallows_missing_git(self) -> None:
+        import dev10x.hooks.session_dispatch as mod
+
+        class NoGit:
+            def run(self, *args: str) -> str:
+                raise FileNotFoundError()
+
+        assert mod._run_git_safe(NoGit(), "status") == ""
 
 
 class TestSessionGoodbye:
@@ -153,7 +180,7 @@ class TestSessionGoodbye:
         )
 
         assert result.exit_code == 0
-        assert "codex --resume my-session-id" in result.output
+        assert "claude --resume my-session-id" in result.output
 
     def test_no_resume_command_without_session_id(self, runner: CliRunner) -> None:
         result = runner.invoke(
@@ -163,7 +190,7 @@ class TestSessionGoodbye:
         )
 
         assert result.exit_code == 0
-        assert "codex --resume" not in result.output
+        assert "claude --resume" not in result.output
 
     def test_handles_invalid_json_gracefully(self) -> None:
         from dev10x.hooks.session import session_goodbye
@@ -181,7 +208,7 @@ class TestSessionGoodbye:
 
         output = captured.getvalue()
         assert "Dev10x" in output
-        assert "codex --resume" not in output
+        assert "claude --resume" not in output
 
     def test_outputs_ansi_hyperlink(self, runner: CliRunner) -> None:
         result = runner.invoke(

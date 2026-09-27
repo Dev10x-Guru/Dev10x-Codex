@@ -1,0 +1,495 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import yaml
+
+from dev10x.domain.common.config_io import ConfigIOError
+from dev10x.domain.documents.config_document import Config
+from dev10x.domain.rules.rule_engine import RuleEngine
+from dev10x.domain.rules.validation_rule import Compensation, Rule, is_search_command
+
+
+class TestRuleFromYamlEntry:
+    @pytest.fixture()
+    def entry(self) -> dict:
+        return {
+            "name": "block-env",
+            "matcher": "Edit|Write",
+            "hook_block": True,
+            "file_names": [".env"],
+            "message": "Blocked: {file_path}",
+            "compensations": [
+                {"type": "use-skill", "skill": "Dev10x:edit", "guardrails": "safety"}
+            ],
+        }
+
+    def test_creates_rule_with_all_fields(self, entry: dict) -> None:
+        rule = Rule.from_yaml_entry(entry=entry)
+
+        assert rule.name == "block-env"
+        assert rule.matcher == "Edit|Write"
+        assert rule.hook_block is True
+        assert rule.file_names == [".env"]
+
+    def test_parses_compensations(self, entry: dict) -> None:
+        rule = Rule.from_yaml_entry(entry=entry)
+
+        assert len(rule.compensations) == 1
+        assert rule.compensations[0].skill == "Dev10x:edit"
+
+    def test_defaults_for_missing_fields(self) -> None:
+        rule = Rule.from_yaml_entry(entry={"name": "minimal"})
+
+        assert rule.matcher == "Bash"
+        assert rule.hook_block is True
+        assert rule.patterns == []
+        assert rule.compensations == []
+
+
+class TestCompensationFromYamlEntry:
+    def test_filters_unknown_keys(self) -> None:
+        entry = {"type": "use-skill", "skill": "foo", "unknown_key": "bar"}
+
+        comp = Compensation.from_yaml_entry(entry=entry)
+
+        assert comp.type == "use-skill"
+        assert comp.skill == "foo"
+
+
+class TestRuleEngineFromYaml:
+    @pytest.fixture()
+    def yaml_path(self, tmp_path: Path) -> Path:
+        content = {
+            "rules": [
+                {
+                    "name": "block-env",
+                    "matcher": "Edit|Write",
+                    "hook_block": True,
+                    "file_names": [".env"],
+                    "message": "BLOCKED",
+                },
+                {
+                    "name": "block-push",
+                    "matcher": "Bash",
+                    "hook_block": True,
+                    "patterns": ["^git push"],
+                    "compensations": [{"type": "use-skill", "skill": "Dev10x:git"}],
+                },
+                {
+                    "name": "advisory-only",
+                    "matcher": "Bash",
+                    "hook_block": False,
+                    "patterns": ["^echo"],
+                },
+            ]
+        }
+        path = tmp_path / "rules.yaml"
+        path.write_text(yaml.dump(content))
+        return path
+
+    def test_splits_edit_and_command_rules(self, yaml_path: Path) -> None:
+        engine = RuleEngine.from_yaml(path=yaml_path)
+
+        assert len(engine.edit_rules) == 1
+        assert len(engine.command_rules) == 1
+
+    def test_skips_non_blocking_rules(self, yaml_path: Path) -> None:
+        engine = RuleEngine.from_yaml(path=yaml_path)
+
+        all_names = {r.name for r in engine.edit_rules + engine.command_rules}
+        assert "advisory-only" not in all_names
+
+    def test_malformed_yaml_raises(self, tmp_path: Path) -> None:
+        path = tmp_path / "bad.yaml"
+        path.write_text(": invalid: yaml: [")
+
+        with pytest.raises(ConfigIOError):
+            RuleEngine.from_yaml(path=path)
+
+
+class TestRuleEngineFromConfig:
+    def test_filters_by_hook_block(self) -> None:
+        config = Config(
+            rules=[
+                Rule(name="active", hook_block=True, matcher="Bash", patterns=["^git"]),
+                Rule(name="inactive", hook_block=False, matcher="Bash"),
+            ]
+        )
+
+        engine = RuleEngine.from_config(config=config)
+
+        assert len(engine.command_rules) == 1
+        assert engine.command_rules[0].name == "active"
+
+
+class TestRuleEngineEvaluate:
+    @pytest.fixture()
+    def engine(self) -> RuleEngine:
+        return RuleEngine(
+            edit_rules=[
+                Rule(
+                    name="block-env",
+                    matcher="Edit|Write",
+                    file_names=[".env"],
+                    message="BLOCKED: {file_path}",
+                ),
+                Rule(
+                    name="block-secrets",
+                    matcher="Edit|Write",
+                    file_pattern=r".*\.secret$",
+                    content_pattern=r"password",
+                    message="Secret content blocked",
+                ),
+            ],
+        )
+
+    def test_matches_by_file_name(self, engine: RuleEngine) -> None:
+        result = engine.evaluate(file_path="/app/.env", content="KEY=val")
+
+        assert result is not None
+        assert result.rule_name == "block-env"
+
+    def test_returns_none_for_unmatched_file(self, engine: RuleEngine) -> None:
+        result = engine.evaluate(file_path="/app/main.py", content="x = 1")
+
+        assert result is None
+
+    def test_matches_file_and_content_pattern(self, engine: RuleEngine) -> None:
+        result = engine.evaluate(file_path="db.secret", content="password=abc")
+
+        assert result is not None
+        assert result.rule_name == "block-secrets"
+
+    def test_skips_when_content_doesnt_match(self, engine: RuleEngine) -> None:
+        result = engine.evaluate(file_path="db.secret", content="host=localhost")
+
+        assert result is None
+
+    def test_returns_first_match(self, engine: RuleEngine) -> None:
+        result = engine.evaluate(file_path=".env", content="password=abc")
+
+        assert result is not None
+        assert result.rule_name == "block-env"
+
+
+class TestRuleEngineEvaluateCommand:
+    @pytest.fixture()
+    def engine(self) -> RuleEngine:
+        return RuleEngine(
+            command_rules=[
+                Rule(
+                    name="block-push",
+                    matcher="Bash",
+                    patterns=["^git push"],
+                    except_=["--dry-run"],
+                    compensations=[Compensation(type="use-skill", skill="Dev10x:git")],
+                ),
+            ],
+        )
+
+    def test_matches_command(self, engine: RuleEngine) -> None:
+        result = engine.evaluate_command(command="git push origin main")
+
+        assert result is not None
+        assert result.name == "block-push"
+
+    def test_returns_none_for_unmatched(self, engine: RuleEngine) -> None:
+        result = engine.evaluate_command(command="git status")
+
+        assert result is None
+
+    def test_respects_except_patterns(self, engine: RuleEngine) -> None:
+        result = engine.evaluate_command(command="git push --dry-run")
+
+        assert result is None
+
+
+class TestSubcommandBoundary:
+    """Regression coverage for GH-84: `git commit` matching `git commit-msg`."""
+
+    @pytest.fixture()
+    def engine(self) -> RuleEngine:
+        return RuleEngine(
+            command_rules=[
+                Rule(
+                    name="git-commit",
+                    matcher="Bash",
+                    patterns=["git commit"],
+                    compensations=[Compensation(type="use-skill", skill="Dev10x:git-commit")],
+                ),
+                Rule(
+                    name="gh-pr-create",
+                    matcher="Bash",
+                    patterns=["gh pr create"],
+                    compensations=[Compensation(type="use-skill", skill="Dev10x:gh-pr-create")],
+                ),
+            ],
+        )
+
+    def test_real_git_commit_still_blocked(self, engine: RuleEngine) -> None:
+        result = engine.evaluate_command(command="git commit -m 'msg'")
+
+        assert result is not None
+        assert result.name == "git-commit"
+
+    def test_git_commit_msg_argument_passes(self, engine: RuleEngine) -> None:
+        result = engine.evaluate_command(
+            command="/tmp/Dev10x/bin/mktmp.sh git commit-msg .txt",
+        )
+
+        assert result is None
+
+    def test_git_commits_word_extension_passes(self, engine: RuleEngine) -> None:
+        result = engine.evaluate_command(command="echo git commits today")
+
+        assert result is None
+
+    def test_gh_pr_create_real_invocation_blocked(self, engine: RuleEngine) -> None:
+        result = engine.evaluate_command(command="gh pr create --draft")
+
+        assert result is not None
+        assert result.name == "gh-pr-create"
+
+    def test_gh_pr_create_hyphenated_argument_passes(self, engine: RuleEngine) -> None:
+        result = engine.evaluate_command(command="echo gh pr create-something")
+
+        assert result is None
+
+
+class TestGlobalOptionEvasion:
+    """Regression coverage for GH-931 finding 3.
+
+    Patterns are command-name prefixes (``git push``), matched with
+    ``re.search`` against the raw command. A git/gh *global* option sits
+    between the executable and the subcommand, so ``git -C /path push``
+    contains no ``git push`` substring and every ``git <verb>`` rule was
+    silently evadable. A guardrail that can be bypassed by a trivial
+    reformulation reads as "the check passed" rather than "the check was
+    evaded", which is the worst failure mode for a guard.
+    """
+
+    @pytest.fixture()
+    def engine(self) -> RuleEngine:
+        return RuleEngine(
+            command_rules=[
+                Rule(
+                    name="git-push",
+                    matcher="Bash",
+                    patterns=["git push"],
+                    except_=["--force-with-lease"],
+                    compensations=[Compensation(type="use-skill", skill="Dev10x:git")],
+                ),
+                Rule(
+                    name="git-commit",
+                    matcher="Bash",
+                    patterns=["^git commit"],
+                    compensations=[Compensation(type="use-skill", skill="Dev10x:git-commit")],
+                ),
+            ],
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git -C /work/repo push --force origin main",
+            "git --git-dir=/work/repo/.git push --force origin main",
+            "git --git-dir /work/repo/.git push --force origin main",
+            "git -c user.name=x push --force origin main",
+            "git --no-pager push --force origin main",
+            "git --work-tree=/work/repo -C /work/repo push origin main",
+        ],
+    )
+    def test_global_options_do_not_evade_the_guard(
+        self,
+        engine: RuleEngine,
+        command: str,
+    ) -> None:
+        result = engine.evaluate_command(command=command)
+
+        assert result is not None
+        assert result.name == "git-push"
+
+    def test_anchored_pattern_still_matches_past_global_options(
+        self,
+        engine: RuleEngine,
+    ) -> None:
+        result = engine.evaluate_command(command="git -C /work/repo commit -m 'msg'")
+
+        assert result is not None
+        assert result.name == "git-commit"
+
+    def test_quoted_path_with_spaces_does_not_evade_the_guard(
+        self,
+        engine: RuleEngine,
+    ) -> None:
+        result = engine.evaluate_command(command='git -C "/work/my repo" push origin main')
+
+        assert result is not None
+        assert result.name == "git-push"
+
+    def test_except_pattern_still_honoured_after_normalization(
+        self,
+        engine: RuleEngine,
+    ) -> None:
+        result = engine.evaluate_command(command="git -C /work/repo push --force-with-lease")
+
+        assert result is None
+
+    def test_unrelated_subcommand_still_passes(self, engine: RuleEngine) -> None:
+        result = engine.evaluate_command(command="git -C /work/repo status --short")
+
+        assert result is None
+
+    def test_normalization_only_applies_to_git_and_gh(self, engine: RuleEngine) -> None:
+        result = engine.evaluate_command(command="/tmp/Dev10x/bin/mktmp.sh git commit-msg .txt")
+
+        assert result is None
+
+    def test_unbalanced_quote_falls_back_to_naive_split(self, engine: RuleEngine) -> None:
+        """An unparseable command must still be normalized, not skipped.
+
+        ``shlex.split`` raises on an unbalanced quote. Treating that as
+        "cannot normalize, therefore allow" would hand back the exact
+        evasion this guard closes, so the fallback keeps matching.
+        """
+        result = engine.evaluate_command(command='git -C "unclosed push --force origin main')
+
+        assert result is not None
+        assert result.name == "git-push"
+
+    def test_empty_command_matches_nothing(self, engine: RuleEngine) -> None:
+        result = engine.evaluate_command(command="")
+
+        assert result is None
+
+
+class TestMatchPosition:
+    """GH-1084: `match_position` decides where a pattern may match.
+
+    The default stays `anywhere` so every existing rule keeps its
+    behaviour; `invocation` is opt-in for rules whose pattern is a
+    script path, where matching a mention is always a false positive.
+    """
+
+    @pytest.fixture()
+    def engine(self) -> RuleEngine:
+        return RuleEngine(
+            command_rules=[
+                Rule(
+                    name="guarded-script",
+                    matcher="Bash",
+                    patterns=["guarded-tool.sh"],
+                    match_position="invocation",
+                    compensations=[Compensation(type="use-tool", tool="mcp__x__guarded")],
+                ),
+            ],
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "/opt/bin/guarded-tool.sh --force",
+            "./guarded-tool.sh",
+            "bash /opt/bin/guarded-tool.sh",
+            "TRACE=1 /opt/bin/guarded-tool.sh",
+            "env TRACE=1 /opt/bin/guarded-tool.sh",
+            "echo hi && /opt/bin/guarded-tool.sh",
+            "true; /opt/bin/guarded-tool.sh",
+            "find . -type f -exec guarded-tool.sh {} ;",
+        ],
+    )
+    def test_invocation_positions_match(self, command: str, engine: RuleEngine) -> None:
+        result = engine.evaluate_command(command=command)
+
+        assert result is not None
+        assert result.name == "guarded-script"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "pre-commit run --files /opt/bin/guarded-tool.sh",
+            "mv /opt/bin/guarded-tool.sh /opt/bin/old.sh",
+            "shellcheck /opt/bin/guarded-tool.sh",
+            "chmod +x /opt/bin/guarded-tool.sh",
+        ],
+    )
+    def test_mentions_do_not_match(self, command: str, engine: RuleEngine) -> None:
+        assert engine.evaluate_command(command=command) is None
+
+    def test_anywhere_is_the_default_and_still_matches_mentions(self) -> None:
+        """The opt-in must not quietly change rules that never set it."""
+        engine = RuleEngine(
+            command_rules=[
+                Rule(name="path-rot", matcher="Bash", patterns=["guarded-tool.sh"]),
+            ],
+        )
+
+        result = engine.evaluate_command(command="mv /opt/bin/guarded-tool.sh /tmp/old.sh")
+
+        assert result is not None
+
+    def test_unknown_match_position_fails_loud(self) -> None:
+        """A typo must not silently degrade to `anywhere` and un-anchor the rule."""
+        with pytest.raises(ValueError, match="not a valid MatchPosition"):
+            Rule(name="typo", matcher="Bash", patterns=["x"], match_position="invokation")
+
+    def test_search_tool_guard_still_covers_anywhere_rules(self) -> None:
+        """The GH-210 guard is complementary, not superseded.
+
+        `invocation` subsumes it for script-path rules, but a subcommand
+        rule cannot use `invocation` — its pattern spans two tokens and
+        never equals an executable — so searching for `git push` as a
+        literal still needs the search-tool suppression.
+        """
+        engine = RuleEngine(
+            command_rules=[Rule(name="git-push", matcher="Bash", patterns=["git push"])],
+        )
+
+        assert engine.evaluate_command(command='grep -rl "git push" src/') is None
+
+
+class TestIsSearchCommandQuoting:
+    """GH-1214 finding 6: the pipeline test reads the unquoted command.
+
+    A `|` only pipes when the shell sees it as an operator. Reading the
+    raw string made `grep -E 'a|b'` look like a pipeline, which dropped
+    the search-tool exemption and got the pattern's own text evaluated
+    as a command.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "grep -E 'gh pr edit|update_pr' brief.md",
+            'rg -e "gh pr create|gh pr merge" skills/',
+            # Escaped pipe outside quotes is a literal, not an operator.
+            "grep -E gh\\ pr\\ edit\\|update_pr brief.md",
+            # Backslash inside double quotes still escapes.
+            'grep -E "a\\|b" src/',
+        ],
+    )
+    def test_quoted_or_escaped_pipe_keeps_exemption(self, command: str) -> None:
+        assert is_search_command(command=command) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # A real operator: the pipeline can run the searched-for binary.
+            "grep -l foo src/ | xargs git push",
+            "grep -E 'a|b' src/ | xargs git push",
+            # -exec has always disabled the exemption.
+            "find . -name '*.sh' -exec git push {} ;",
+        ],
+    )
+    def test_real_pipeline_or_exec_drops_exemption(self, command: str) -> None:
+        assert is_search_command(command=command) is False
+
+    def test_backslash_is_literal_inside_single_quotes(self) -> None:
+        # POSIX: no escapes inside '...', so the closing quote is the
+        # first one — and the trailing | is then a real operator.
+        assert is_search_command(command="grep -E 'a\\' src | xargs git push") is False
+
+    def test_non_search_executable_is_never_exempt(self) -> None:
+        assert is_search_command(command="git push origin main") is False

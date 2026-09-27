@@ -6,7 +6,8 @@ import json
 
 import pytest
 
-from dev10x.domain.hook_input import HookRetry
+from dev10x.domain.events.hook_input import HookRetry
+from dev10x.hooks.hook_transport import emit
 from tests.fakers import BashHookInputFaker
 
 
@@ -23,7 +24,7 @@ class TestHookRetry:
 
     def test_emit_exits_zero(self, hook_retry: HookRetry) -> None:
         with pytest.raises(SystemExit) as exc_info:
-            hook_retry.emit()
+            emit(hook_retry)
         assert exc_info.value.code == 0
 
     def test_emit_writes_json_to_stderr(
@@ -32,7 +33,7 @@ class TestHookRetry:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         with pytest.raises(SystemExit):
-            hook_retry.emit()
+            emit(hook_retry)
         output = json.loads(capsys.readouterr().err)
         assert output["hookSpecificOutput"]["hookEventName"] == "PermissionDenied"
         assert output["hookSpecificOutput"]["retry"] is True
@@ -44,7 +45,7 @@ class TestHookRetry:
     ) -> None:
         retry = HookRetry(message="")
         with pytest.raises(SystemExit):
-            retry.emit()
+            emit(retry)
         output = json.loads(capsys.readouterr().err)
         assert "systemMessage" not in output
 
@@ -71,7 +72,7 @@ class TestSkillRedirectCorrect:
 
     def test_returns_none_for_allowed_commit(self, validator) -> None:
         inp = BashHookInputFaker.build(
-            command="git commit -F /tmp/claude/git/commit-msg.abc123.txt",
+            command="git commit -F /tmp/Dev10x/git/commit-msg.abc123.txt",
         )
         result = validator.correct(inp=inp)
         assert result is None

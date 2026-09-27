@@ -3,58 +3,128 @@
 Central reference for Dev10x configuration file paths, resolution
 order, and project mapping format.
 
+## Where the Dev10x config root lives
+
+Throughout this doc and Dev10x skills, `<Dev10x config>` is the
+canonical placeholder for the user-global config root. It resolves
+per platform (and overrides):
+
+| Resolution order | Path | When |
+|---|---|---|
+| 1 (override) | `$DEV10X_CONFIG_HOME` | Set explicitly (tests, CI, custom layouts) |
+| 2 (override) | `$XDG_CONFIG_HOME/Dev10x` | `XDG_CONFIG_HOME` is set |
+| 3 (Windows) | `%APPDATA%/Dev10x` | e.g. `C:\Users\<name>\AppData\Roaming\Dev10x` |
+| 4 (default) | `~/.config/Dev10x` | Linux, macOS, BSDs |
+
+Source of truth: `src/dev10x/domain/dev10x_paths.py` (`_platform_default_root`).
+When examples in this doc or SKILL.md files write
+`~/.config/Dev10x/...`, that is the Linux/macOS form — substitute
+the platform-appropriate root from the table above.
+
+**From the shell**, the resolved root is available as the
+bare-invocation output of the `dev10x` CLI:
+
+```bash
+$(uvx dev10x)/gitmoji.yaml
+# → /home/<user>/.config/Dev10x/gitmoji.yaml on Linux
+# → /Users/<user>/.config/Dev10x/gitmoji.yaml on macOS
+# → C:\Users\<user>\AppData\Roaming\Dev10x\gitmoji.yaml on Windows
+```
+
+`dev10x config root` is the explicit equivalent — both print
+the same path. Use whichever reads better in your script.
+
 ## Three-Tier Resolution
 
-All Dev10x configuration files follow a consistent resolution order:
+All Dev10x configuration files follow a consistent resolution order
+(project-local → global → plugin defaults):
 
 | Priority | Location | Scope | Committed? |
 |----------|----------|-------|------------|
 | 1 (highest) | `.claude/Dev10x/` | Project-local | No (gitignored) |
-| 2 | `~/.claude/memory/Dev10x/` | Global with repo mapping | N/A (user home) |
-| 3 (deprecated) | `~/.claude/projects/<project>/memory/` | Per-project | N/A (user home) |
-| 4 (lowest) | `${CLAUDE_PLUGIN_ROOT}/skills/*/references/` | Plugin defaults | Yes (plugin repo) |
+| 2 | `~/.config/Dev10x/` (XDG; legacy `~/.claude/memory/Dev10x/`) | Global with repo mapping | N/A (user home) |
+| 3 (lowest) | `${CLAUDE_PLUGIN_ROOT}/skills/*/references/` | Plugin defaults | Yes (plugin repo) |
 
 **Tier 1 — Project-local** (`.claude/Dev10x/`):
 Runtime and session data. Highest priority for truly project-specific
 overrides that should not be shared across repos. Gitignored.
 
-**Tier 2 — Global with repo mapping** (`~/.claude/memory/Dev10x/`):
+**Tier 2 — Global with repo mapping** (`~/.config/Dev10x/`):
 Single file serves multiple projects via `projects[].match` globs.
 Preferred for overrides that apply to several repos (e.g., all
 ExampleCorp repos share the same shipping pipeline).
 
-**Tier 3 — Legacy per-project** (`~/.claude/projects/<project>/memory/`):
-Deprecated. Existing files still work as fallback. New overrides
-should use Tier 2 instead. Skills that find files here should log
-a deprecation notice.
+> **Note (GH-941):** The old `~/.claude/projects/<key>/memory/`
+> path is removed. All tier 2 config lives under
+> `~/.config/Dev10x/`.
+>
+> **Note (GH-215):** Dev10x userspace config moved out of
+> `~/.claude/` to the XDG location: `~/.config/Dev10x/` on
+> Linux/macOS, `%APPDATA%/Dev10x/` on Windows. Override via
+> `DEV10X_CONFIG_HOME`. Legacy paths under `~/.claude/memory/Dev10x/`
+> and `~/.claude/Dev10x/` are migrated lazily on first read and
+> explicitly by `dev10x config migrate` (wired into
+> `Dev10x:upgrade-cleanup` and `Dev10x:plugin-doctor`).
 
-**Tier 4 — Plugin defaults** (`${CLAUDE_PLUGIN_ROOT}/skills/*/references/`):
+**Tier 3 — Plugin defaults** (`${CLAUDE_PLUGIN_ROOT}/skills/*/references/`):
 Shipped with the plugin. Used when no user override exists.
 
 ## Project Mapping Format
 
-Global config files (Tier 2) use a `projects` list with glob
-matching on the repo's `nameWithOwner` (e.g., `org/repo`).
-Match uses standard Unix glob syntax (`fnmatch`): `*` matches any
-string, `?` matches a single character, `[seq]` matches any character
-in *seq*.
+Global config files (Tier 2) use a `projects` list whose entries carry a
+glob. **Two addressing schemes exist, and the key name says which**
+(ADR-0026):
+
+| Key | Compared against | Files |
+|---|---|---|
+| `match_repo:` | the repo's `nameWithOwner` — `org/repo` | `playbooks/<skill>.yaml`, `settings-pr-merge.yaml`, `gitmoji.yaml` |
+| `match:` | an **absolute directory path** | `friction.yaml` |
+
+Both use standard Unix glob syntax (`fnmatch`): `*` matches any string
+— **including `/`** — `?` matches a single character, `[seq]` matches
+any character in *seq*.
+
+> **Deprecated alias.** `match:` is still accepted in a repo-addressed
+> file for one release, so an existing playbook keeps working. Rename it
+> to `match_repo:`; `dev10x config doctor` and `dev10x playbook diff`
+> report every entry still on the alias.
 
 ```yaml
 projects:
-  - match: "Dev10x-Guru/dev10x-claude"
+  - match_repo: "Dev10x-Guru/dev10x-claude"
     # config specific to this repo
 
-  - match: "org/*"
+  - match_repo: "org/*"
     # config shared across all ExampleCorp repos
 ```
 
-**Resolution within Tier 2:**
+**Resolution within Tier 2 (repo-addressed files):**
 1. Get current repo: `git remote get-url origin` → extract `owner/repo`
-2. Walk the `projects` list — first `match` glob that fits selects
-   the config block
+2. Walk the `projects` list — first `match_repo` glob that fits selects
+   the config block (`match:` is read as the deprecated alias)
 3. If no match, skip Tier 2 (fall through to Tier 3 or 4)
 
-This follows the same pattern as `gitmoji.yaml` project overrides.
+**No `origin` remote.** Step 1 has a failure case: a local-only repo, a
+clone whose remote is named something other than `origin`, or a
+detached checkout has no `owner/repo` to extract. Tier 2 is then **not
+evaluated at all** — which is a different outcome from "evaluated, no
+entry matched", and the tools say which: `dev10x config doctor` reports
+the list as NOT evaluated and names the reason. Repo-addressed Tier 2
+config cannot apply to such a checkout; move the settings to Tier 1
+(`.claude/Dev10x/`) or add an `origin` remote.
+
+### The portable `*/<repo>` form
+
+Because `fnmatch`'s `*` spans `/`, a glob written `*/<repo>` resolves
+under **both** schemes: it matches `owner/repo` with `*` absorbing the
+owner, and `/work/dx/repo` with `*` absorbing the parent directories.
+An org-form glob does not travel — `Dev10x-Guru/*` never matches a
+directory path — which is exactly the mistake the two key names now
+make visible.
+
+Treat `*/<repo>` as a convenience, not a contract: the overlap holds
+because of `fnmatch` semantics, not by design. The named keys are the
+guarantee.
 
 ## Configuration Files
 
@@ -63,14 +133,13 @@ This follows the same pattern as `gitmoji.yaml` project overrides.
 | Tier | Path | Format |
 |------|------|--------|
 | 1 | `.claude/Dev10x/playbooks/<key>.yaml` | Standard playbook YAML |
-| 2 | `~/.claude/memory/Dev10x/playbooks/<key>.yaml` | Playbook + `projects` mapping |
-| 3 | `~/.claude/projects/<project>/memory/playbooks/<key>.yaml` | Standard playbook YAML (deprecated) |
-| 4 | `${CLAUDE_PLUGIN_ROOT}/skills/<key>/references/playbook.yaml` | Default playbook |
+| 2 | `~/.config/Dev10x/playbooks/<key>.yaml` | Playbook + `projects` mapping |
+| 3 | `${CLAUDE_PLUGIN_ROOT}/skills/<key>/references/playbook.yaml` | Default playbook |
 
 **Global playbook format** (Tier 2):
 
 ```yaml
-# ~/.claude/memory/Dev10x/playbooks/work-on.yaml
+# ~/.config/Dev10x/playbooks/work-on.yaml
 
 fragments:
   shipping-pipeline-solo:
@@ -80,7 +149,7 @@ fragments:
     # ...
 
 projects:
-  - match: "Dev10x-Guru/dev10x-claude"
+  - match_repo: "Dev10x-Guru/dev10x-claude"
     active_modes: [solo-maintainer]
     overrides:
       - play: feature
@@ -90,44 +159,54 @@ projects:
             skills: [dev10x:ticket-branch]
           # ...
 
-  - match: "example-org/*"
+  - match_repo: "example-org/*"
     active_modes: [solo-maintainer]
     overrides:
       - play: feature
         steps: [...]
 ```
 
-**Backward compatibility:** When resolving a playbook, check Tier 1
-first, then Tier 2 with repo matching, then Tier 3 (legacy). If a
-Tier 3 file is found, log: "Legacy playbook found at per-project
-path. Consider migrating to ~/.claude/memory/Dev10x/playbooks/."
+**Resolution order:** Check Tier 1 first, then Tier 2 with repo
+matching, then Tier 3 (plugin defaults).
 
 ### Session Config
 
 | Tier | Path | Notes |
 |------|------|-------|
-| 1 only | `.claude/Dev10x/session.yaml` | Session-scoped, not shared |
+| 2 only | `~/.config/Dev10x/friction.yaml` | Global, keyed by `projects[].match` dir globs |
 
-Session config is always project-local. It contains runtime state
-(friction level, active modes) that is session-specific.
+This is the one file whose `match:` is **not** an `org/repo` glob — it
+is compared against the checkout's absolute directory path, keyed by
+the git common dir so one entry covers every worktree (ADR-0018 D3).
+Copying a `Dev10x-Guru/*` glob here selects nothing.
+
+Session prefs are **not** project-local (ADR-0018 D1). `friction_level`,
+`active_modes`, `allowed_overlays`, and the `gate_*` keys live in one
+global file keyed by directory-path globs, so a repo's prefs cover
+every worktree by construction. Read them via
+`mcp__plugin_Dev10x_cli__resolve_gate`, which owns the precedence.
+
+The retired `.claude/Dev10x/session.yaml` is not a tier: ADR-0018 D2
+removed it as a config source, and D5 moved its remaining task-index
+role to `~/.config/Dev10x/task-index/<repo-stem>.yaml` (reached via the
+`task_index_*` MCP tools, never Write/Edit).
 
 ### PR Merge Settings
 
 | Tier | Path | Format |
 |------|------|--------|
-| 2 | `~/.claude/memory/Dev10x/settings-pr-merge.yaml` | Settings + `projects` mapping |
-| 3 | `~/.claude/projects/<project>/memory/settings-pr-merge.yaml` | Flat settings (deprecated) |
+| 2 | `~/.config/Dev10x/settings-pr-merge.yaml` | Settings + `projects` mapping |
 
 **Global format** (Tier 2):
 
 ```yaml
-# ~/.claude/memory/Dev10x/settings-pr-merge.yaml
+# ~/.config/Dev10x/settings-pr-merge.yaml
 projects:
-  - match: "Dev10x-Guru/*"
+  - match_repo: "Dev10x-Guru/*"
     strategy: rebase
     delete_branch: true
     solo_maintainer: true
-  - match: "example-org/*"
+  - match_repo: "example-org/*"
     strategy: rebase
     delete_branch: true
     solo_maintainer: true
@@ -135,62 +214,106 @@ projects:
 
 ### Acceptance Criteria
 
-Already uses global format:
 
 | Tier | Path |
 |------|------|
-| 2 | `~/.claude/memory/Dev10x/dod-acceptance-criteria.yaml` |
-| 4 | Plugin defaults (hardcoded in skill) |
+| 2 | `~/.config/Dev10x/dod-acceptance-criteria.yaml` |
+| 3 | Plugin defaults (hardcoded in skill) |
+
+`Dev10x:verify-acc-dod` falls back to the GH-941-retired
+`~/.claude/memory/Dev10x/dod-acceptance-criteria.yaml` for one release
+when tier 2 is absent, and says so in its output when the fallback
+fires. That fallback is **read-only** — overrides are always written to
+the tier-2 path above. Until GH-1035 the skill named the legacy path as
+its sole location while this table named the tier-2 one, so a
+maintainer's edits landed in a file nothing read.
 
 ### Gitmoji Overrides
 
-Already uses global format:
 
 | Tier | Path |
 |------|------|
-| 2 | `~/.claude/memory/Dev10x/gitmoji.yaml` |
-| 4 | `${CLAUDE_PLUGIN_ROOT}/skills/git-commit/references/gitmoji-defaults.yaml` |
+| 2 | `~/.config/Dev10x/gitmoji.yaml` |
+| 3 | `${CLAUDE_PLUGIN_ROOT}/skills/git-commit/references/gitmoji-defaults.yaml` |
 
 ### Database Schema
 
 | Tier | Path |
 |------|------|
-| 2 | `~/.claude/memory/Dev10x/db-<name>-schema.md` |
-| 3 | `~/.claude/projects/<project>/memory/db-<name>-schema.md` (deprecated) |
+| 2 | `~/.config/Dev10x/db-<name>-schema.md` |
 
 ### GitHub Reviewers
 
-Already uses global format:
+| Tier | Path |
+|------|------|
+| 2 | `~/.config/Dev10x/github-reviewers-config.yaml` |
+
+### Slack Config
 
 | Tier | Path |
 |------|------|
-| 2 | `~/.claude/memory/Dev10x/github-reviewers-config.yaml` |
+| 2 | `~/.config/Dev10x/slack-config.yaml` |
 
-## Migrating Per-Project Overrides
+### Slack Code Review Requests
 
-To migrate an existing per-project playbook to the global format:
+| Tier | Path |
+|------|------|
+| 2 | `~/.config/Dev10x/slack-config-code-review-requests.yaml` |
 
-1. Read the per-project file:
-   `~/.claude/projects/<project>/memory/playbooks/work-on.yaml`
-2. Wrap its content under a `projects` entry in the global file:
-   `~/.claude/memory/Dev10x/playbooks/work-on.yaml`
-3. Add a `match` glob for the repo
-4. If multiple repos share the same config, add multiple `match`
-   entries or use wildcards
-5. Delete the per-project file
+### Plugin Maintenance Preferences
+
+| Tier | Path |
+|------|------|
+| 2 | `~/.config/Dev10x/plugin-maintenance-prefs.yaml` |
+
+Valid values for `update_preference`: `both | plugin | uv | skip | ask`.
+When absent or set to `ask`, `Dev10x:plugin-maintenance` prompts on
+every run. Legacy path `~/.claude/memory/Dev10x/plugin-maintenance-prefs.yaml`
+is migrated lazily on first read.
+
+### Database Connections
+
+`databases.yaml` stores named database entries for `Dev10x:db-psql`.
+The script resolves config from multiple locations so project plugins
+(e.g., `tt:db`) are discovered automatically without symlinks.
+
+| Priority | Path | Notes |
+|----------|------|-------|
+| 1 | `$DB_CONFIG` | Explicit override; skips all other locations |
+| 2 | `${CLAUDE_PLUGIN_ROOT}/skills/db-psql/databases.yaml` | Plugin-shipped defaults |
+| 3 | `~/.config/Dev10x/databases.yaml` | **Preferred** user-global location (XDG) |
+| 4 | `~/.claude/memory/Dev10x/databases.yaml` | Deprecated fallback (kept for backward compat) |
+| 5 | `skills/*/databases.yaml` | Sibling skills in the same plugin |
+| 6 | `~/.claude/skills/*/databases.yaml` | User-installed standalone skills |
+| 7 | `~/.claude/plugins/marketplaces/*/skills/*/databases.yaml` | Other marketplace plugins |
+
+**Recommended setup**: place your user-level `databases.yaml` at
+`~/.config/Dev10x/databases.yaml` (priority 3). The legacy
+`~/.claude/memory/Dev10x/databases.yaml` path still works but is
+deprecated; migrate to the XDG location when convenient.
+
+`$DB_CONFIG` env-var override is not recommended in Claude Code
+sessions — prefixing a `DB_CONFIG=...` env var shifts the effective
+command prefix and breaks allow-rule matching (see GH-448).
 
 ## Skills That Reference These Paths
 
 | Skill | Config type | Tiers used |
 |-------|------------|------------|
-| `Dev10x:work-on` | playbook, session | 1, 2, 3, 4 |
-| `Dev10x:playbook` | playbook | 1, 2, 3, 4 |
-| `Dev10x:gh-pr-respond` | playbook | 2, 3, 4 |
-| `Dev10x:release-notes` | playbook | 2, 3, 4 |
-| `Dev10x:investigate` | playbook | 2, 3, 4 |
-| `Dev10x:gh-pr-merge` | settings | 2, 3 |
-| `Dev10x:verify-acc-dod` | acceptance criteria | 2, 4 |
-| `Dev10x:git-commit` | gitmoji | 2, 4 |
+| `Dev10x:work-on` | playbook, session | 1, 2, 3 |
+| `Dev10x:playbook` | playbook | 1, 2, 3 |
+| `Dev10x:gh-pr-respond` | playbook | 1, 2, 3 |
+| `Dev10x:release-notes` | playbook | 1, 2, 3 |
+| `Dev10x:investigate` | playbook | 1, 2, 3 |
+| `Dev10x:gh-pr-merge` | settings | 2 |
+| `Dev10x:verify-acc-dod` | acceptance criteria | 2, 3 |
+| `Dev10x:git-commit` | gitmoji | 2, 3 |
 | `Dev10x:gh-pr-request-review` | reviewers | 2 |
-| `Dev10x:db` | schema | 2, 3 |
+| `Dev10x:db` | schema, databases | 2 |
+| `Dev10x:db-psql` | databases | 2 |
+| `Dev10x:slack` | slack-config | 2 |
+| `Dev10x:slack-setup` | slack-config | 2 |
+| `Dev10x:slack-review-request` | slack-config | 2 |
+| `Dev10x:request-review` | reviewers, slack-config | 2 |
 | `Dev10x:fanout` | session | 1 |
+| `Dev10x:plugin-maintenance` | preferences | 2 |

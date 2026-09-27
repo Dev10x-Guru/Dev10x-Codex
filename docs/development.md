@@ -28,6 +28,25 @@ uv run ruff format --check .        # format check
 uv run ruff format .                # auto-format
 ```
 
+## Pre-commit hooks
+
+`.pre-commit-config.yaml` is the canonical lint entry point: ruff
+(lint + format), shellcheck, and baseline file hygiene run on every
+commit, deferring to the ruff and mypy config in `pyproject.toml` and
+`mypy.ini`.
+
+```bash
+uv run --extra dev pre-commit install   # one-time: install the git hook
+pre-commit run --all-files              # lint the whole tree
+```
+
+mypy runs at the `manual` stage only — `src/` still carries pre-existing
+type errors, so it is wired in but not enforced by default:
+
+```bash
+pre-commit run --hook-stage manual mypy --all-files
+```
+
 ## Project structure
 
 | Directory | Purpose |
@@ -88,10 +107,53 @@ parsing patterns.
 ## Release process
 
 ```bash
-bin/release.sh patch    # bump version, tag, push
-bin/release.sh minor
+bin/release.sh features   # strip .dev0, tag, release, bump to next minor .dev0
+bin/release.sh fixes      # bump patch, strip .dev0, tag, release
+bin/release.sh major      # bump major, strip .dev0, tag, release
 ```
 
 Releases merge `develop` → `main` and create a GitHub release.
+
+### A release is not a local action
+
+Tagging has remote, effectively irreversible side effects:
+
+- The `v*` tag push triggers `.github/workflows/pypi-publish.yml`, which
+  builds the wheel and **publishes it to PyPI** — a version cannot be
+  reused or unpublished.
+- `main` is reset to develop HEAD and force-pushed. Because
+  `marketplace.json` serves the plugin from `"source": "./"`, `main` is
+  the marketplace's served ref — every `claude plugin update` jumps to
+  the new version.
+- A GitHub release is created.
+
+Before tagging (Phase 2b), the script prints these effects. A human at a
+TTY proceeds automatically; a non-interactive run (agent or CI) must set
+`CONFIRM_RELEASE=1` so an agent cannot trigger a publish by accident:
+
+```bash
+CONFIRM_RELEASE=1 bin/release.sh features
+```
+
+### Smoke-testing a dev release locally
+
+`bin/test-local.sh` validates the surfaces that neither CI (runs under
+mocks) nor `claude --plugin-dir` (runs source, not the package) exercise:
+
+```bash
+bin/test-local.sh            # build wheel, install into a throwaway venv,
+                             # smoke the dev10x CLI + MCP server imports,
+                             # run the plugin structure check
+bin/test-local.sh --keep     # keep the temp build dir + venv for inspection
+```
+
+It builds and installs into a temporary directory and **never** writes to
+`~/.claude`, tags, or pushes — safe to run unattended. To then exercise the
+live plugin runtime (MCP servers from `src/` + hooks), launch a session
+with the checkout loaded directly:
+
+```bash
+claude --plugin-dir /path/to/Dev10x-Claude
+```
 
 [Back to README](../README.md)

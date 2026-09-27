@@ -26,13 +26,13 @@ The code review system uses a **multi-agent architecture**:
 
 | File Pattern | Primary Agent | Required References |
 |---|---|---|
-| `**/*.py`, `**/*.sh` | `reviewer-generic`, `reviewer-security` | `references/review-checks-common.md` |
+| `**/*.py`, `**/*.sh` | `reviewer-generic`, `reviewer-security`, `reviewer-silent-failures` | `references/review-checks-common.md` |
 | `Makefile`, `bin/**`, `hooks/**`, `*.sh` | `reviewer-infra` | `references/review-checks-common.md` |
 | `docs/**`, `.claude/**/*.md`, `README.md` | `reviewer-docs` | `references/review-checks-common.md` |
 | `.claude/rules/**`, `.claude/agents/**`, `agents/**` | `reviewer-rules-maintenance` | (self-contained) |
 | `skills/**` | `reviewer-skill`, `reviewer-skill-behavior` | `.claude/rules/skill-naming.md`, `references/skill-invocation.md`, `references/eval-schema.md` |
 | `**/tasks.py`, `**/celery.py` | `reviewer-celery` | (self-contained) |
-| `**/e2e/**/*.py`, `**/e2e/**/*.feature` | `reviewer-e2e` | (self-contained) |
+| `**/features/**/*.feature`, `**/features/steps/*.py`, `**/environment.py`, `**/e2e/**/*.py` | `reviewer-e2e` | (self-contained) |
 | `**/*.svelte`, `**/*.astro`, `**/*.tsx` | `reviewer-frontend` | (self-contained) |
 | `**/api/queries.py`, `**/api/mutations.py` | `reviewer-graphql` | (self-contained) |
 | `**/migrations/*.py` | `reviewer-migration` | (self-contained) |
@@ -47,7 +47,16 @@ The code review system uses a **multi-agent architecture**:
 | `.claude/rules/skill-naming.md` | When editing `skills/**` | Skill naming conventions |
 | `.claude/rules/agents.md` | When editing `agents/**` | Plugin-distributed agent specs |
 | `.claude/rules/model-selection.md` | When editing `agents/**` or `skills/**` | Model & effort selection for agent dispatch |
+| `.claude/rules/playbook-pattern.md` | When editing `skills/**` with playbooks | Playbook patterns, user customization, reviewer expectations |
 | `.claude/rules/github-workflows.md` | When editing `.github/workflows/**` | GitHub Actions patterns |
+| `.claude/rules/hook-state-schema.md` | When editing `hooks/**` state writers | Hook JSON state documentation |
+| `.claude/rules/hook-patterns.md` | When editing `hooks/**` with dual implementations | Python-shell hook equivalence |
+| `.claude/rules/cwd-discipline.md` | When editing `src/dev10x/**` Python that runs subprocesses or reads CWD | GH-979 effective-CWD routing, no module-scope GitContext |
+| `.claude/rules/uv-script-dependency-pins.md` | When adding/editing a PEP 723 uv-script's `# dependencies = [...]` or `pyproject.toml` dependency arrays | GH-916 upper-bound requirement, `requires-python` exception, detector + pre-commit wiring |
+| `.claude/rules/script-domain-boundaries.md` | When editing `skills/**/scripts/*.py` or `src/dev10x/skills/**` | print-vs-logging + sys.exit-vs-Result conventions (GH-246 H3/H7) |
+| `.claude/rules/performance.md` | Reference: post-dependency change monitoring | CLI startup baseline, profiling instructions |
+| `.claude/rules/skill-body-extraction.md` | When editing `skills/**` | SKILL.md body extraction pattern, token reduction |
+| `.claude/rules/agent-body-extraction.md` | When editing `agents/**` | Agent spec body extraction pattern, token reduction |
 | `references/*.md` | On-demand by skills/CI | Detailed git, review, JTBD guides |
 
 ## Loading Order
@@ -75,12 +84,18 @@ Always apply `references/review-checks-common.md`.
 | `skill-invocation.md` | Skill() syntax, named parameters, delegation | `reviewer-skill.md` (items 8g, 9a) | Mandatory for skill reviews |
 | `task-orchestration.md` | Orchestration patterns, auto-advance, batched decisions | All skills (via `## Orchestration` section) | Referenced, not auto-loaded |
 | `code-sharing-patterns.md` | MCP imports, PEP 723 inlining, cross-context code | Review agents (false positive prevention) | Referenced, not auto-loaded |
-| `permission-architecture.md` | Permission → hook execution order, hook-enabled rules | `permission-auditor` agent, `permission-maintenance` skill | Referenced, not auto-loaded |
+| `permission-architecture.md` | Permission → hook execution order, hook-enabled rules | `permission-auditor` agent, `plugin-maintenance` skill (and the `upgrade-cleanup` entry point) | Referenced, not auto-loaded |
+| `permission-friction-taxonomy.md` | Friction types A–G, friction class map A–O, diagnosis D0–D5 | `permission-auditor` agent, `permission-investigator` skill, issue triage | Referenced, not auto-loaded |
 | `execution-modes.md` | Structural modes, per-step mode mappings, mode precedence | `work-on` skill, `playbook` skill | Referenced, not auto-loaded |
 | `friction-levels.md` | Friction levels, gate behavior, playbook integration | `work-on` skill, `verify-acc-dod` skill | Referenced, not auto-loaded |
 | `model-tiers.md` | Model assignments, tier framework, per-project overrides | `model-selection.md` rule, playbook system | Referenced, not auto-loaded |
 | `skill-pipelines.md` | Skill composition pipelines, standalone invocation | `Dev10x:work-on` skill, pipeline documentation | Referenced, not auto-loaded |
 | `config-resolution.md` | 3-tier config paths, project mapping format | All playbook/settings skills | Referenced, not auto-loaded |
+| `testing-patterns.md` | Pytest fixture composition, async handlers, parametrized tests | Code reviews, test authoring | Referenced, not auto-loaded |
+| `pr-backlog-deferral.md` | Deferring non-blocking review findings to a backlog | `Dev10x:gh-pr-review` skill, code review CI | Referenced, not auto-loaded |
+| `milestone-naming.md` | Milestone naming convention, initiative prefixes (AUD-Mn vs MCP-Mn) | `Dev10x:project-scope`, `Dev10x:work-on` milestone steps | Referenced, not auto-loaded |
+| `backpressure.md` | Two-direction backpressure architecture (action gating + friction tuning + output gates) | Review & architecture docs, code review CI | Referenced, not auto-loaded |
+| `html-artifact-reporting.md` | Optional HTML artifacts for long comparison-shaped reports; markdown stays default | `Dev10x:ddd` deliverables, foreman morning report | Referenced, not auto-loaded |
 
 ## Agent Specs (`.claude/agents/`)
 
@@ -95,6 +110,7 @@ Internal review-only agents (≤ 50 lines each).
 | `reviewer-skill.md` | `skills/**` | `.claude/rules/skill-naming.md`, `references/skill-invocation.md`, `references/eval-schema.md` |
 | `reviewer-skill-behavior.md` | `skills/**` | `references/task-orchestration.md`, `.claude/rules/skill-gates.md` |
 | `reviewer-security.md` | `**/*.py`, `**/*.sh` | (self-contained) |
+| `reviewer-silent-failures.md` | `**/*.py` | (self-contained) |
 
 ## Plugin-Distributed Agents (`agents/`)
 
@@ -113,6 +129,7 @@ evaluation, and testing — usable on any project.
 | `code-reviewer.md` | Review branch changes against standards |
 | `pytest-tester.md` | Run tests and verify coverage |
 | `pytest-test-writer.md` | Write/review pytest tests |
+| `spec-reviewer.md` | Verify diff matches ticket AC (Phase 0 of review) |
 
 ### Architecture Evaluation Agents (for ADRs)
 
@@ -130,7 +147,7 @@ evaluation, and testing — usable on any project.
 | File | Trigger |
 |------|---------|
 | `reviewer-celery.md` | `**/tasks.py`, `**/celery.py` |
-| `reviewer-e2e.md` | `**/e2e/**/*.py`, `**/e2e/**/*.feature` |
+| `reviewer-e2e.md` | `**/features/**/*.feature`, `**/features/steps/*.py`, `**/environment.py`, `**/e2e/**/*.py` |
 | `reviewer-frontend.md` | `**/*.svelte`, `**/*.astro`, `**/*.tsx` |
 | `reviewer-graphql.md` | `**/api/queries.py`, `**/schema.py` |
 | `reviewer-migration.md` | `**/migrations/*.py` |
@@ -162,8 +179,96 @@ cohesive, justified by scope):
   5 complete play definitions and subagent dispatch patterns
 - `skill-audit` (1042 lines) — multi-wave audit with per-skill
   behavioral analysis patterns
-- `fanout` (434 lines) — parallel work stream orchestrator with
-  6-phase execution model and parallel group management
+- `fanout` (~737 lines instructions) — native-Agent swarm
+  orchestrator with 6-phase execution model, swarm context
+  payload, recursive-fanout guard, and conflict-wave management
+- `foreman` (360 lines instructions, GH-987 — down from 585) —
+  unattended night-shift harness: Phase 0 pre-flight, the full Phase 2
+  night loop (including the stall stand-down handshake), the crew
+  contract headline list, and the red-flag / rationalization tables
+  are execution-gating and must stay inline. Depth extracted to
+  `references/architecture.md`, `crew-prompt-template.md`,
+  `stall-protocol.md`, `overseer-discipline.md`, `crew-contract.md`
+  (the twelve-element table — already split out, so it is no longer a
+  candidate), `roster.md`, `tool-surface.md`, `durability-envelope.md`,
+  `worktree-recovery.md`, `mcp-connectivity.md`, and — new in GH-987 —
+  `preflight-checklist.md` (Phase 0.4 command-shape enumeration),
+  `gate-policy-detail.md` (Phase 0.3 durable-policy-check procedure
+  and the GH-978 worktree caveat), `generation-authority.md` (STALL
+  signal disambiguation and the `current-generation` authority-token
+  contract), and `collapsed-merge-guidance.md` (the no-watcher-armed
+  merge fallback), plus — new in GH-1059 — `worker-tool-shapes.md`
+  (why the crew template pins Glob over Bash `find`, what
+  `{{lint_shape}}` resolves against, and why the `ToolSearch`
+  bootstrap is re-run). Both `stall-protocol.md` (371 lines) and
+  `crew-prompt-template.md` (385 lines) are already over the 200-line
+  reference budget and must not grow further — route any new depth to
+  a new reference file instead. GH-1028 is the worked example: the
+  worktree-pinning *rule* had to grow the template's bake-in block by
+  8 lines because workers receive it verbatim, so all of the
+  supporting evidence went to `tool-surface.md` § Subagent Bash CWD
+  instead. GH-1059/GH-1066/GH-1063 repeated the pattern: the three new
+  tool-shape mandates are worker-verbatim and stayed inline, while
+  every line of evidence behind them went to `worker-tool-shapes.md`.
+  GH-1052 is the same trade a third time: the
+  `run_node_tests(script=…)` steer is worker-verbatim (4 lines in § 5)
+  while the night-run evidence and the wrapper's two shape rules went
+  to `worker-tool-shapes.md`. GH-1050 is the largest such exception so
+  far — the § 6 CWD **mode self-test** replaced an unconditional
+  `git -C` mandate the validate-bash hook actually denies, and a worker
+  cannot run a test it was not handed, so the whole recipe is inline
+  (+24 lines); the three-artifact contradiction table and the
+  depth-1-vs-depth-2 evidence went to `worker-tool-shapes.md` § CWD
+  mode, and `tool-surface.md` § Subagent Bash CWD was rewritten in
+  place at net-zero lines rather than appended to.
+  GH-1099/GH-1072 is the pattern applied to `tool-surface.md` itself:
+  its § "MCP connectivity is not permanent" grew a second and third
+  failure surface (watchdog-wide loss, silently-dropped writes), so the
+  section was rewritten in place as a three-row containment table
+  *pointing at* the new `references/mcp-connectivity.md`, leaving the
+  file at 200 rather than over it. The evidence, the per-surface
+  containment, and the finding that reconnect-on-demand is not
+  implementable in-repo (the dying hop is harness-owned) all live in
+  the new file. The caller-side half of the rule — a write is a
+  request, not a receipt — went to `.claude/rules/mcp-tools.md`
+  instead, since it binds every MCP caller and not only foreman crews.
+  `tool-surface.md` and `overseer-discipline.md` are now both AT the
+  200-line cap — the next addition to either needs an extraction, not
+  an append. GH-1109 applied the same trade once more: arming and
+  tearing down the external wake timer is execution-gating (Phase 1
+  step 2 and Phase 3 step 1, ~14 lines inline), while the evidence for why a
+  paused session cannot observe its own quota reset went to
+  `durability-envelope.md` § Rule 3b. GH-1214 **executed** that split
+  plan: the Phase 0.1 convergence-file rule is 9 lines inline and its
+  evidence is the new `references/queue-and-model.md`, and the Phase 0.4
+  crew-depth probe is 10 lines inline pointing at `mcp-connectivity.md`
+  § Absent from spawn — `instructions.md` lands at 382. The same PR is
+  the second-largest template exception after GH-1050: the **fatal-shapes
+  block** is read by the worker verbatim, before its first Bash call, and
+  a block held in a reference file is a block the worker never sees, so
+  the 34-line block is inline (`crew-prompt-template.md` → 452) with two
+  now-redundant ban sites collapsed into pointers to it, and all of the
+  evidence — the ten frozen workers' verbatim last calls, why a ban on
+  line 160 does not fire, and the two correct-but-unhelpful validate-bash
+  denials — in the new `references/fatal-shapes.md`.
+  `preflight-checklist.md` went to 213 for the same reason
+  `tool-surface.md` did: a section rewritten in place could not absorb a
+  fourth failure surface. Split plan if the template grows again: § 5
+  (verified tool shapes) and § 6 (workspace + branch) are the next
+  extractable pair — both are `{{placeholder}}`-driven and could be
+  assembled from `worker-tool-shapes.md` rather than restated, leaving
+  the template as the *order* of the brief plus the verbatim blocks that
+  must be read in it
+- `ddd` (~299 lines) — workshop orchestration hub: 4 session
+  modes, 7-layer event storming flow, solo AI-cast facilitation
+  (incl. the GH-789 discussion-agent model-tier gate), and
+  quality gates are semantically cohesive; depth extracted to 13
+  reference files. GH-783 executed the split plan (was: move
+  scaffolding + mode task lists to `references/session-modes.md`)
+  — New Workshop scaffolding, per-mode `TaskCreate` lists, and the
+  mode-determination table now live in
+  `references/session-modes.md`; back under the 300-line soft
+  target
 
 ## Budget Overrides
 

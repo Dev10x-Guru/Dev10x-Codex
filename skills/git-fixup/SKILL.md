@@ -11,8 +11,12 @@ description: >
 user-invocable: true
 invocation-name: Dev10x:git-fixup
 allowed-tools:
-  - Bash(/tmp/claude/bin/mktmp.sh:*)
-  - Write(/tmp/claude/git/**)
+  - Bash(/tmp/Dev10x/bin/mktmp.sh:*)
+  - Bash(${CLAUDE_PLUGIN_ROOT}/skills/git-fixup/scripts/:*)
+  - Edit(/tmp/Dev10x/git/**)
+  - mcp__plugin_Dev10x_cli__pr_detect
+  - mcp__plugin_Dev10x_cli__pr_comments
+  - mcp__plugin_Dev10x_cli__push_safe
 ---
 
 # Create Fixup Commit
@@ -103,14 +107,13 @@ If the user declines → suggest using `/Dev10x:git-commit` instead.
 
 Skip this step entirely for standalone fixups.
 
-```bash
-# Get repository info
-REPO=$(gh repo view --json nameWithOwner -q '.nameWithOwner')
-OWNER=$(echo $REPO | cut -d'/' -f1)
-REPO_NAME=$(echo $REPO | cut -d'/' -f2)
+```
+# Resolve repo from current CWD
+mcp__plugin_Dev10x_cli__pr_detect(arg="")
+# → returns {"repo": "owner/repo", "pr_number": ..., "branch": ...}
 
-# Fetch the comment
-gh api repos/{owner}/{repo}/pulls/comments/{comment_id}
+# Fetch the comment by ID
+mcp__plugin_Dev10x_cli__pr_comments(action="get", comment_id=<id>)
 ```
 
 Extract from comment:
@@ -120,17 +123,86 @@ Extract from comment:
 - `html_url` - Link to comment thread (for commit body)
 - `body` - The review comment text
 
-### Step 3: Identify Original Commit
+### Step 3: Identify Original Commit (line-owning, not topical)
 
-Find the commit this fixup should target:
+**Resolve the fixup target by blaming the staged hunks** — the target
+is the commit that last touched the lines being changed, not "the
+first commit on the branch". Topical attribution causes cross-commit
+fixups: when autosquash reorders the fixup next to its supposed
+target, a *later* branch commit that owns the touched lines no longer
+applies, producing modify/delete or content conflicts. `git rerere`
+then memoizes the bad resolution and silently re-applies it on the
+next attempt (GH-299).
+
+Run the resolver script:
 
 ```bash
-# Detect base branch dynamically
-BASE_BRANCH=$(git show-ref --verify --quiet refs/heads/develop \
-  && echo develop || echo master)
-ORIGINAL_COMMIT=$(git log ${BASE_BRANCH}..HEAD --reverse --format="%H" | head -1)
-ORIGINAL_MESSAGE=$(git log --format=%s -1 $ORIGINAL_COMMIT)
+${CLAUDE_PLUGIN_ROOT}/skills/git-fixup/scripts/find-fixup-target.py
 ```
+
+It reads `git diff --cached`, blames every hunk's pre-image line
+range against branch commits (`<base>..HEAD`), and prints JSON.
+Branch the SKILL on the `status` field:
+
+| `status` | Meaning | Action |
+|----------|---------|--------|
+| `single` | Exactly one owning branch commit (orphan hunks allowed) | `ORIGINAL_COMMIT=$target`, `ORIGINAL_MESSAGE=$subject` — proceed to Step 4 |
+| `multi`  | Hunks span ≥ 2 owning branch commits | **Abort with the multi-owner guidance below** — do NOT create a cross-commit fixup |
+| `out_of_branch` | All hunks blame to commits outside `<base>..HEAD` | Fall back to `fallback_target` (first branch commit) — new file or untouched region |
+| `no_staged` | Nothing staged | Surface the "No staged changes" error from § Error Handling |
+| `error` | Resolver failed | Print the `error` field and stop |
+
+**Orphan-hunk contract (GH-1042).** An orphan hunk blames outside
+`<base>..HEAD` — a pure addition, or a line owned by base history. The
+status counts **owning branch commits only**; orphans never change the
+classification:
+
+- one owner + any orphans → `single`. The orphans ride along into that
+  fixup. They are listed in the payload's `orphan_hunks` for visibility,
+  not as a signal to abort. Adding an import next to its first usage is
+  the everyday shape here.
+- ≥ 2 owners → `multi`, orphans or not.
+- zero owners → `out_of_branch`, which is exactly "every hunk is an
+  orphan".
+
+`multi` exists to prevent a cross-commit fixup that autosquash cannot
+fold. With a single owner there is nothing to split across, so aborting
+would print multi-owner remediation for a one-element list — an
+unactionable dead end.
+
+**Multi-owner handling** (`status == "multi"`):
+
+Print the owner list returned by the script and stop. Example:
+
+```
+This fix touches lines owned by multiple branch commits — creating
+one fixup against any single target would conflict on autosquash.
+Restage and commit per owning commit:
+
+  abc1234 (♻️ PAY-32 Tighten Square timeout handling)
+    src/payments/service.py:120-128
+    src/payments/service.py:204-210
+
+  def5678 (✅ PAY-32 Add Square timeout regression tests)
+    tests/payments/test_service.py:45-60
+
+Suggested workflow (one fixup per owner):
+
+  git restore --staged .
+  git add -p src/payments/service.py        # stage only abc1234's hunks
+  Skill(Dev10x:git-fixup)
+  git add -p tests/payments/test_service.py # stage only def5678's hunks
+  Skill(Dev10x:git-fixup)
+
+Each fixup may reference the same review comment URL — the
+"one fixup per comment" rule is a traceability floor, not a hard
+cap. Multiple fixups for one comment are correct when the change
+spans owning commits.
+```
+
+The skill MUST NOT silently pick one owner and create the fixup
+anyway — the whole point of this step is to refuse cross-commit
+fixups that autosquash cannot fold cleanly.
 
 ### Step 4: Validate Staged Changes
 
@@ -195,7 +267,7 @@ in PosSubModelNode for cohesion.
 
 Create a unique temp file via `mktemp` to avoid cross-session collisions:
 ```bash
-/tmp/claude/bin/mktmp.sh git fixup-msg .txt
+/tmp/Dev10x/bin/mktmp.sh git fixup-msg .txt
 ```
 Store the returned path for subsequent steps.
 
@@ -246,9 +318,14 @@ echo "Created fixup commit: ${COMMIT_HASH}"
 echo "URL: ${COMMIT_URL}"
 ```
 
-**Return to caller (Dev10x:gh-pr-fixup):**
-- `commit_hash` - Short hash for reply
-- `commit_url` - Full URL for linking (PR-based when PR number available)
+**Completion:** Signal completion silently via `TaskUpdate`
+(status="completed"). Do not output "Returning to caller"
+messages — they mislead users in nested skill execution into
+thinking the workflow is done when the parent still has steps.
+
+The caller reads these values from git state:
+- `commit_hash` — `git rev-parse --short HEAD`
+- `commit_url` — constructed from repo + PR number + full hash
 
 ## Pre-commit Hook Integration
 

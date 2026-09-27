@@ -32,34 +32,24 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-GITMOJI_CATEGORIES: dict[str, str] = {
-    "✨": "feature",
-    "🐛": "bugfix",
-    "♻️": "refactor",
-    "🚚": "refactor",
-    "✅": "test",
-    "📝": "docs",
-    "🔧": "config",
-    "🩹": "fix",
-    "🔥": "cleanup",
-    "⚡": "perf",
-    "🔒": "security",
-    "💄": "ui",
-    "🔖": "version_bump",
-    "⚗️": "experimental",
-    "🧪": "test",
-    "🚑": "hotfix",
-}
-
-SKIP_CATEGORIES: set[str] = {"version_bump"}
-MAINTENANCE_CATEGORIES: set[str] = {"test", "docs", "config", "cleanup", "experimental"}
-JTBD_PATTERN: re.Pattern[str] = re.compile(
-    r"\*\*When\*\*\s+(.+?)\s*,\s*\*\*(?:I want to|they want to)\*\*\s+(.+?)\s*,"
-    r"\s*\*\*so (?:I can|they can|I don't)\*\*\s+(.+?)(?:\.|$)",
-    re.DOTALL,
+from dev10x.domain.common.ticket_id import TICKET_ID_PATTERN
+from dev10x.skills.common.jtbd import extract_jtbd_structured
+from dev10x.skills.release.classifier import (
+    SKIP_CATEGORIES,
+    classify_group,
+    classify_subject,
 )
 
-DEFAULT_TICKET_PATTERN = r"[A-Z]+-\d+"
+DEFAULT_TICKET_PATTERN = TICKET_ID_PATTERN
+
+# Upper bound on merged PRs fetched in one batch (GH-550). A release
+# window rarely exceeds this; the former per-ticket search had no such
+# cap but paid one subprocess per ticket.
+MERGED_PR_FETCH_LIMIT = 300
+
+# Bound gh/git subprocesses so a wedged CLI cannot hang collection
+# indefinitely (GH-824), matching pr_notify.py / slack_review_request.py.
+_SUBPROCESS_TIMEOUT_SECONDS = 30
 
 
 @dataclass
@@ -93,6 +83,7 @@ def run(
         capture_output=True,
         text=True,
         cwd=cwd,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
     if check and result.returncode != 0:
         print(f"Error: {' '.join(cmd)} failed with code {result.returncode}", file=sys.stderr)
@@ -141,13 +132,7 @@ def get_commits_in_range(
             continue
         sha, subject = line.split("|||", maxsplit=1)
 
-        gitmoji = ""
-        category = "unknown"
-        for emoji, cat in GITMOJI_CATEGORIES.items():
-            if emoji in subject:
-                gitmoji = emoji
-                category = cat
-                break
+        gitmoji, category = classify_subject(subject=subject)
 
         ticket_match = ticket_regex.search(subject)
         ticket_id = ticket_match.group(0) if ticket_match else None
@@ -193,23 +178,27 @@ def collect_ticket_groups(
     return dict(groups)
 
 
-def find_prs_for_ticket(
-    ticket_id: str,
+def fetch_merged_prs(
     repo_path: str,
+    limit: int = MERGED_PR_FETCH_LIMIT,
 ) -> list[dict]:
+    """Fetch all merged PRs in one ``gh`` call (GH-550).
+
+    Replaces the former per-ticket ``gh pr list --search <id>`` loop,
+    which spawned one subprocess per release ticket (N+1). Ticket IDs
+    are matched against these PRs in-memory by ``find_matching_prs``.
+    """
     output = run(
         [
             "gh",
             "pr",
             "list",
-            "--search",
-            ticket_id,
             "--state",
             "merged",
             "--json",
             "number,title,body",
             "--limit",
-            "5",
+            str(limit),
         ],
         cwd=repo_path,
         check=False,
@@ -222,28 +211,18 @@ def find_prs_for_ticket(
         return []
 
 
-def extract_jtbd(body: str) -> str | None:
-    match = JTBD_PATTERN.search(body)
-    if match:
-        full = body[match.start() : match.end()]
-        full = full.replace("\n", " ").strip()
-        if not full.endswith("."):
-            full += "."
-        return full
-    return None
-
-
-def classify_group(commits: list[Commit]) -> str:
-    categories = {c.category for c in commits}
-    if "feature" in categories or "hotfix" in categories:
-        return "feature"
-    if "bugfix" in categories:
-        return "bugfix"
-    if "refactor" in categories:
-        return "refactor"
-    if categories <= MAINTENANCE_CATEGORIES:
-        return "maintenance"
-    return "feature"
+def find_matching_prs(
+    ticket_id: str,
+    merged_prs: list[dict],
+) -> list[dict]:
+    """Return merged PRs whose title or body references ``ticket_id``."""
+    pattern = re.compile(rf"\b{re.escape(ticket_id)}\b")
+    matches: list[dict] = []
+    for pr in merged_prs:
+        haystack = f"{pr.get('title', '')}\n{pr.get('body', '')}"
+        if pattern.search(haystack):
+            matches.append(pr)
+    return matches
 
 
 def parse_args() -> argparse.Namespace:
@@ -309,17 +288,19 @@ def main() -> None:
 
     skipped = [c for c in commits if c.sha in reverted_shas or c.category in SKIP_CATEGORIES]
 
+    merged_prs = fetch_merged_prs(repo_path=repo_path)
+
     seen_pr_numbers: dict[int, PRInfo] = {}
     feature_prs: list[PRInfo] = []
     maintenance_prs: list[PRInfo] = []
     no_pr_found: list[tuple[str, list[Commit]]] = []
 
     for ticket_id, group_commits in ticket_groups.items():
-        group_category = classify_group(commits=group_commits)
+        group_category = classify_group(categories={c.category for c in group_commits})
 
-        pr_list = find_prs_for_ticket(
+        pr_list = find_matching_prs(
             ticket_id=ticket_id,
-            repo_path=repo_path,
+            merged_prs=merged_prs,
         )
 
         if pr_list:
@@ -334,8 +315,8 @@ def main() -> None:
                         existing.category = "feature"
                     continue
 
-                jtbd = extract_jtbd(body=pr_data.get("body", ""))
-                pr_category = classify_group(commits=group_commits)
+                jtbd = extract_jtbd_structured(body=pr_data.get("body", ""))
+                pr_category = classify_group(categories={c.category for c in group_commits})
                 pr_info = PRInfo(
                     number=pr_num,
                     title=pr_data["title"],

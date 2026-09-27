@@ -39,6 +39,13 @@ defaults:
 - `model`: (Optional) Override model for agent dispatch (haiku/sonnet/opus)
 - `condition`: (Optional) Python expression filtering when step runs
 
+**There is no per-step `friction:` key (GH-1171).** A step states
+its behaviour once, in its own `prompt`. Gate pacing is baseline
+policy under ADR-0022 — `resolve_gate` owns it — not a field a step
+carries. Structural variation between execution shapes still belongs
+in `modes:`, which changes *which steps exist*, not how hard the
+agent pauses inside one.
+
 ## When to Use Playbooks
 
 **Use playbooks when:**
@@ -60,12 +67,15 @@ Users can override playbooks using the 3-tier resolution order
 |------|------|-------|
 | 1 | `.claude/Dev10x/playbooks/<skill-name>.yaml` | Project-local |
 | 2 | `~/.claude/memory/Dev10x/playbooks/<skill-name>.yaml` | Global + repo mapping |
-| 3 | `~/.claude/projects/<project>/memory/playbooks/<skill-name>.yaml` | Legacy (deprecated) |
+| 3 | `${CLAUDE_PLUGIN_ROOT}/skills/<name>/references/playbook.yaml` | Plugin defaults |
 
 Tier 2 (global) is preferred — one file serves multiple repos via
 `projects[].match` globs. The skill loads this file at invocation,
-allowing users to customize
-behavior without editing the plugin.
+allowing users to customize behavior without editing the plugin.
+
+> **Note (GH-941):** The old `~/.claude/projects/<key>/memory/`
+> path is removed. All tier 2 config lives under
+> `~/.claude/memory/Dev10x/`.
 
 ## Reviewer Expectations
 
@@ -81,6 +91,8 @@ When reviewing a skill with playbook.yaml:
    verify SKILL.md marks it as "REQUIRED: Call AskUserQuestion"
 5. **Tool alignment** — Verify `skills:` array in playbook matches
    `allowed-tools:` declarations in SKILL.md
+6. **No per-step `friction:` key** — pacing is baseline policy, not a
+   step field (GH-1171)
 
 ## Example
 
@@ -113,3 +125,8 @@ defaults:
 - ❌ Duplicating steps across plays — extract to a shared step template
 - ❌ Playbook-only documentation — SKILL.md must still explain mode
   detection and play names
+- ❌ Re-introducing a per-step `friction:` block to vary how hard a
+  step pauses — GH-1171 removed the key from every shipped playbook,
+  the schema, the resolution order, and `playbook diff`. Put the
+  behaviour in the step's `prompt`, or the structural difference in
+  `modes:`

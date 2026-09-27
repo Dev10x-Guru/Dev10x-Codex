@@ -4,23 +4,44 @@
 # Used by:
 #   - skill_redirect.py (Bash PreToolUse hook)
 #   - validate-edit-write.py (Edit|Write PreToolUse hook)
-#   - Dev10x:skill-reinforcement (skill — advisory only)
+#   - Dev10x:diag-friction (skill — advisory only;
+#     formerly Dev10x:skill-reinforcement)
 #
 # Per-project override: place a custom version at:
-#   ~/.codex/memory/Dev10x/skill-reinforcement.yaml
+#   ~/.config/Dev10x/diag-friction.yaml
 # The hook merges override rules (user entries take precedence).
 #
 # Schema:
 #   config:
-#     friction_level: strict | guided | adaptive
 #     plugin_repo: URL for filing issues when skills instruct blocked commands
 #
 #   rules[]:
 #     name:             unique identifier
 #     matcher:          tool matcher (Bash | Edit|Write)
 #     patterns:         list of regex patterns to match commands
+#     match_position:   anywhere (default) | invocation — where a pattern
+#                       is allowed to match. `invocation` restricts it to
+#                       the tokens naming a program being RUN (each shell
+#                       segment's executable, plus any `find -exec`
+#                       argument), so a rule guarding a script path stops
+#                       firing on commands that merely NAME the script —
+#                       `pre-commit run --files <path>/git-push-safe.sh`,
+#                       `mv <path>/git-push-safe.sh <path>/old.sh`
+#                       (GH-1084). Set it on any rule whose patterns are
+#                       script paths; leave it unset for rules that
+#                       deliberately match a path as an argument.
 #     except:           list of strings — if any present, rule is skipped
-#     hook_block:       true to enforce via hook (exit 2), false for advisory only
+#     hook_block:       true to enforce via hook (exit 2), false for advisory only.
+#                       Flipping false -> true is NOT a one-line change: the
+#                       hook's fast path (`should_run`) short-circuits on
+#                       `_QUICK_TOKENS` in skill_redirect.py, so a promoted
+#                       rule whose literal pattern names none of those tokens
+#                       ships registered, documented and inert (GH-1337).
+#                       `test_literal_pattern_contains_a_quick_token` fails on
+#                       that; the advisory rules that would hit it today are
+#                       named by `test_advisory_rules_that_would_ship_inert_
+#                       are_reported` (GH-1398). Add the gating token in the
+#                       same change.
 #     compensations[]:  list of remediation options (first = recommended)
 #       type:           use-skill | split-commands | change-cwd | use-alias
 #                       | use-file-flag | use-tool | use-alternative | file-issue
@@ -28,7 +49,11 @@
 #       tool:           tool name (for use-tool)
 #       alias:          alias name (for use-alias)
 #       guardrails:     what the skill enforces (for use-skill)
-#       fallback:       manual fallback instructions (for use-skill)
+#       fallback:       what to do when the compensation cannot be
+#                       applied — the skill is unavailable (use-skill),
+#                       or the tool is absent from this session's tool
+#                       surface (use-tool). A tool named here is NOT
+#                       guaranteed to exist in every session (GH-1087).
 #       description:    human-readable guidance
 #     reason:           why this rule exists
 #     related:          list of related skill names
@@ -41,7 +66,6 @@
 #       content_pattern:  regex on content being written (new_string or content)
 
 config:
-  friction_level: guided  # strict | guided | adaptive
   plugin_repo: https://github.com/Dev10x-Guru/dev10x-claude
 
 rules:
@@ -54,7 +78,7 @@ rules:
     except:
       - "--fixup"
       - "--amend"
-      - "-F /tmp/claude/git/"
+      - "-F /tmp/Dev10x/git/"
     hook_block: true
     compensations:
       - type: use-skill
@@ -65,6 +89,12 @@ rules:
           (1) prefix with gitmoji, (2) include ticket ID from branch,
           (3) keep title under 72 chars, (4) use -F with temp file
           (not -m), (5) add Fixes: footer.
+
+          For (4): get the path from mktmp(namespace="git") and Write
+          the message straight to it. Do NOT author the message
+          elsewhere and `cp` it into place — the copy is a second
+          command needing its own allow rule, and it prompted on an
+          unattended run (GH-1189). Write to the mktmp path once.
     reason: >
       Direct git commit bypasses gitmoji prefix, ticket ID
       extraction from branch name, and 72-char line limit
@@ -90,6 +120,30 @@ rules:
       Direct gh pr create skips Job Story drafting, commit list
       generation, and issue tracker linking.
 
+  - name: gh-pr-merge
+    matcher: Bash
+    patterns:
+      - gh pr merge
+    except: []
+    hook_block: true
+    compensations:
+      - type: use-skill
+        skill: Dev10x:gh-pr-merge
+        guardrails: 9 pre-merge checks (unresolved threads, CI, draft, mergeability, working copy, fixup commits, approval, Fixes-linked scope, branch protection)
+        fallback: >
+          The skill's Step 5 executes the merge via
+          `mcp__plugin_Dev10x_cli__merge_pr` (GH-232) — symmetric
+          to `create_pr` / `push_safe`. Do NOT bypass this with
+          `DEV10X_SKIP_CMD_VALIDATION=true gh pr merge ...`; that
+          flag is reserved for transient MCP-unavailability
+          emergencies, not the documented flow. If the MCP tool is
+          unavailable, stop and ask the user to reconnect via
+          `/mcp` rather than running raw `gh pr merge`.
+    reason: >
+      Direct gh pr merge bypasses the 9 pre-merge checks the skill
+      enforces. Adaptive friction does not waive the skill body —
+      see references/friction-levels.md.
+
   - name: git-push
     matcher: Bash
     patterns:
@@ -102,13 +156,32 @@ rules:
         skill: Dev10x:git
         guardrails: protected branch checks, force-push safety
         fallback: >
-          If Skill(Dev10x:git) fails, apply guardrails manually:
-          (1) verify branch is not develop/main before pushing,
-          (2) use --force-with-lease (never --force) if rebased,
-          (3) push with upstream tracking (-u flag).
+          Re-invoke the skill with the right parameters before
+          escalating. The MCP form is
+          `mcp__plugin_Dev10x_cli__push_safe(args=["origin","BRANCH"])`
+          and the `protected_branches` parameter overrides the
+          default `[main, develop]` block list per call. Solo
+          maintainers pushing to develop pass
+          `protected_branches=["main"]`; pushing to main passes
+          `protected_branches=[]`. Do NOT use
+          DEV10X_SKIP_CMD_VALIDATION=true to bypass — that flag is
+          reserved for skill-internal exceptions, not for callers.
+          GH-963: a non-force push that names an explicit,
+          non-protected branch (e.g. `git push -u origin
+          my-feature-branch`) is already allowed straight through —
+          it needs neither the skill nor MCP, so this fallback only
+          applies when the hook still blocked you: a bare `git push`
+          with no resolvable branch, a symbolic `HEAD` ref, or any
+          `--force`/`-f` push. In those cases: (1) verify the branch
+          is not develop/main, (2) use --force-with-lease (never
+          --force) if rebased, (3) push with upstream tracking (-u
+          flag).
     reason: >
       Direct git push bypasses force-push protection on
-      develop/main branches.
+      develop/main branches. GH-963 narrows this so an ordinary,
+      already-safe push (no force, explicit non-protected branch)
+      is never blocked — see
+      references/mcp-unavailable-escape-hatch.md.
     related:
       - Dev10x:git-commit
       - Dev10x:git-groom
@@ -151,11 +224,98 @@ rules:
       Direct gh pr checks --watch exits on first result; the skill
       loops, fixes CI failures, addresses comments, and requests review.
 
+  - name: gh-pr-view
+    matcher: Bash
+    patterns:
+      - gh pr view
+    except:
+      # DoD-runner / skill check templates that legitimately need raw
+      # `gh pr view` carry this marker in the command string so they
+      # bypass the block (GH-668). Used by verify-acc-dod defaults.yaml
+      # checks ("PR not draft", "Review requested") executed verbatim
+      # via Bash. Plain agent `gh pr view` calls (no marker) still block
+      # and route to pr_get, which now exposes the same fields.
+      - "cli-friction: allow raw-gh-pr"
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__pr_get
+        guardrails: structured responses, no Bash permission friction
+        description: >
+          If the MCP server is unavailable, use gh pr view directly
+          and parse the JSON output manually with --json flag,
+          including the string `cli-friction: allow raw-gh-pr` in the
+          command so this rule lets it through.
+    reason: >
+      Direct gh pr view requires Bash permission approval on every
+      call. The MCP tool provides structured JSON (number, title,
+      body, state, baseRefName, headRefName, mergedAt, closedAt,
+      labels, milestone, assignees, author, url, isDraft, mergeable,
+      reviewDecision, reviewRequests) and avoids permission friction.
+      The isDraft/mergeable/reviewDecision/reviewRequests fields
+      (GH-668) make pr_get a drop-in for gh-pr-merge Checks 3/4/7.
+
+  - name: gh-issue-close
+    matcher: Bash
+    patterns:
+      - gh issue close
+    except:
+      # GH-1266: the fallback below names `gh issue close`, which this
+      # rule denies. A caller that has read the fallback and accepted it
+      # carries this marker to reach the raw command; without it the
+      # block still routes to issue_close. Distinct from the read marker
+      # so an escape granted for reading never authorizes a mutation.
+      - "cli-friction: allow raw-gh-issue-write"
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__issue_close
+        guardrails: structured responses, no Bash permission friction
+        description: >
+          If the MCP server is unavailable, use gh issue close N
+          --reason <completed|not_planned> directly, including the
+          string `cli-friction: allow raw-gh-issue-write` in the
+          command so this rule lets it through.
+    reason: >
+      Direct gh issue close changes issue state and requires per-call
+      Bash permission. The MCP tool accepts reason and optional
+      closing comment and avoids friction.
+
+  - name: gh-issue-reopen
+    matcher: Bash
+    patterns:
+      - gh issue reopen
+    except:
+      # GH-1266 — see gh-issue-close.
+      - "cli-friction: allow raw-gh-issue-write"
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__issue_reopen
+        guardrails: structured responses, no Bash permission friction
+        description: >
+          If the MCP server is unavailable, use gh issue reopen N
+          directly, including the string
+          `cli-friction: allow raw-gh-issue-write` in the command so
+          this rule lets it through.
+    reason: >
+      Direct gh issue reopen changes issue state and requires per-call
+      Bash permission. The MCP tool returns structured responses and
+      avoids friction.
+
   - name: gh-issue-view
     matcher: Bash
     patterns:
       - gh issue view
-    except: []
+    except:
+      # GH-1266: a read escape, symmetric with gh-pr-view's `raw-gh-pr`.
+      # Deliberately NOT `hook_block: false`, though the issue floats it:
+      # this rule is the carrier for the GH-957 MCP-disconnect guidance
+      # (`gh issue view 42` is that path's fixture), so going advisory
+      # would drop the reconnect hint exactly when the MCP server is the
+      # thing that is down. An escape keeps the read reachable while the
+      # steer and the hint survive.
+      - "cli-friction: allow raw-gh-issue"
     hook_block: true
     compensations:
       - type: use-tool
@@ -163,11 +323,14 @@ rules:
         guardrails: structured responses, no Bash permission friction
         description: >
           If the MCP server is unavailable, use gh issue view directly
-          and parse the JSON output manually with --json flag.
+          and parse the JSON output manually with --json flag, including
+          the string `cli-friction: allow raw-gh-issue` in the command so
+          this rule lets it through.
     reason: >
       Direct gh issue view requires Bash permission approval on
       every call. The MCP tool provides structured JSON responses
-      and avoids permission friction.
+      and avoids permission friction. The GH-1266 escape keeps the
+      documented fallback reachable during an MCP outage.
 
   - name: gh-issue-create
     matcher: Bash
@@ -182,16 +345,205 @@ rules:
         guardrails: structured responses, no Bash permission friction
         description: >
           If the MCP server is unavailable, use gh issue create directly
-          with --title and --body flags.
+          with --title and --body-file. GH-1266: --body-file is the form
+          this rule's `except` lets through — a --body fallback would be
+          denied by the same rule that suggested it.
     reason: >
       Direct gh issue create requires Bash permission approval on
       every call. The MCP tool provides structured JSON responses
       and avoids permission friction.
 
+  - name: gh-pr-edit
+    matcher: Bash
+    patterns:
+      - gh pr edit
+    except:
+      # GH-1266 — see gh-issue-close. Separate from `raw-gh-pr`, which
+      # gh-pr-view uses for reads, so a DoD check cleared to read a PR
+      # cannot also edit one.
+      - "cli-friction: allow raw-gh-pr-write"
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__update_pr
+        guardrails: structured responses, no Bash permission friction
+        description: >
+          If the MCP server is unavailable, use gh pr edit directly
+          with the required flags (--title, --body-file, --add-label,
+          --milestone, --base), including the string
+          `cli-friction: allow raw-gh-pr-write` in the command so this
+          rule lets it through.
+    reason: >
+      Direct gh pr edit mutates PR metadata (title, body, labels,
+      base) and bypasses the gh-pr-create "update mode" guardrails.
+      The MCP tool provides structured responses and avoids per-call
+      Bash permission friction.
+
+  - name: gh-pr-ready
+    matcher: Bash
+    patterns:
+      - gh pr ready
+    except:
+      # GH-1266 — see gh-pr-edit.
+      - "cli-friction: allow raw-gh-pr-write"
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__pr_ready
+        guardrails: structured responses, no Bash permission friction
+        description: >
+          Covers both directions: omit `undo` to publish a draft, pass
+          `undo=true` to convert a published PR back to draft (GH-931
+          finding 2) — the safe response to spotting a problem after
+          marking ready. If the MCP server is unavailable, run
+          gh pr ready <pr> --repo <owner/repo> [--undo] directly,
+          including the string `cli-friction: allow raw-gh-pr-write`
+          in the command so this rule lets it through.
+    reason: >
+      The draft flag is not PATCHable via update_pr, so un-drafting
+      needs gh pr ready. The pr_ready MCP tool (GH-779) wraps it with
+      structured responses and no per-call Bash permission friction —
+      and repos whose CI skips drafts must mark ready before Monitor CI.
+
+  - name: gh-issue-edit
+    matcher: Bash
+    patterns:
+      - gh issue edit
+    except:
+      # GH-1266 — see gh-issue-close.
+      - "cli-friction: allow raw-gh-issue-write"
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__issue_edit
+        guardrails: structured responses, no Bash permission friction
+        description: >
+          If the MCP server is unavailable, use gh issue edit directly
+          with --title, --body-file, --milestone, --add-label, including
+          the string `cli-friction: allow raw-gh-issue-write` in the
+          command so this rule lets it through.
+    reason: >
+      Direct gh issue edit mutates issue metadata (title, body,
+      milestone, labels) and requires per-call Bash permission. The
+      MCP tool provides structured responses and avoids friction.
+
+  - name: gh-issue-comment
+    matcher: Bash
+    patterns:
+      - gh issue comment
+    except: []
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__issue_comment
+        guardrails: structured responses, body written to temp file safely
+        description: >
+          Use the MCP tool. If the MCP server is unavailable, the
+          sanctioned fallback is
+          `gh api repos/<owner>/<repo>/issues/<n>/comments -F body=@<file>`
+          — NOT `gh issue comment --body-file`, which this same rule
+          blocks (GH-1068 F6).
+    reason: >
+      Direct gh issue comment requires Bash permission per call and
+      forces callers to manage heredoc/quoting. The MCP tool writes
+      the body to a temp file and returns the comment permalink.
+      The fallback names `gh api … -F body=@<file>` because the
+      previous hint pointed at `gh issue comment --body-file`, a shape
+      this rule denies — so a caller that hit the block was steered
+      into the block a second time, with no working path out. A hint
+      that is itself denied is worse than no hint: it reads as
+      sanctioned and costs another round trip to disprove.
+
+  - name: gh-issue-list
+    matcher: Bash
+    patterns:
+      - gh issue list
+    except: []
+    hook_block: false
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__issue_list
+        guardrails: structured JSON responses, label/milestone/search filtering
+        description: >
+          gh issue list works directly when needed. The MCP tool is
+          preferred because it returns structured JSON without the
+          --json flag boilerplate.
+    reason: >
+      gh issue list is read-only — advisory route to the MCP tool
+      for structured responses and consistency with other list tools.
+
+  - name: gh-pr-list
+    matcher: Bash
+    patterns:
+      - gh pr list
+    except: []
+    hook_block: false
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__pr_list
+        guardrails: structured JSON responses, state/search filtering
+        description: >
+          gh pr list works directly when needed. The MCP tool is
+          preferred because it returns structured JSON without the
+          --json flag boilerplate.
+    reason: >
+      gh pr list is read-only — advisory route to the MCP tool
+      for structured responses and consistency with other list tools
+      (GH-1359).
+
+  - name: gh-milestone-create
+    matcher: Bash
+    patterns:
+      - "gh api .*/milestones --method POST"
+      - "gh api .*/milestones -X POST"
+    except: []
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__milestone_create
+        guardrails: structured responses, no raw gh api POST in transcripts
+        description: >
+          If the MCP server is unavailable, the raw gh api POST is the
+          documented fallback — but the MCP tool is preferred so the
+          milestone CRUD path stays uniform with milestone_close.
+    reason: >
+      Raw gh api POST against the milestones endpoint bypasses the
+      structural "no MCP path means file a ticket" principle. Use the
+      MCP tool instead.
+
+  - name: gh-milestone-edit
+    matcher: Bash
+    patterns:
+      - "gh api .*/milestones/[0-9]+ --method PATCH"
+      - "gh api .*/milestones/[0-9]+ -X PATCH"
+    except: []
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__milestone_edit
+        guardrails: structured responses, no raw gh api PATCH in transcripts
+        description: >
+          Use milestone_reopen for a plain state=open re-open, or
+          milestone_edit for title/description/state/due_on changes.
+          If the MCP server is unavailable, the raw gh api PATCH is the
+          documented fallback — but the MCP tool is preferred so the
+          milestone CRUD path stays uniform with milestone_close/create.
+    reason: >
+      Raw gh api PATCH against a milestone endpoint bypasses the
+      structural "no MCP path means file a ticket" principle (GH-850
+      closed exactly this gap for re-open). Use milestone_reopen or
+      milestone_edit instead.
+
   - name: git-push-safe-script
     matcher: Bash
     patterns:
       - git-push-safe.sh
+    # GH-1084: guard the script's EXECUTION, not every mention of its
+    # name. Without this the rule denied `pre-commit run --files
+    # <path>/git-push-safe.sh` and `mv <path>/git-push-safe.sh …` — a
+    # hard block with no compensation that fits, since `push_safe`
+    # cannot lint or move a file.
+    match_position: invocation
     except: []
     hook_block: true
     compensations:
@@ -207,7 +559,85 @@ rules:
       responses and requires Bash permission on every call. The MCP
       tool provides safe push validation with no permission friction.
 
+  - name: psql-write
+    matcher: Bash
+    # `-[a-zA-Z]*c` rather than `-c` so getopt bundles (`psql -tAc "DROP …"`)
+    # and attached values (`psql -cDROP …`) match too — the shapes a
+    # scripted teardown actually uses.
+    patterns:
+      - 'psql.*\s-[a-zA-Z]*c.*\b(DROP|DELETE|UPDATE|INSERT|TRUNCATE|ALTER|GRANT|REVOKE)\b'
+      - 'psql.*--command[= ].*\b(DROP|DELETE|UPDATE|INSERT|TRUNCATE|ALTER|GRANT|REVOKE)\b'
+      - 'psql.*\s-[a-zA-Z]*c.*pg_(terminate|cancel)_backend'
+      - 'psql.*\s-[a-zA-Z]*f\b'
+      - 'psql.*\s--file[= ]'
+    except: []
+    hook_block: true
+    compensations:
+      - type: use-skill
+        skill: Dev10x:db-psql
+        guardrails: SQL validation, SELECT-only enforcement
+        fallback: >
+          Writes are not the agent's to run. Print the SQL and ask the
+          supervisor to execute it manually. This includes test-database
+          teardown documented in project runbooks — a documented
+          procedure authorizes the SQL, not the executor.
+    reason: >
+      GH-1034: raw psql DDL/DML executes unvalidated writes. The generic
+      psql rule below is advisory and therefore cannot enforce the
+      SELECT-only contract that project CLAUDE.md files rely on. CREATE is
+      deliberately absent — `CREATE EXTENSION` in local setup made it noisy.
+      This rule is the Dev10x:diag-friction steer; the enforcing gate is
+      the DX004 sql-safety validator, which runs at every profile tier.
+    related:
+      - Dev10x:db
+      - tt:db
+
   # ── Advisory-only Bash rules (hook_block: false) ───────────
+
+  - name: git-dir-worktree-pinning
+    matcher: Bash
+    patterns:
+      - "git\\s+--git-dir"
+      - "git\\s+--work-tree"
+    hook_block: false
+    compensations:
+      - type: use-alternative
+        description: >
+          Pin the worktree by directory, not by plumbing paths — but first
+          settle which CWD mode you are in, with two separate Bash calls:
+          `cd <worktree-path>`, then `pwd` (GH-1050).
+
+            • pwd == the path → run plain `git <verb> ...`. Do NOT add
+              `-C`: a `-C` whose path already equals CWD is denied as
+              redundant, so the "always pin" habit backfires here.
+            • pwd != the path → `git -C <worktree-path> <verb> ...`. One
+              argument instead of two, and the catalog seeds it per verb
+              (e.g. `Bash(git -C * log:*)`) for the nine read-only verbs.
+              GH-1268: this claim used to be aspirational — no `git -C`
+              rule was catalogued at all, so the steer pointed at a shape
+              that prompted. Mutating verbs are deliberately absent; route
+              those to Dev10x:git / Dev10x:git-groom.
+
+          Never `cd <path>; <cmd>` as a recovery — chaining is blocked, and
+          for an unattended agent that prompt is another silent wedge.
+    reason: >
+      GH-1028: `Agent`-spawned subagents may reset Bash CWD on every call,
+      so workers that believed CWD persisted improvised
+      `git --git-dir=<repo>/.git/worktrees/<wt> --work-tree=<wt> ...`. That
+      shape matches no allow rule, and an unattended subagent cannot answer
+      the resulting prompt — it wedges silently, leaving no denial trace in
+      hook logs.
+
+      GH-1050 corrected the remedy: whether CWD persists is
+      spawn-depth-dependent (a depth-1 probe kept it; a depth-2 crew worker
+      did not), so an unconditional `git -C` mandate is denied as redundant
+      at the depths where `cd` did stick. The steer is the mode self-test,
+      not a fixed spelling. Advisory rather than blocking: the preventive
+      fixes are the crew template's self-test and the Phase 0.4 pre-flight
+      probe (GH-1030); this entry is the `Dev10x:diag-friction` steer for an
+      interactive agent that reaches for the plumbing shape anyway.
+    related:
+      - Dev10x:foreman
 
   - name: kubectl
     matcher: Bash
@@ -292,6 +722,54 @@ rules:
       Direct playwright calls skip CF Access header injection
       and credential management for staging environments.
 
+  - name: pytest-inner-loop
+    matcher: Bash
+    patterns:
+      - 'pytest\b(?=.*(?:\s-k\b|\s--no-cov\b|\s(?:src|tests)/))'
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__run_tests
+        guardrails: >
+          routes off the Bash layer; resolves the project's dependency
+          extra itself; `args` takes the same narrowing you just typed
+        description: >
+          Run the narrowed suite through the MCP wrapper instead:
+
+            run_tests(args=["-k", "<name>"], coverage=false)
+            run_tests(args=["tests/<path>/"])
+
+          Translate the CLI shape:
+            • `-k <expr>` / a path argument → `args=[...]`, verbatim.
+            • `--no-cov` → `coverage=false`.
+            • `--extra dev` → drop it; the tool reads
+              `[project.optional-dependencies]` and applies the group that
+              declares pytest (GH-1198), reporting it as `extras`.
+          The wrapper is not the full-suite gate wearing a wrapper — a
+          targeted run is what `args` exists for, and it is the cheaper
+          call of the two.
+    reason: >
+      Every test run is routed, not only the full-suite one that gates
+      commit / PR / DONE. GH-1337 audited a bugfix session where the
+      gating run routed correctly and all six edit-run-edit iterations
+      did not: each was a targeted `-k` / path-scoped raw invocation,
+      with a working wrapper available and no excuse. The contract is
+      asserted once at plan time and checked once at the terminal DoD
+      step — after the work had merged — so nothing bit where the drift
+      actually happened.
+
+      Scoped to the NARROW shape on purpose. The generic `pytest` rule
+      below stays advisory, which keeps the full-coverage form
+      (`uv run --extra dev pytest --cov --cov-report=term-missing`)
+      unblocked: that is `Dev10x:py-test`'s documented fallback for a
+      session with no MCP server, and it is the shape that seeds a fresh
+      worktree's virtualenv. Blocking it would leave such a session with
+      no sanctioned path at all. It also keeps GH-155's recursion out of
+      reach — the flip reverted there hard-blocked the form the skill
+      itself ran.
+    related:
+      - Dev10x:py-test
+
   - name: pytest
     matcher: Bash
     patterns:
@@ -301,10 +779,147 @@ rules:
     hook_block: false
     compensations:
       - type: use-skill
-        skill: test
+        skill: Dev10x:py-test
+        guardrails: 100% coverage gate, concise pass/fail summaries, cwd-aware uv run wrapping
+        fallback: >
+          If Skill(Dev10x:py-test) is unavailable, run pytest with coverage
+          (`pytest --cov --cov-report=term-missing`) and verify 100%
+          coverage on changed files manually.
     reason: >
-      The test skill ensures consistent coverage reporting and
-      concise summaries. Use it for standardized test execution.
+      Bare pytest invocations bypass the test skill's coverage gate
+      and concise summary formatting. Audit (GH-155) caught 4 bare
+      pytest calls before commits/PR with no coverage verification.
+
+      Advisory only (hook_block: false) — the hard-block flipped in
+      GH-155 broke Dev10x:py-test itself, which internally invokes
+      `uv run pytest --cov ...` and hit the same hook recursively.
+      Restoring advisory behavior pending the skill-context-aware
+      hook protocol (GH-271 Phase 8).
+
+  - name: node-tests-npm-monorepo
+    matcher: Bash
+    patterns:
+      - 'npm\b.*--prefix.* test'
+      - 'npm\b.*--workspace.* test'
+      - 'npm\b.* -C .* test'
+      - 'npm\b.* -w .* test'
+    except: []
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__run_node_tests
+        guardrails: routes off the Bash layer; --prefix/-C/-w DIR maps to the tool's cwd= param
+        description: >
+          Run the scoped monorepo test through the MCP wrapper instead:
+
+            run_node_tests(runner="npm", cwd="<dir>", args=["--", "<name>"], coverage=false)
+
+          Translate the CLI shape:
+            • `--prefix DIR` / `-C DIR` / `-w DIR` → `cwd="DIR"` (never a flag
+              after `test` — npm silently ignores a mis-positioned --prefix).
+            • the test name after `test --` → `args=["--", "<name>"]`.
+            • drop `2>&1 | tail -N` — run_node_tests returns a structured
+              summary, so the redirect + pipe are redundant (and each trips its
+              own core-harness / DX011 block).
+          Keep `runner="npm"` — the command names npm and the runner is a
+          project-local fact (package-lock.json, no pnpm-lock.yaml). Do NOT
+          apply the global "use pnpm" steer here.
+    reason: >
+      The monorepo-scoped `npm --prefix <dir> test` / `-C <dir>` / `-w <ws>`
+      shape stacks four friction sources at once — the npm `ask` prompt, the
+      `| tail` DX011 pipe, the `2>&1` redirect, and the brace-expansion
+      core-harness block — none individually allow-listable (GH-880, #877 E3).
+      A hard block carrying the exact run_node_tests translation converts that
+      pile-up into one actionable steer. Blocked (not advisory) because the
+      steer target is an MCP tool, so — unlike the generic `node-tests` /
+      `pytest` rules kept advisory to avoid re-triggering the Bash hook
+      recursively — there is no recursion risk. Listed before the generic
+      `node-tests` rule so first-match-wins routes the monorepo shape to the
+      block while plain `npm test` / `jest` / `yarn test` stay advisory.
+    related:
+      - Dev10x:diag-friction
+
+  - name: node-tests
+    matcher: Bash
+    patterns:
+      - jest
+      - npx jest
+      - yarn test
+      - yarn .* test
+      - npm test
+      - npm run test
+      - pnpm test
+      - vitest
+    hook_block: false
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__run_node_tests
+        guardrails: routes off the Bash layer, sidesteps the brace-expansion core-harness block
+        fallback: >
+          If the run_node_tests MCP tool is unavailable, reload the MCP
+          server (/mcp) and retry; as a last resort run the test command
+          in a `!` shell so the brace-expansion block does not apply.
+    reason: >
+      jest / `yarn … test` otherwise run through the Bash layer, where a
+      quoted-brace coverage glob (`--collectCoverageFrom="…{ts,tsx}"`)
+      trips the core-harness brace-expansion check that no allow-rule can
+      suppress (GH-703 evidence #36). The run_node_tests MCP wrapper
+      sidesteps the Bash layer entirely.
+
+      Advisory only (hook_block: false) — mirrors the pytest rule; the
+      wrapper is the steer, not a hard block.
+
+  - name: node-build-scripts
+    matcher: Bash
+    patterns:
+      - 'pnpm run\b'
+      - 'npm run\b'
+      - 'yarn run\b'
+      - '\bnpx vite\b'
+      - '^\s*vite\b'
+      - '\bsvelte-kit\b'
+      - '\bnode\s+\S+\.(m|c)?[jt]s\b'
+    hook_block: false
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__run_node_tests
+        guardrails: routes off the Bash layer; script= names the package.json script
+        description: >
+          Run the build/check script through the MCP wrapper instead:
+
+            run_node_tests(runner="pnpm", script="build", cwd="<dir>")
+
+          Translate the CLI shape:
+            • `pnpm run <name>` / `npm run <name>` → `script="<name>"` with
+              the matching `runner=`. Only yarn/npm/pnpm resolve a script
+              name; pairing `script=` with jest/vitest is an error, not a
+              silent no-op.
+            • a bare `vite` / `svelte-kit` / `node <script>` invocation →
+              the package.json script that wraps it (`build`, `check:*`,
+              `preview`), so the project's own flags and env come along.
+            • an env pin the script definition depends on (a `TZ` snapshot
+              tests need, say) → `env={"TZ": "…"}`, which is overlaid on
+              the inherited environment rather than replacing it.
+    reason: >
+      `run_node_tests` grew a `script=` parameter in GH-1029, so the
+      build/check siblings of the test shapes — `pnpm run build`,
+      `pnpm run check:*`, bare `vite`, `node script.mjs` — are already
+      covered by the wrapper, but matched no map entry and so kept
+      running on the Bash layer.
+
+      In an unattended background subagent an unmatched web-tooling shape
+      that prompts is a silent wedge, not a denial. GH-1052 evidence
+      (2026-08-19 foreman night run): crew worker B2 heartbeat "pnpm deps
+      installed; starting SvelteKit UI", then zero tool calls and zero
+      file writes for 80+ minutes. Its replacement, briefed to route ALL
+      web tooling through `run_node_tests(script=…)`, delivered the same
+      chunk cleanly — 1035 vitest tests, the build, and both i18n gates
+      through the wrapper, with zero prompts.
+
+      Listed after `node-tests` so first-match-wins keeps `npm run test`
+      and `pnpm test` on the test rule. Advisory only (hook_block: false)
+      — same posture as `node-tests`; the wrapper is the steer, not a
+      hard block.
 
   - name: gh-pr-comment-reply
     matcher: Bash
@@ -321,6 +936,33 @@ rules:
     related:
       - Dev10x:gh-pr-respond
       - Dev10x:gh-pr-triage
+
+  - name: gh-review-threads-graphql
+    matcher: Bash
+    patterns:
+      # Raw reviewThreads GraphQL across its heredoc / brace / cmd-subst
+      # variants, plus the inline pulls/comments REST shape (GH-598).
+      - "gh api graphql.*reviewThreads"
+      - "reviewThreads\\(first"
+      - "gh api repos/.*/pulls/.*/comments"
+    hook_block: false
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__unresolved_threads
+        guardrails: structured unresolved-thread results, no raw graphql
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__pr_comments
+        guardrails: structured comment list, no raw pulls/comments REST
+    reason: >
+      Raw `gh api graphql` for review threads recurs across heredoc,
+      brace, and command-substitution variants — each trips a different
+      non-allow-listable core-harness check (brace/heredoc/cmd-subst).
+      Use the `unresolved_threads` / `pr_comments` wrappers instead;
+      they run the reviewThreads query and return structured results
+      without the friction (GH-598).
+    related:
+      - Dev10x:gh-pr-merge
+      - Dev10x:gh-pr-review
 
   - name: sentry-api
     matcher: Bash
@@ -371,17 +1013,444 @@ rules:
     hook_block: false
     compensations:
       - type: use-alternative
-        description: Use uv run directly without --extra dev flag
+        description: >
+          Where dev dependencies resolve by default, drop the flag and
+          use uv run directly. Keep `--extra dev` when the repo's test
+          deps live in an optional extra — a bare run then fails with
+          ModuleNotFoundError (GH-947).
     reason: >
-      The --extra dev flag is unnecessary in dev10x-ai repos
-      where dev dependencies are available by default. Use
-      uv run directly.
+      The --extra dev flag is unnecessary in dev10x-ai repos whose dev
+      dependencies resolve by default — but this is repo-dependent, not
+      universal: a repo declaring its test deps under an optional
+      `dev` extra (this plugin repo included) needs
+      `uv run --extra dev pytest`, and a bare `uv run pytest` there
+      fails on the first test import. Verify the repo before dropping
+      the flag.
+
+  - name: mktmp-bash-fallback
+    matcher: Bash
+    patterns:
+      - /tmp/Dev10x/bin/mktmp\.sh
+      - bin/mktmp\.sh
+    # GH-1084: the sibling script-path rule gets the same anchoring —
+    # advisory rather than blocking, so a mention only cost a misleading
+    # nudge, but steering someone linting the script toward the MCP tool
+    # is noise either way.
+    match_position: invocation
+    hook_block: false
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__mktmp
+        guardrails: structured response, no Bash permission friction
+        description: >
+          Call the MCP tool with namespace, prefix, ext, and (optional)
+          directory/create flags. The shell script is the deployed
+          fallback and should only run inside other shell scripts that
+          execute outside Claude's tool-use protocol.
+    reason: >
+      The bash fallback works but adds permission friction (Bash
+      allow-rule needed) and returns plain stdout. The MCP tool
+      returns structured JSON with the path, matches the file-
+      not-pre-created semantics introduced by GH-39, and lives in
+      the routing table for skills.
+    related:
+      - Dev10x:git-commit
+      - Dev10x:gh-pr-create
+
+  - name: ci-loop-handrolled
+    matcher: Bash
+    patterns:
+      - "while.*gh pr checks"
+      - "for .*gh pr checks"
+      - "sleep.*gh pr (checks|view)"
+      - "gh pr (checks|view).*sleep"
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__ci_check_status
+        guardrails: server-side poll with wait=true, structured verdict
+        description: >
+          Call ci_check_status(wait=true) for a single server-side poll
+          that returns a structured pass/fail/unknown verdict — no
+          bespoke loop needed.
+      - type: use-skill
+        skill: Dev10x:gh-pr-monitor
+        guardrails: failure detection, fixup commits, re-monitor after push
+        description: >
+          Watching review comments, approval, or merge state rather
+          than CI is STILL this skill — ci_check_status's CI focus is
+          not a licence to hand-roll a watch for the non-CI signals.
+          No MCP wrapper waits on review or merge state (`pr_get` is
+          one-shot), so "my condition isn't CI" resolves to
+          gh-pr-monitor, never to a loop (GH-1212).
+    reason: >
+      A hand-rolled while/sleep loop around `gh pr checks` reinvents
+      ci_check_status(wait=true) and the gh-pr-monitor skill. The loop
+      exits on the first tick, skips bot-review checks, and does no
+      fixup/re-monitor — route to the wrapper/skill instead (GH-488 #22).
+
+      The scope trap (GH-1212): "ci_check_status waits on CI, I want a
+      standing watch on review activity — different thing, so the
+      wrapper does not apply" is the rationalisation that defeated four
+      prior correct uses of the wrapper in one session. A different
+      signal changes which compensation applies, never whether a loop
+      is allowed.
+
+      Blocking, not advising (GH-1138): the shape is structurally
+      un-allow-listable, so an advisory entry only speaks after the
+      supervisor has already been interrupted — or, unattended, after
+      the loop has already wedged on a prompt. A dispatcher that read
+      ci_check_status as unable to wait out its bot legs hand-rolled
+      exactly this loop and stalled on a Yes/No; the wrapper now takes
+      `wait_for`, so the compensation is executable in that case too.
+    related:
+      - Dev10x:gh-pr-monitor
+
+  - name: watch-loop-handrolled
+    matcher: Bash
+    patterns:
+      # (?s) so a `sleep` several lines below `do` still matches — patterns
+      # compile without DOTALL, and every real poll loop is multiline, so the
+      # single-line shapes these replaced could not see one (GH-1212).
+      - "(?s)\\bwhile\\b.*?\\bdo\\b.*?\\bsleep\\b"
+      - "(?s)\\buntil\\b.*?\\bdo\\b.*?\\bsleep\\b"
+      - "(?s)\\bfor\\b.*?\\bdo\\b.*?\\bsleep\\b"
+      - "watch -n"
+    hook_block: true
+    compensations:
+      - type: use-alternative
+        description: >
+          Waiting on work already dispatched to subagents? Do not wait
+          at all — the Agent tool delivers completion notifications on
+          its own, so a poll adds permission prompts without adding
+          information (GH-1132).
+      - type: use-alternative
+        description: >
+          Waiting for a one-off condition ("tell me when X is ready")?
+          Use Bash with `run_in_background: true` and a command that
+          EXITS once the condition holds. One notification, no Monitor,
+          no prompt.
+      - type: use-alternative
+        description: >
+          For orchestration/heartbeat watching, arm the pre-approved
+          watcher CLI instead: `dev10x foreman watch --scratchpad
+          <run-dir>` (heartbeat stalls, base-branch movement, quota
+          events from one process) — or `uv run dev10x foreman watch
+          …` when the bare entry point is not installed as a uv tool
+          and exits 127, e.g. inside a plugin-repo checkout (GH-947).
+          For bespoke conditions, wrap the
+          loop in a PEP 723 uv-shebang script under ~/.claude/tools/
+          (covered by the standard Bash(~/.claude/tools/*:*) allow
+          rule) and invoke the bare script path.
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__ci_check_status
+        guardrails: single server-side poll, structured verdict
+        description: >
+          When the loop is CI-shaped, ci_check_status(wait=true)
+          replaces it (the gh-specific shapes are matched by
+          ci-loop-handrolled above).
+      - type: use-alternative
+        description: >
+          A Monitor until-loop is the LAST resort here, and only for
+          genuine per-occurrence watching (one event per match, over
+          time) — not for waiting out a single condition.
+    reason: >
+      Inline while/until/sleep and `watch -n` shapes are structurally
+      un-allow-listable — small variations (adding a pipeline stage)
+      re-trigger permission matching. Monitor tool commands are
+      permission-matched exactly like Bash, and in an unattended
+      session a prompted watch command freezes the orchestrator turn
+      until a human returns (GH-879: a 7-hour overnight stall).
+      NOTE (GH-1132): the harness's own standalone-`sleep` block
+      recommends "Monitor with an until-loop", which lands on exactly
+      the shape this rule flags — obeying that hint costs a rejection
+      interactively and risks the GH-879 wedge unattended. The
+      compensations above are ordered so the non-prompting shapes come
+      first; prefer them over the hint.
+
+      Blocking, not advising (GH-1138): an advisory setting on a shape
+      that can never be approved deterministically is the worst of both
+      — it neither prevents the prompt nor answers it. The Monitor tool
+      is now on the same PreToolUse validator chain as Bash, so a loop
+      routed through Monitor to dodge the Bash hook is seen too —
+      genuinely so only since GH-1211; from GH-1138 until then the
+      matcher was registered but the entry point discarded every
+      non-Bash payload before any validator ran.
+
+      No `except` carve-out (GH-1212): this rule used to exempt
+      `gh pr checks` / `gh pr view` so those shapes would land on
+      ci-loop-handrolled's richer compensation. First-match-wins
+      already does that — ci-loop-handrolled is listed above — so the
+      carve-out only ever fired when ci-loop-handrolled had NOT
+      matched, i.e. it let a loop escape both rules purely by
+      mentioning `gh pr view`. The defect is the loop, not the command
+      inside it.
+    related:
+      - Dev10x:foreman
+      - Dev10x:gh-pr-monitor
+
+  # Placed AFTER ci-loop-handrolled and watch-loop-handrolled: this is the
+  # general loop case, and `;\s*do\b` also matches their shapes. First-match-
+  # wins keeps a CI or watch loop on the rule carrying the richer
+  # ci_check_status / `dev10x foreman watch` compensation (GH-1117).
+  - name: for-loop-handrolled
+    matcher: Bash
+    patterns:
+      - "^\\s*for\\s+\\w+\\s+in\\s"
+      - ";\\s*do\\b"
+      - "\\bxargs\\b"
+    except:
+      - "gh pr checks"
+      - "gh pr view"
+    hook_block: false
+    compensations:
+      - type: split-commands
+        description: >
+          Issue one Bash call per item, all in the SAME assistant message —
+          the harness fans them out in parallel. Each call then matches the
+          inner command's own allow-rule, which a loop wrapper defeats:
+          the effective prefix becomes the loop construct, matching nothing.
+          A loop over 8 branches is 8 parallel calls, not one prompt.
+      - type: use-tool
+        tool: Grep
+        guardrails: internalizes iteration for count/search shapes
+        description: >
+          When the loop body is a search or per-file count, Grep with
+          output_mode="count" / "files_with_matches" replaces it entirely.
+    reason: >
+      A `for`/`xargs` loop over a known list defeats allow-rule matching for
+      commands that are individually pre-approved, converting N approved
+      calls into one unmatchable command. Unlike the CI and watch loop rules,
+      this needs no sleep and no gh payload — it is the general case, and
+      currently produces a raw permission prompt with no steer (GH-1117).
+
+      Parallel single-shot calls are strictly better here: same wall-clock
+      (the harness fans them out), and the supervisor sees one approval
+      scope per command rather than one opaque approval for the loop.
+    related:
+      - Dev10x:diag-friction
+
+  - name: cat-grep-pipeline
+    matcher: Bash
+    patterns:
+      - "cat .*\\|.*grep"
+      - "grep .*\\{[^}]*,[^}]*\\}"
+    hook_block: false
+    compensations:
+      - type: use-tool
+        tool: Grep
+        guardrails: file search without pipe/brace core-harness friction
+        description: >
+          Use the Grep tool to search files. A `cat file | grep x`
+          pipeline and a `grep x file.{a,b}` brace expansion both trip
+          non-allow-listable core-harness checks (pipe, brace) — the
+          Grep tool searches directly without the friction.
+    reason: >
+      `cat | grep` and brace-expansion `grep {a,b}` recur as friction
+      because the pipe and brace shapes are not allow-listable core
+      checks. The Grep tool covers both with no permission prompt
+      (GH-488 #15/#28).
+
+  - name: find-search
+    matcher: Bash
+    patterns:
+      # `find … -exec <search-tool>` and name-glob searches — the
+      # archetypal un-allowable find shape (GH-726 F2/F3).
+      - "find .*-exec\\s+(grep|egrep|fgrep|rg|cat|wc|head|tail|sort|sed|awk)"
+      - "find .*-(name|iname|path|regex)\\b"
+      # Parens/brackets in a path argument — shell-escaped or quoted.
+      # A plain `find <path> -type f` over a SvelteKit route group
+      # (`routes/(app)/[id]/`) carries no -name/-path/-exec, so the two
+      # patterns above miss it entirely (GH-1059).
+      - "find [^|&;]*\\\\[()\\[\\]]"
+      - "find [^|&;]*['\"][^'\"]*[()\\[\\]]"
+    hook_block: false
+    compensations:
+      - type: use-tool
+        tool: Grep
+        guardrails: recursive search by glob/type, no Bash allow-rule, no find -exec
+        description: >
+          Use the Grep tool (wraps ripgrep) to search file contents — set
+          glob/type and output_mode (files_with_matches / count) instead of
+          `find … -exec grep`.
+        fallback: >
+          Only when the Grep tool is absent from this session's tool
+          surface: `rg -l <pattern> -g '<glob>'`, already covered by
+          Bash(rg:*).
+      - type: use-tool
+        tool: Glob
+        guardrails: name-glob file discovery, no Bash allow-rule
+        description: >
+          Use the Glob tool to find files by name pattern instead of
+          `find -name`. For a one-shot Bash search, `rg -l <pat> -g '<glob>'`
+          is already covered by Bash(rg:*).
+        fallback: >
+          Only when the Glob tool is absent from this session's tool
+          surface: `rg --files -g '<glob>'`, already covered by
+          Bash(rg:*). Do NOT fall back to `find` — recommending it
+          reinstates the friction this rule exists to remove.
+      - type: use-alternative
+        guardrails: single pre-approved Bash prefix, no tool-surface dependency
+        description: >
+          `rg --files -g '<glob>'` (name discovery) or
+          `rg -l <pattern> -g '<glob>'` (content search). Available
+          under Bash(rg:*) for any path inside the project or its
+          registered additionalDirectories, so this is the
+          recommendation to give when the session's tool surface is
+          unknown or lacks Glob/Grep (GH-1087). It does NOT hold for
+          paths outside those directories — a read of
+          `~/.claude/settings*.json` trips the harness's path-scope
+          gate no matter which verb is used; see `settings-file-read`
+          (GH-1140).
+    reason: >
+      `find` is structurally un-allowable: `Bash(find:*)` does not reliably
+      match embedded paths/pipes, and `find … -exec <cmd>` is independently
+      blocked because -exec wraps an arbitrary command (defeating the inner
+      tool's allow-rule). The fix is tool substitution, not a new allow-rule
+      — steer searches to ripgrep / the Grep + Glob tools (GH-726 F2/F3,
+      themes T1 + T3). Parenthesised path segments make this acute: two
+      unattended workers wedged simultaneously on the same
+      `find …/routes/\(app\)/…` shape, silent for 25–35 min with nothing
+      recorded in the hook log, because a pending permission prompt is
+      neither a block nor a denial (GH-1059).
+
+      Tool substitution is conditional on tool availability, which this
+      rule cannot check: a session whose surface lacks Glob answered the
+      recommended `Glob` call with "No such tool available: Glob … find
+      files with `find` via the Bash tool instead" — the harness and the
+      map contradicting each other, leaving a friction diagnosis that
+      could not be executed. Each use-tool compensation therefore
+      carries a `fallback:`, and the `rg` alternative below is
+      unconditional (GH-1087).
+
+  - name: qa-evidence-stitch
+    matcher: Bash
+    patterns:
+      - "(magick|montage|convert)\\b[^|&;]*/tmp/Dev10x/playwright"
+    except:
+      - "convert-evidence.sh"
+    hook_block: false
+    compensations:
+      - type: use-alternative
+        guardrails: fixed shape, output path bounded by the run directory
+        description: >
+          `${CLAUDE_PLUGIN_ROOT}/skills/qa-self/scripts/convert-evidence.sh
+          stitch <run-dir> [out.png]` — stacks the run's PNGs with a
+          separator and resolves the IM6/IM7 spelling itself. Covered by
+          the versioned per-file script rule, so it never prompts.
+    reason: >
+      An ad-hoc `magick <files> -append` over a QA run prompts, and the
+      prompt offers `magick *` — a catch-all over an arbitrary output
+      path — as the "don't ask again" rule (GH-1141). Routing to the
+      script keeps the composition shape fixed and the output path
+      bounded by the run directory, which is what makes the narrow
+      script rule sufficient.
+    related:
+      - Dev10x:qa-self
+
+  - name: settings-file-read
+    matcher: Bash
+    patterns:
+      - "(rg|grep|egrep|fgrep|cat|jq|head|tail|less|awk|sed)\\b[^|&;]*\\.claude/settings(\\.local)?\\.json"
+    except: []
+    hook_block: true
+    compensations:
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__permission_catalog_gap
+        guardrails: read-only catalog coverage per settings file, no path-scope gate
+        description: >
+          Use permission_catalog_gap for "does this settings file carry
+          the catalog?" — the coverage question. This is the default for
+          rule-coverage work: it answers directly instead of grepping
+          JSON, and a non-zero total_missing names a propagation gap
+          rather than a missing rule.
+      - type: use-tool
+        tool: mcp__plugin_Dev10x_cli__audit_analyze_permissions
+        guardrails: friction analysis over a session transcript
+        description: >
+          Use audit_analyze_permissions to analyse the friction a
+          recorded session actually hit. It takes a required
+          transcript_path, so it answers "what prompted, and why",
+          NOT "is this rule present" — GH-1175 found it named as the
+          default for the coverage question it cannot answer.
+      - type: use-tool
+        tool: Read
+        guardrails: raw file contents, declared in diag-friction allowed-tools
+        description: >
+          Use the Read tool for the raw file, e.g.
+          Read(~/.claude/settings.json). Read is not subject to the
+          Bash path-scope gate.
+    reason: >
+      `Bash(rg:*)` is present and matching — the differentiator is the
+      target. `~/.claude` is deliberately NOT a registered working
+      directory (the catalog lists `~/.claude/memory`,
+      `~/.claude/plugins` and `~/.config/Dev10x`, not `~/.claude`
+      itself), so the harness's additionalDirectories path-scope gate
+      fires and no allow rule can suppress it (GH-99). The shape is
+      therefore un-allow-listable and must be denied deterministically
+      with a steer rather than advised after the supervisor has already
+      been interrupted (GH-1140).
+
+      Denying it also removes the prompt's option 2 — registering
+      `~/.claude` as a working directory — from the supervisor's
+      screen. Accepting that option under `defaultMode: acceptEdits`
+      with an empty project `ask` floor would let an agent edit
+      `~/.claude/settings.json` unprompted, which is a far larger grant
+      than the read that triggered it.
+
+      Two sanctioned surfaces already exist and were never named at the
+      point of friction; both compensations above are unconditional.
+      Reads of `~/.config/Dev10x/*.yaml` and of repo paths are
+      unaffected — that directory IS registered.
+    related:
+      - Dev10x:diag-friction
+
+  - name: fish-interactive-abbr
+    matcher: Bash
+    patterns:
+      - "fish -ic"
+      - "fish -i -c"
+    hook_block: false
+    compensations:
+      - type: use-alternative
+        description: >
+          Run the underlying command directly, or invoke the documented
+          Dev10x skill/alias the abbreviation maps to. fish abbreviations
+          only expand in an interactive shell; spawning `fish -ic` to
+          expand one is avoidable friction.
+    reason: >
+      `fish -ic <abbr>` expands a shell abbreviation by launching an
+      interactive subshell — friction with no allow-rule. Run the real
+      command or the documented skill/alias instead (GH-488 #18).
+
+  - name: version-pinned-plugin-script
+    matcher: Bash
+    patterns:
+      - "plugins/cache/.*/[0-9]+\\.[0-9]+\\.[0-9]+/"
+      - "/cache/.*/[0-9]+\\.[0-9]+\\.[0-9]+/.*\\.py"
+    # GH-1084: deliberately NOT match_position: invocation. The rotting
+    # path is the defect wherever it appears — reading, copying, or
+    # passing one as an argument all break on the next upgrade — so this
+    # rule is about the path itself, not about executing it. Advisory,
+    # so a mention costs a nudge rather than a block.
+    hook_block: false
+    compensations:
+      - type: use-alternative
+        description: >
+          Route UP to the stable surface: invoke the skill via Skill()
+          or call the installed `dev10x` CLI. Never call a script at a
+          version-pinned plugins/cache/<version>/ path — the path rots
+          on the next plugin upgrade.
+    reason: >
+      A version-pinned `…/cache/<version>/…/*.py` script path degrades
+      on every plugin upgrade. Route up to the skill invocation or the
+      stable installed CLI so the call survives version bumps (GH-488 #26).
 
   # ── Edit|Write rules ───────────────────────────────────────
 
   - name: eval-in-skills
     matcher: "Edit|Write"
-    file_pattern: '/\.codex/skills/.*\.(md|sh)$'
+    file_pattern: '/\.claude/skills/.*\.(md|sh)$'
     content_pattern: '\beval\s+["$]'
     hook_block: true
     message: >
@@ -402,7 +1471,21 @@ rules:
     matcher: "Edit|Write"
     file_names: [".env", "secrets.env", ".secret"]
     file_prefixes: [".env.", "secrets.env."]
-    file_substrings: ["credentials"]
+    # `credentials` used to be a `file_substrings` entry, which matches
+    # anywhere in the full path — so `credentials.py`,
+    # `test_credentials.py` and `credentials-setup.md` were all
+    # hard-blocked, told to ask a human to hand-edit them (GH-1287).
+    #
+    # The discriminator is the EXTENSION, not the name: a credential
+    # store is `credentials` or `application_default_credentials.json`;
+    # a module that talks to one is `credentials.py`. So keep matching
+    # the word anywhere in the path — which is what covers
+    # `credentials.d/` directories and descriptive names like
+    # `service-account-credentials.json` — and exempt source and prose
+    # extensions instead. Listing exact basenames was tried and dropped:
+    # it admitted every decorated name, which is most real ones.
+    file_pattern: >-
+      (?i)^(?!.*\.(?:py|pyi|ts|tsx|js|jsx|mjs|go|rs|rb|java|kt|swift|c|h|cc|cpp|sh|bash|zsh|md|rst|txt)$).*credentials.*$
     hook_block: true
     message: "BLOCKED: Editing sensitive file: {file_path}"
     compensations:

@@ -1,6 +1,8 @@
 """Tests for ci-check-status.py verdict logic."""
 
 import importlib.util
+import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,15 @@ _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 
 compute_verdict = _mod.compute_verdict
+# The shim re-exports via `import *`; the functions live in the real
+# module, so cross-function calls (get_annotated_checks → get_checks)
+# resolve names there. Patch the real module, not the shim.
+_impl = sys.modules[compute_verdict.__module__]
+
+
+def _read(checks: list[dict]) -> _impl.ChecksRead:
+    """A `gh pr checks`-sourced read, the shape probe_once consumes."""
+    return _impl.ChecksRead(checks=checks, source=_impl.SOURCE_GH_CLI)
 
 
 class TestComputeVerdict:
@@ -160,3 +171,718 @@ class TestComputeVerdict:
         checks = [{"name": "build", "bucket": "pass"}]
         result = compute_verdict(checks=checks, mergeable=mergeable)
         assert result["verdict"] == "green"
+
+
+class TestRequiredVerdict:
+    def test_default_required_verdict_empty_without_annotation(self):
+        checks = [{"name": "build", "bucket": "pass"}]
+        result = compute_verdict(checks=checks)
+        assert result["verdict"] == "green"
+        assert result["required_verdict"] == "empty"
+
+    def test_advisory_failure_does_not_fail_required_verdict(self):
+        checks = [
+            {"name": "build", "bucket": "pass", "required": True},
+            {"name": "lint-advisory", "bucket": "fail", "required": False},
+        ]
+        result = compute_verdict(checks=checks, mergeable="MERGEABLE")
+        assert result["verdict"] == "failing"
+        assert result["required_verdict"] == "green"
+
+    def test_required_failure_fails_required_verdict(self):
+        checks = [
+            {"name": "build", "bucket": "fail", "required": True},
+            {"name": "lint-advisory", "bucket": "pass", "required": False},
+        ]
+        result = compute_verdict(checks=checks)
+        assert result["verdict"] == "failing"
+        assert result["required_verdict"] == "failing"
+
+    def test_required_pending_advisory_green(self):
+        checks = [
+            {"name": "build", "bucket": "pending", "required": True},
+            {"name": "lint-advisory", "bucket": "pass", "required": False},
+        ]
+        result = compute_verdict(checks=checks)
+        assert result["required_verdict"] == "pending"
+
+    def test_per_check_required_flag_in_output(self):
+        checks = [
+            {"name": "build", "bucket": "pass", "required": True},
+            {"name": "lint", "bucket": "pass"},
+        ]
+        result = compute_verdict(checks=checks)
+        assert result["checks"][0]["required"] is True
+        assert result["checks"][1]["required"] is False
+
+    def test_conflicting_sets_both_verdicts(self):
+        checks = [{"name": "build", "bucket": "pass", "required": True}]
+        result = compute_verdict(checks=checks, mergeable="CONFLICTING")
+        assert result["verdict"] == "conflicting"
+        assert result["required_verdict"] == "conflicting"
+
+
+class TestGetRequiredNames:
+    def _stub(self, *, returncode, stdout):
+        class _R:
+            pass
+
+        r = _R()
+        r.returncode = returncode
+        r.stdout = stdout
+        r.stderr = ""
+        return r
+
+    def test_parses_required_names(self, monkeypatch):
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "run",
+            lambda *a, **k: self._stub(
+                returncode=0, stdout='[{"name": "build"}, {"name": "test"}]'
+            ),
+        )
+        assert _mod.get_required_names(pr_number=1, repo="o/r") == {"build", "test"}
+
+    def test_nonzero_exit_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "run",
+            lambda *a, **k: self._stub(returncode=1, stdout=""),
+        )
+        assert _mod.get_required_names(pr_number=1, repo="o/r") == set()
+
+    def test_blank_stdout_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "run",
+            lambda *a, **k: self._stub(returncode=0, stdout="   "),
+        )
+        assert _mod.get_required_names(pr_number=1, repo="o/r") == set()
+
+    def test_unparseable_stdout_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "run",
+            lambda *a, **k: self._stub(returncode=0, stdout="not json"),
+        )
+        assert _mod.get_required_names(pr_number=1, repo="o/r") == set()
+
+
+class TestGetAnnotatedChecks:
+    def test_required_only_marks_all_required(self, monkeypatch):
+        monkeypatch.setattr(
+            _impl,
+            "read_checks",
+            lambda **k: _read([{"name": "build", "bucket": "pass"}]),
+        )
+        read = _impl.get_annotated_checks(pr_number=1, repo="o/r", required_only=True)
+        assert read.checks[0]["required"] is True
+
+    def test_annotates_required_by_name(self, monkeypatch):
+        monkeypatch.setattr(
+            _impl,
+            "read_checks",
+            lambda **k: _read(
+                [
+                    {"name": "build", "bucket": "pass"},
+                    {"name": "lint", "bucket": "pass"},
+                ]
+            ),
+        )
+        monkeypatch.setattr(_impl, "get_required_names", lambda **k: {"build"})
+        read = _impl.get_annotated_checks(pr_number=1, repo="o/r")
+        by_name = {c["name"]: c["required"] for c in read.checks}
+        assert by_name == {"build": True, "lint": False}
+
+
+class TestGetChecksError:
+    def test_error_json_written_to_stdout_then_exits(self, monkeypatch, capsys):
+        class _Failed:
+            returncode = 1
+            stderr = "rate limited"
+            stdout = ""
+
+        monkeypatch.setattr(_mod.subprocess, "run", lambda *a, **k: _Failed())
+        with pytest.raises(SystemExit) as exc:
+            _mod.get_checks(pr_number=42, repo="org/repo")
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert '"error"' in captured.out
+        assert "rate limited" in captured.out
+        assert captured.err == ""
+
+    def test_failure_with_no_stderr_still_names_the_exit_code(self, monkeypatch, capsys):
+        # GH-1192: an empty stderr must not produce an empty error.
+        class _Silent:
+            returncode = 1
+            stderr = ""
+            stdout = ""
+
+        monkeypatch.setattr(_mod.subprocess, "run", lambda *a, **k: _Silent())
+        with pytest.raises(SystemExit):
+            _mod.get_checks(pr_number=42, repo="org/repo")
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["error"]
+        assert "exit 1" in payload["error"]
+
+
+class TestGetChecksExitCodeIsAVerdict:
+    """GH-1192: `gh pr checks` exits 8 when pending, 1 when failing.
+
+    Both still write the requested JSON to stdout, so a non-zero exit
+    with parseable output is the answer — not a call failure. Aborting
+    there is what made every PR with non-green checks return an empty
+    error.
+    """
+
+    @pytest.mark.parametrize("returncode", [1, 8])
+    def test_non_zero_exit_with_parseable_stdout_returns_checks(
+        self,
+        monkeypatch,
+        returncode: int,
+    ):
+        payload = [{"name": "ci", "bucket": "pending", "state": "IN_PROGRESS"}]
+
+        class _Verdict:
+            stdout = json.dumps(payload)
+            stderr = ""
+
+        _Verdict.returncode = returncode
+        monkeypatch.setattr(_mod.subprocess, "run", lambda *a, **k: _Verdict())
+        assert _mod.get_checks(pr_number=42, repo="org/repo") == payload
+
+
+class TestPollUntilTerminal:
+    """GH-808 F2: budget-exhaustion verdicts and the safe default budget."""
+
+    def _no_sleep(self, monkeypatch):
+        monkeypatch.setattr(_impl.time, "sleep", lambda *_a, **_k: None)
+
+    def test_persisting_empty_becomes_infra_unavailable(self, monkeypatch):
+        self._no_sleep(monkeypatch)
+        monkeypatch.setattr(_impl, "get_annotated_checks", lambda **k: _read([]))
+        monkeypatch.setattr(_impl, "fetch_mergeable", lambda **k: "UNKNOWN")
+        result = _impl.poll_until_terminal(
+            pr_number=1, repo="o/r", initial_wait=0, poll_interval=0, max_polls=3
+        )
+        assert result["verdict"] == "infra_unavailable"
+
+    def test_persisting_pending_stays_pending(self, monkeypatch):
+        self._no_sleep(monkeypatch)
+        monkeypatch.setattr(
+            _impl,
+            "get_annotated_checks",
+            lambda **k: _read([{"name": "build", "bucket": "pending"}]),
+        )
+        monkeypatch.setattr(_impl, "fetch_mergeable", lambda **k: "UNKNOWN")
+        result = _impl.poll_until_terminal(
+            pr_number=1, repo="o/r", initial_wait=0, poll_interval=0, max_polls=3
+        )
+        assert result["verdict"] == "pending"
+
+    def test_terminal_green_returns_immediately(self, monkeypatch):
+        self._no_sleep(monkeypatch)
+        monkeypatch.setattr(
+            _impl,
+            "get_annotated_checks",
+            lambda **k: _read([{"name": "build", "bucket": "pass"}]),
+        )
+        monkeypatch.setattr(_impl, "fetch_mergeable", lambda **k: "MERGEABLE")
+        result = _impl.poll_until_terminal(
+            pr_number=1, repo="o/r", initial_wait=0, poll_interval=0, max_polls=3
+        )
+        assert result["verdict"] == "green"
+
+
+class TestTerminalAtCallTimeFastPath:
+    """GH-1088: a call made after CI finished must not pay ``initial_wait``.
+
+    The loop slept ``initial_wait`` unconditionally before its first poll, so a
+    worker that called ``wait=true`` once delivery was done blocked 60s for a
+    verdict GitHub had already decided. That sleep also lengthens the single
+    longest blocking MCP call a subagent makes, which is the suspected trigger
+    for the connection death in GH-1072.
+
+    An unregistered check set summarizes as "empty", which ``is_terminal``
+    rejects — so a genuine post-push call still falls through to the wait.
+    """
+
+    def _record_sleeps(self, monkeypatch):
+        slept: list[float] = []
+        monkeypatch.setattr(_impl.time, "sleep", lambda seconds: slept.append(seconds))
+        return slept
+
+    def _serve(self, monkeypatch, rounds):
+        """Serve one check-list per probe, repeating the last one forever."""
+        calls = {"n": 0}
+
+        def _next(**_kwargs):
+            index = min(calls["n"], len(rounds) - 1)
+            calls["n"] += 1
+            return _read(rounds[index])
+
+        monkeypatch.setattr(_impl, "get_annotated_checks", _next)
+        monkeypatch.setattr(_impl, "fetch_mergeable", lambda **k: "MERGEABLE")
+        return calls
+
+    def test_green_at_call_time_returns_without_sleeping(self, monkeypatch):
+        slept = self._record_sleeps(monkeypatch)
+        calls = self._serve(monkeypatch, [[{"name": "build", "bucket": "pass"}]])
+        result = _impl.poll_until_terminal(
+            pr_number=1, repo="o/r", initial_wait=60, poll_interval=30, max_polls=40
+        )
+        assert result["verdict"] == "green"
+        assert slept == []
+        assert calls["n"] == 1
+
+    def test_required_failure_at_call_time_returns_without_sleeping(self, monkeypatch):
+        slept = self._record_sleeps(monkeypatch)
+        self._serve(
+            monkeypatch,
+            [
+                [
+                    {"name": "test", "bucket": "fail", "required": True},
+                    {"name": "axe", "bucket": "pending", "required": False},
+                ]
+            ],
+        )
+        result = _impl.poll_until_terminal(
+            pr_number=1, repo="o/r", initial_wait=60, poll_interval=30, max_polls=40
+        )
+        assert result["verdict"] == "failing"
+        assert slept == []
+
+    def test_conflicting_at_call_time_returns_without_sleeping(self, monkeypatch):
+        slept = self._record_sleeps(monkeypatch)
+        monkeypatch.setattr(
+            _impl,
+            "get_annotated_checks",
+            lambda **k: _read([{"name": "build", "bucket": "pass"}]),
+        )
+        monkeypatch.setattr(_impl, "fetch_mergeable", lambda **k: "CONFLICTING")
+        result = _impl.poll_until_terminal(
+            pr_number=1, repo="o/r", initial_wait=60, poll_interval=30, max_polls=40
+        )
+        assert result["verdict"] == "conflicting"
+        assert slept == []
+
+    def test_unregistered_checks_still_pay_the_initial_wait(self, monkeypatch):
+        slept = self._record_sleeps(monkeypatch)
+        self._serve(monkeypatch, [[], [{"name": "build", "bucket": "pass"}]])
+        result = _impl.poll_until_terminal(
+            pr_number=1, repo="o/r", initial_wait=60, poll_interval=30, max_polls=40
+        )
+        assert result["verdict"] == "green"
+        assert slept and slept[0] == 60
+
+    def test_pending_at_call_time_still_pays_the_initial_wait(self, monkeypatch):
+        slept = self._record_sleeps(monkeypatch)
+        self._serve(
+            monkeypatch,
+            [
+                [{"name": "build", "bucket": "pending"}],
+                [{"name": "build", "bucket": "pass"}],
+            ],
+        )
+        result = _impl.poll_until_terminal(
+            pr_number=1, repo="o/r", initial_wait=60, poll_interval=30, max_polls=40
+        )
+        assert result["verdict"] == "green"
+        assert slept[0] == 60
+
+    def test_probe_once_composes_checks_and_mergeability(self, monkeypatch):
+        monkeypatch.setattr(
+            _impl,
+            "get_annotated_checks",
+            lambda **k: _read([{"name": "build", "bucket": "pass", "required": True}]),
+        )
+        monkeypatch.setattr(_impl, "fetch_mergeable", lambda **k: "MERGEABLE")
+        result = _impl.probe_once(pr_number=1, repo="o/r")
+        assert result["verdict"] == "green"
+        assert result["mergeable"] == "MERGEABLE"
+        assert result["total"] == 1
+
+
+class TestWaitOutsPendingLegs:
+    """GH-1065: a red ADVISORY check ended the wait while legs were pending.
+
+    The loop returned on the blended ``verdict``, which flips to "failing" the
+    moment any check fails — required or not. With ``claude-review`` red
+    org-wide, every ``wait=true`` call returned immediately while ``test`` /
+    ``axe`` / ``check`` were still pending, forcing manual re-poll rounds
+    exactly where the tool exists to absorb them. Pending is not green, so the
+    caller could not act on the early return; it could only poll again.
+
+    A REQUIRED failure stays terminal on sight — it blocks the merge no matter
+    what the remaining legs do.
+    """
+
+    def _no_sleep(self, monkeypatch):
+        monkeypatch.setattr(_impl.time, "sleep", lambda *_a, **_k: None)
+
+    def _polls(self, monkeypatch, rounds):
+        """Serve one check-list per poll, repeating the last one forever."""
+        calls = {"n": 0}
+
+        def _next(**_kwargs):
+            index = min(calls["n"], len(rounds) - 1)
+            calls["n"] += 1
+            return _read(rounds[index])
+
+        self._no_sleep(monkeypatch)
+        monkeypatch.setattr(_impl, "get_annotated_checks", _next)
+        monkeypatch.setattr(_impl, "fetch_mergeable", lambda **k: "MERGEABLE")
+        return calls
+
+    ADVISORY_RED_OTHERS_PENDING = [
+        {"name": "claude-review", "bucket": "fail", "required": False},
+        {"name": "test", "bucket": "pending", "required": True},
+    ]
+    ADVISORY_RED_OTHERS_DONE = [
+        {"name": "claude-review", "bucket": "fail", "required": False},
+        {"name": "test", "bucket": "pass", "required": True},
+    ]
+
+    def test_keeps_polling_while_a_leg_is_pending(self, monkeypatch):
+        calls = self._polls(
+            monkeypatch,
+            [self.ADVISORY_RED_OTHERS_PENDING, self.ADVISORY_RED_OTHERS_DONE],
+        )
+        result = _impl.poll_until_terminal(
+            pr_number=1, repo="o/r", initial_wait=0, poll_interval=0, max_polls=5
+        )
+        assert calls["n"] == 2
+        assert result["verdict"] == "failing"
+        assert result["pending"] == 0
+
+    def test_names_the_failed_leg_in_the_returned_verdict(self, monkeypatch):
+        self._polls(monkeypatch, [self.ADVISORY_RED_OTHERS_DONE])
+        result = _impl.poll_until_terminal(
+            pr_number=1, repo="o/r", initial_wait=0, poll_interval=0, max_polls=5
+        )
+        failed = [c["name"] for c in result["checks"] if c["bucket"] == "fail"]
+        assert failed == ["claude-review"]
+
+    def test_required_failure_is_still_terminal_on_sight(self, monkeypatch):
+        """The pre-existing early return stays correct for a merge blocker."""
+        calls = self._polls(
+            monkeypatch,
+            [
+                [
+                    {"name": "test", "bucket": "fail", "required": True},
+                    {"name": "axe", "bucket": "pending", "required": False},
+                ]
+            ],
+        )
+        result = _impl.poll_until_terminal(
+            pr_number=1, repo="o/r", initial_wait=0, poll_interval=0, max_polls=5
+        )
+        assert calls["n"] == 1
+        assert result["required_verdict"] == "failing"
+
+    def test_opting_out_restores_the_old_early_return(self, monkeypatch):
+        calls = self._polls(monkeypatch, [self.ADVISORY_RED_OTHERS_PENDING])
+        result = _impl.poll_until_terminal(
+            pr_number=1,
+            repo="o/r",
+            initial_wait=0,
+            poll_interval=0,
+            max_polls=5,
+            wait_out_pending=False,
+        )
+        assert calls["n"] == 1
+        assert result["verdict"] == "failing"
+        assert result["pending"] == 1
+
+    def test_budget_exhaustion_returns_the_advisory_failure(self, monkeypatch):
+        """Waiting out pending must not turn a red advisory into a hang: when
+        the leg never settles, the budget still ends the loop."""
+        calls = self._polls(monkeypatch, [self.ADVISORY_RED_OTHERS_PENDING])
+        result = _impl.poll_until_terminal(
+            pr_number=1, repo="o/r", initial_wait=0, poll_interval=0, max_polls=3
+        )
+        # 1 fast-path probe (GH-1088, non-terminal here) + max_polls loop
+        # iterations. The budget itself is unchanged at 3.
+        assert calls["n"] == 4
+        assert result["verdict"] == "failing"
+
+    def test_conflicting_is_terminal_regardless(self, monkeypatch):
+        self._no_sleep(monkeypatch)
+        monkeypatch.setattr(
+            _impl,
+            "get_annotated_checks",
+            lambda **k: _read([{"name": "test", "bucket": "pending", "required": True}]),
+        )
+        monkeypatch.setattr(_impl, "fetch_mergeable", lambda **k: "CONFLICTING")
+        result = _impl.poll_until_terminal(
+            pr_number=1, repo="o/r", initial_wait=0, poll_interval=0, max_polls=5
+        )
+        assert result["verdict"] == "conflicting"
+
+
+class TestDefaultBudgetUnderIdleTimeout:
+    """GH-808 F2: the default wait budget must return before the ~1800s MCP
+    idle-timeout, so a future default bump that regresses past it fails CI."""
+
+    def test_default_budget_below_idle_timeout(self):
+        import inspect
+
+        params = inspect.signature(_impl.poll_until_terminal).parameters
+        initial_wait = params["initial_wait"].default
+        poll_interval = params["poll_interval"].default
+        max_polls = params["max_polls"].default
+        assert initial_wait + poll_interval * max_polls < 1800
+
+    def test_in_loop_budget_is_1230s_not_the_subprocess_cap(self, monkeypatch):
+        """GH-1104: the poll budget and the subprocess cap are two numbers.
+
+        The loop skips the sleep after its final poll, so the real in-loop
+        maximum is `60 + 30 * 39` = 1230s — NOT the 1320s that
+        `dev10x.monitor` caps the subprocess at. The docstring conflated
+        them, and the wrong figure then propagated into a hang analysis.
+        Observing the actual sleeps pins the figure to behaviour.
+        """
+        slept: list[float] = []
+        monkeypatch.setattr(_impl.time, "sleep", lambda seconds: slept.append(seconds))
+        monkeypatch.setattr(
+            _impl,
+            "get_annotated_checks",
+            lambda **k: _read([{"name": "build", "bucket": "pending"}]),
+        )
+        monkeypatch.setattr(_impl, "fetch_mergeable", lambda **k: "UNKNOWN")
+
+        _impl.poll_until_terminal(pr_number=1, repo="o/r")
+
+        assert sum(slept) == 1230
+        assert len(slept) == 40  # one initial_wait + 39 inter-poll sleeps
+
+
+class _GhStub:
+    """Route a faked `subprocess.run` by which gh command it was handed."""
+
+    def __init__(
+        self,
+        *,
+        checks: tuple[int, str, str],
+        head: tuple[int, str] = (0, '{"headRefName": "feat", "headRefOid": "abc123"}'),
+        runs: tuple[int, str] = (0, '{"workflow_runs": []}'),
+    ):
+        self.checks = checks
+        self.head = head
+        self.runs = runs
+        self.commands: list[list[str]] = []
+
+    def __call__(self, cmd, **_kwargs):
+        self.commands.append(cmd)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            returncode, stdout = self.head
+        elif cmd[:2] == ["gh", "api"]:
+            returncode, stdout = self.runs
+        elif "name,bucket,state" in cmd:
+            returncode, stdout, stderr = self.checks
+            return _Completed(returncode=returncode, stdout=stdout, stderr=stderr)
+        else:  # `gh pr checks --required --json name`, the required-name probe
+            returncode, stdout = 1, ""
+        return _Completed(returncode=returncode, stdout=stdout, stderr="")
+
+
+class _Completed:
+    def __init__(self, *, returncode: int, stdout: str, stderr: str):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+_NO_CHECKS = (1, "", "no checks reported on the 'feat' branch")
+
+_HYGIENE_RUN = {
+    "name": "PR Hygiene Review",
+    "status": "completed",
+    "conclusion": "success",
+    "head_sha": "abc123",
+}
+
+
+class TestCorroboratedZeroChecks:
+    """GH-1376: `gh pr checks` reporting zero is a claim, not a fact.
+
+    PR #1372 had a completed, successful `PR Hygiene Review` run that the
+    runs API listed and `gh pr checks` did not — twice, in two sessions.
+    Since this wrapper is the only sanctioned CI-wait path, an
+    uncorroborated zero is acted on: the agent either merges believing CI
+    cannot run, or waits for what it has been told will never arrive.
+    """
+
+    def _install(self, monkeypatch, stub: _GhStub) -> _GhStub:
+        monkeypatch.setattr(_impl.subprocess, "run", stub)
+        return stub
+
+    def test_confirmed_zero_reports_empty(self, monkeypatch):
+        self._install(monkeypatch, _GhStub(checks=_NO_CHECKS))
+        read = _impl.read_checks(pr_number=1, repo="o/r")
+        assert read.checks == []
+        assert read.source == _impl.SOURCE_CONFIRMED_ZERO
+
+    def test_runs_api_corrects_a_false_no_checks(self, monkeypatch):
+        self._install(
+            monkeypatch,
+            _GhStub(
+                checks=_NO_CHECKS,
+                runs=(0, json.dumps({"workflow_runs": [_HYGIENE_RUN]})),
+            ),
+        )
+        read = _impl.read_checks(pr_number=1, repo="o/r")
+        assert read.source == _impl.SOURCE_RUNS_API
+        assert read.checks == [
+            {"name": "PR Hygiene Review", "bucket": "pass", "state": "completed"}
+        ]
+
+    def test_corrected_read_reaches_the_verdict_as_green(self, monkeypatch):
+        self._install(
+            monkeypatch,
+            _GhStub(
+                checks=_NO_CHECKS,
+                runs=(0, json.dumps({"workflow_runs": [_HYGIENE_RUN]})),
+            ),
+        )
+        monkeypatch.setattr(_impl, "fetch_mergeable", lambda **k: "MERGEABLE")
+        result = _impl.probe_once(pr_number=1, repo="o/r")
+        assert result["verdict"] == "green"
+        assert result["checks_source"] == _impl.SOURCE_RUNS_API
+
+    def test_confirmed_zero_reaches_the_verdict_as_empty(self, monkeypatch):
+        self._install(monkeypatch, _GhStub(checks=_NO_CHECKS))
+        monkeypatch.setattr(_impl, "fetch_mergeable", lambda **k: "MERGEABLE")
+        result = _impl.probe_once(pr_number=1, repo="o/r")
+        assert result["verdict"] == "empty"
+        assert result["checks_source"] == _impl.SOURCE_CONFIRMED_ZERO
+
+    def test_runs_api_failure_is_undetermined_not_zero(self, monkeypatch, capsys):
+        self._install(monkeypatch, _GhStub(checks=_NO_CHECKS, runs=(1, "")))
+        with pytest.raises(SystemExit) as exc:
+            _impl.read_checks(pr_number=1, repo="o/r")
+        assert exc.value.code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["undetermined"] is True
+        assert "undetermined" in payload["error"]
+
+    def test_head_ref_unreadable_is_undetermined(self, monkeypatch, capsys):
+        self._install(monkeypatch, _GhStub(checks=_NO_CHECKS, head=(1, "")))
+        with pytest.raises(SystemExit):
+            _impl.read_checks(pr_number=1, repo="o/r")
+        assert json.loads(capsys.readouterr().out)["undetermined"] is True
+
+    def test_runs_at_another_sha_do_not_count(self, monkeypatch):
+        stale = dict(_HYGIENE_RUN, head_sha="deadbee")
+        self._install(
+            monkeypatch,
+            _GhStub(checks=_NO_CHECKS, runs=(0, json.dumps({"workflow_runs": [stale]}))),
+        )
+        read = _impl.read_checks(pr_number=1, repo="o/r")
+        assert read.source == _impl.SOURCE_CONFIRMED_ZERO
+
+    def test_an_empty_json_list_is_corroborated_too(self, monkeypatch):
+        stub = self._install(
+            monkeypatch,
+            _GhStub(
+                checks=(0, "[]", ""),
+                runs=(0, json.dumps({"workflow_runs": [_HYGIENE_RUN]})),
+            ),
+        )
+        read = _impl.read_checks(pr_number=1, repo="o/r")
+        assert read.source == _impl.SOURCE_RUNS_API
+        assert any(cmd[:2] == ["gh", "api"] for cmd in stub.commands)
+
+    def test_a_non_empty_read_pays_nothing_extra(self, monkeypatch):
+        """The added cost is paid on the zero path only."""
+        stub = self._install(
+            monkeypatch,
+            _GhStub(checks=(0, json.dumps([{"name": "build", "bucket": "pass"}]), "")),
+        )
+        read = _impl.read_checks(pr_number=1, repo="o/r")
+        assert read.source == _impl.SOURCE_GH_CLI
+        assert len(stub.commands) == 1
+
+    def test_required_only_zero_is_left_alone(self, monkeypatch):
+        """An empty REQUIRED set is normal on an unprotected base (ADR-0024),
+        and the runs API cannot say which runs the host marks required."""
+        stub = self._install(monkeypatch, _GhStub(checks=_NO_CHECKS))
+        read = _impl.read_checks(pr_number=1, repo="o/r", required_only=True)
+        assert read == _impl.ChecksRead(checks=[], source=_impl.SOURCE_GH_CLI)
+        assert len(stub.commands) == 1
+
+    def test_an_unrelated_failure_still_aborts_with_its_cause(self, monkeypatch, capsys):
+        self._install(monkeypatch, _GhStub(checks=(1, "", "rate limited")))
+        with pytest.raises(SystemExit):
+            _impl.read_checks(pr_number=1, repo="o/r")
+        payload = json.loads(capsys.readouterr().out)
+        assert "rate limited" in payload["error"]
+        assert "undetermined" not in payload
+
+
+class TestRunsToChecks:
+    @pytest.mark.parametrize(
+        ("run", "bucket"),
+        [
+            ({"status": "in_progress"}, "pending"),
+            ({"status": "completed", "conclusion": "success"}, "pass"),
+            ({"status": "completed", "conclusion": "neutral"}, "pass"),
+            ({"status": "completed", "conclusion": "skipped"}, "skipping"),
+            ({"status": "completed", "conclusion": "cancelled"}, "cancel"),
+            ({"status": "completed", "conclusion": "stale"}, "cancel"),
+            ({"status": "completed", "conclusion": "failure"}, "fail"),
+            ({"status": "completed", "conclusion": "timed_out"}, "fail"),
+            ({"status": "completed", "conclusion": None}, "fail"),
+            ({"status": "completed", "conclusion": "a_new_word"}, "fail"),
+        ],
+    )
+    def test_bucket_mapping_never_invents_a_pass(self, run: dict, bucket: str):
+        assert _impl.checks_from_runs([run])[0]["bucket"] == bucket
+
+    def test_unnamed_run_is_still_a_check(self):
+        assert _impl.checks_from_runs([{"status": "queued"}])[0]["name"] == "unknown"
+
+    def test_a_rerun_does_not_double_count_its_workflow(self):
+        newest = dict(_HYGIENE_RUN)
+        older = dict(_HYGIENE_RUN, conclusion="failure")
+        checks = _impl.checks_from_runs([newest, older])
+        assert [c["bucket"] for c in checks] == ["pass"]
+
+
+class TestRunsApiReaders:
+    """An API that did not answer must not read as an API that saw nothing."""
+
+    def _stub(self, monkeypatch, *, returncode: int, stdout: str):
+        monkeypatch.setattr(
+            _impl.subprocess,
+            "run",
+            lambda *a, **k: _Completed(returncode=returncode, stdout=stdout, stderr=""),
+        )
+
+    def test_runs_unparseable_is_none(self, monkeypatch):
+        self._stub(monkeypatch, returncode=0, stdout="not json")
+        assert _impl.fetch_branch_runs(repo="o/r", branch="feat") is None
+
+    def test_runs_without_the_key_is_none(self, monkeypatch):
+        self._stub(monkeypatch, returncode=0, stdout='{"total_count": 0}')
+        assert _impl.fetch_branch_runs(repo="o/r", branch="feat") is None
+
+    def test_runs_answering_nothing_is_an_empty_list(self, monkeypatch):
+        self._stub(monkeypatch, returncode=0, stdout='{"workflow_runs": []}')
+        assert _impl.fetch_branch_runs(repo="o/r", branch="feat") == []
+
+    def test_head_unparseable_is_none(self, monkeypatch):
+        self._stub(monkeypatch, returncode=0, stdout="not json")
+        assert _impl.fetch_head_ref(pr_number=1, repo="o/r") is None
+
+    def test_head_missing_a_field_is_none(self, monkeypatch):
+        self._stub(monkeypatch, returncode=0, stdout='{"headRefName": "feat"}')
+        assert _impl.fetch_head_ref(pr_number=1, repo="o/r") is None
+
+    def test_head_is_parsed(self, monkeypatch):
+        self._stub(
+            monkeypatch,
+            returncode=0,
+            stdout='{"headRefName": "feat", "headRefOid": "abc123"}',
+        )
+        assert _impl.fetch_head_ref(pr_number=1, repo="o/r") == ("feat", "abc123")

@@ -25,7 +25,7 @@ class TestSkillTmpdir:
         )
 
         assert result.exit_code == 0
-        assert Path("/tmp/claude/Dev10x-git-commit").exists()
+        assert Path("/tmp/Dev10x/Dev10x-git-commit").exists()
 
     def test_sanitizes_colon_to_dash(self, runner: CliRunner) -> None:
         result = runner.invoke(
@@ -35,7 +35,7 @@ class TestSkillTmpdir:
         )
 
         assert result.exit_code == 0
-        assert Path("/tmp/claude/test-skill-name").exists()
+        assert Path("/tmp/Dev10x/test-skill-name").exists()
 
     def test_exits_silently_without_skill(self, runner: CliRunner) -> None:
         result = runner.invoke(
@@ -82,7 +82,7 @@ class TestSkillMetrics:
         )
 
         assert result.exit_code == 0
-        metrics_files = list((tmp_path / ".codex" / "projects" / "_metrics").glob("*.jsonl"))
+        metrics_files = list((tmp_path / ".claude" / "projects" / "_metrics").glob("*.jsonl"))
         assert len(metrics_files) == 1
 
     def test_metrics_entry_schema(
@@ -107,13 +107,37 @@ class TestSkillMetrics:
             ),
         )
 
-        metrics_files = list((tmp_path / ".codex" / "projects" / "_metrics").glob("*.jsonl"))
+        metrics_files = list((tmp_path / ".claude" / "projects" / "_metrics").glob("*.jsonl"))
         lines = metrics_files[0].read_text().strip().splitlines()
         assert len(lines) == 1
         entry = json.loads(lines[0])
         assert entry["skill"] == "Dev10x:review"
         assert entry["session"] == "sess-xyz"
         assert "timestamp" in entry
+
+    def test_appends_without_truncating_prior_entries(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # GH-548: the O_APPEND write must add to the file, never truncate
+        # a prior concurrent writer's line.
+        import dev10x.hooks.skill as mod
+
+        monkeypatch.setattr(mod, "_get_toplevel", lambda: str(tmp_path))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        payload = json.dumps(
+            {"tool_input": {"skill": "Dev10x:git-commit"}, "session_id": "sess-1"}
+        )
+        runner.invoke(cli, ["hook", "skill", "metrics"], input=payload)
+        runner.invoke(cli, ["hook", "skill", "metrics"], input=payload)
+
+        metrics_files = list((tmp_path / ".claude" / "projects" / "_metrics").glob("*.jsonl"))
+        lines = metrics_files[0].read_text().splitlines()
+        assert len(lines) == 2
+        assert all(json.loads(line)["skill"] == "Dev10x:git-commit" for line in lines)
 
     def test_exits_silently_without_skill(
         self,
@@ -152,7 +176,7 @@ class TestSkillMetrics:
         monkeypatch.setattr(mod, "_get_toplevel", lambda: str(tmp_path))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        metrics_dir = tmp_path / ".codex" / "projects" / "_metrics"
+        metrics_dir = tmp_path / ".claude" / "projects" / "_metrics"
         metrics_dir.mkdir(parents=True)
 
         old_file = metrics_dir / "old_2020-01-01.jsonl"

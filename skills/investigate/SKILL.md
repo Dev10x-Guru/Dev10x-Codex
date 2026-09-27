@@ -15,7 +15,7 @@ allowed-tools:
   - Bash(${CLAUDE_PLUGIN_ROOT}/skills/investigate/scripts/parse-slack-url.sh:*)
   - Bash(${CLAUDE_PLUGIN_ROOT}/skills/investigate/scripts/reply.sh:*)
   - Skill(skill="Dev10x:ticket-create")
-  - Skill(skill="pr:review")
+  - Skill(skill="Dev10x:gh-pr-review")
 ---
 
 # Dev10x:investigate
@@ -26,7 +26,7 @@ allowed-tools:
 
 This skill follows `references/task-orchestration.md` patterns.
 
-**Auto-advance:** Complete each step, immediately start the next.
+**Auto-advance:** Complete each step, immediately start the next — no checkpoints the resolver did not ask for.
 Never pause to ask "should I continue?" between steps.
 
 **Playbook-driven modes:**
@@ -66,13 +66,9 @@ Given a Slack thread URL, read the report, root-cause it in the codebase,
 post a technical reply with GitHub links, and optionally create a Linear ticket.
 
 **PR review requests:** When the Slack thread contains a GitHub PR link and the
-request is to review it or check its status, invoke the `pr:review` skill with
+request is to review it or check its status, invoke `Dev10x:gh-pr-review` with
 the PR URL instead of following Steps 3–6. Steps 1–2 (parse URL, read thread)
 still apply to get context before delegating.
-
-**External dependency:** `pr:review` is a user-level skill (installed at
-`~/.claude/skills/pr-review/`). If unavailable, fall back to
-`Dev10x:gh-pr-review` for PR review functionality.
 
 ## Workflow
 
@@ -173,4 +169,4 @@ ${CLAUDE_PLUGIN_ROOT}/skills/investigate/scripts/reply.sh "$channel_id" "$thread
 | Skipping user approval before posting | Message goes out with errors you can't take back |
 | Creating a ticket for a one-liner fix | Ticket noise, distracts the team |
 | Not reading thread replies | Duplicating investigation someone already did |
-| Using this skill for a Sentry URL with a domain-specific error | This skill is for Slack threads. If the Sentry error is about Square Terminal or payments, use `app-debug-payments` or `app-debug-payments` instead — they have pre-built SQL, decision trees, and scripts for those errors |
+| Using this skill for a Sentry URL with a domain-specific error | This skill is for Slack threads. If the Sentry error is about Square Terminal or payments, use `app-debug-terminal` or `app-debug-payments` instead — they have pre-built SQL, decision trees, and scripts for those errors |

@@ -9,7 +9,13 @@ import msgpack
 import yaml
 
 from dev10x.domain.config_loader import ConfigLoader
-from dev10x.domain.validation_rule import Compensation, Config, Rule
+from dev10x.domain.documents.config_document import Config
+from dev10x.domain.file_locks import atomic_write_bytes
+from dev10x.domain.rules.validation_rule import (
+    Compensation,
+    MatchingRule,
+    MatchPosition,
+)
 
 DEFAULT_TTL_SECONDS = 1800
 
@@ -66,7 +72,7 @@ def _read_cache(
 def _write_cache(*, cache_path: Path, config: Config) -> None:
     try:
         data = asdict(config)
-        cache_path.write_bytes(msgpack.packb(data, use_bin_type=True))
+        atomic_write_bytes(cache_path, msgpack.packb(data, use_bin_type=True))
     except (msgpack.PackException, OSError):
         pass
 
@@ -75,41 +81,9 @@ def _parse_yaml(*, yaml_path: Path) -> Config:
     data: dict[str, Any] = yaml.safe_load(yaml_path.read_text()) or {}
     cfg_data = data.get("config", {})
 
-    rules: list[Rule] = []
-    for entry in data.get("rules", []):
-        compensations = [
-            Compensation(
-                type=c.get("type", ""),
-                skill=c.get("skill", ""),
-                tool=c.get("tool", ""),
-                alias=c.get("alias", ""),
-                guardrails=c.get("guardrails", ""),
-                fallback=c.get("fallback", ""),
-                description=c.get("description", ""),
-            )
-            for c in entry.get("compensations", [])
-        ]
-        rules.append(
-            Rule(
-                name=entry.get("name", ""),
-                patterns=entry.get("patterns", []),
-                matcher=entry.get("matcher", "Bash"),
-                except_=entry.get("except", []),
-                compensations=compensations,
-                hook_block=entry.get("hook_block", True),
-                reason=entry.get("reason", ""),
-                message=entry.get("message", ""),
-                related=entry.get("related", []),
-                file_pattern=entry.get("file_pattern", ""),
-                file_names=entry.get("file_names", []),
-                file_prefixes=entry.get("file_prefixes", []),
-                file_substrings=entry.get("file_substrings", []),
-                content_pattern=entry.get("content_pattern", ""),
-            )
-        )
+    rules = [MatchingRule.from_yaml_entry(entry=entry) for entry in data.get("rules", [])]
 
     return Config(
-        friction_level=cfg_data.get("friction_level", "strict"),
         plugin_repo=cfg_data.get("plugin_repo", ""),
         rules=rules,
     )
@@ -117,7 +91,7 @@ def _parse_yaml(*, yaml_path: Path) -> Config:
 
 def _dict_to_config(*, raw: dict[str, Any]) -> Config:
     rules = [
-        Rule(
+        MatchingRule(
             name=r["name"],
             patterns=r["patterns"],
             matcher=r.get("matcher", "Bash"),
@@ -132,11 +106,14 @@ def _dict_to_config(*, raw: dict[str, Any]) -> Config:
             file_prefixes=r.get("file_prefixes", []),
             file_substrings=r.get("file_substrings", []),
             content_pattern=r.get("content_pattern", ""),
+            match_position=r.get("match_position", MatchPosition.ANYWHERE),
         )
         for r in raw.get("rules", [])
     ]
+    # GH-1194: a msgpack cache written before the collapse still carries a
+    # `friction_level` key. Ignoring an unknown key is the whole migration —
+    # the cache self-heals on the next YAML change or TTL expiry.
     return Config(
-        friction_level=raw.get("friction_level", "strict"),
         plugin_repo=raw.get("plugin_repo", ""),
         rules=rules,
     )

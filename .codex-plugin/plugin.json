@@ -1,0 +1,42 @@
+{
+  "name": "Dev10x",
+  "version": "0.105.0",
+  "description": "Dev10x for Codex — MCP tools and command-safety hooks for structured commits, PR lifecycle, branch hygiene, and ticket management.",
+  "author": {
+    "name": "Janusz Skonieczny",
+    "email": "Dev10xAI@WooYek.com"
+  },
+  "homepage": "https://www.skool.com/Dev10x-1892",
+  "repository": "https://github.com/Dev10x-Guru/Dev10x-Codex",
+  "license": "MIT",
+  "keywords": ["git", "commits", "pull-requests", "code-review", "workflow"],
+  "mcpServers": {
+    "cli": {
+      "command": "uv",
+      "args": ["run", "--script", "servers/cli_server.py"],
+      "cwd": ".",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "DEV10X_HARNESS": "codex"
+      }
+    },
+    "db": {
+      "command": "uv",
+      "args": ["run", "--script", "servers/db_server.py"],
+      "cwd": ".",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "DEV10X_HARNESS": "codex"
+      }
+    }
+  },
+  "hooks": "./hooks/codex-hooks.json",
+  "interface": {
+    "displayName": "Dev10x",
+    "shortDescription": "Structured git and PR workflow with safety guardrails",
+    "longDescription": "Dev10x MCP tools (safe push, PR create/monitor/merge, issue and milestone management, CI status) plus PreToolUse validators that block dangerous shell patterns before they run.",
+    "developerName": "Dev10x",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"]
+  }
+}

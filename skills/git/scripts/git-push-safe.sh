@@ -36,31 +36,259 @@ fi
 # shellcheck source=protected-branches.sh
 source "$SCRIPT_DIR/protected-branches.sh"
 
-# Detect force-push flags (--force-with-lease is intentionally allowed)
+# Resolve force-ness, the remote, and every target branch in ONE pass over
+# PUSH_ARGS, so flags and positionals are classified against the same view
+# of the argument list (GH-1049).
+#
+# Force spellings recognised:
+#   --force / -f            long options match exactly, so the deliberately
+#                           allowed --force-with-lease never matches on a
+#                           substring
+#   -uf / -fu / -vuf        single-dash tokens are decomposed letter-by-letter
+#                           because POSIX bundling spells a force push without
+#                           a lone -f (GH-1047)
+#   origin +evil:main       a leading + on a refspec IS the force marker, and
+#                           carries no force flag at all (GH-1049 gap 3)
+#
+# Positionals are counted rather than inferred from `remote`'s value: the old
+# loop treated the second positional as the refspec only while `remote` still
+# held its initial "origin", so pushing to a remote actually NAMED origin
+# re-entered the first branch and overwrote `remote` with the branch. The
+# target then fell back to HEAD, and a force push to `main` was never seen as
+# targeting main at all (GH-1049 gap 1).
+#
+# A value-taking flag's value is skipped, otherwise it lands in the positional
+# stream and shifts every index after it (GH-1049 gap 2). Optional-value flags
+# (--force-with-lease) are absent by design — they are commonly spelled bare
+# and consuming the next token would swallow the remote.
+#
+# `--force-with-lease` is tracked separately as `lease`, not folded into
+# `force`: it stays ALLOWED on every branch, and only feeds the
+# base-ancestry gate below (GH-1270).
 force=0
+lease=0
+remote="origin"
+target_branches=()
+source_refs=()
+positional_index=0
+skip_value=0
 for arg in "${PUSH_ARGS[@]}"; do
-    if [[ "$arg" == "--force" || "$arg" == "-f" ]]; then
-        force=1
+    if [[ $skip_value -eq 1 ]]; then
+        skip_value=0
+        continue
     fi
+    if [[ "$arg" == -* ]]; then
+        case "$arg" in
+            --force|-f)
+                force=1
+                ;;
+            --force-with-lease|--force-with-lease=*|--force-if-includes)
+                lease=1
+                ;;
+            -o|--push-option|--receive-pack|--exec|--repo)
+                skip_value=1
+                ;;
+            *)
+                if [[ "$arg" =~ ^-[A-Za-z]+$ && "$arg" == *f* ]]; then
+                    force=1
+                fi
+                ;;
+        esac
+        continue
+    fi
+    positional_index=$((positional_index + 1))
+    if [[ $positional_index -eq 1 ]]; then
+        remote="$arg"
+        continue
+    fi
+    [[ "$arg" == +* ]] && force=1
+    # Destination half of src:dst, minus the + force marker and minus a
+    # refs/heads/ qualification — PROTECTED_BRANCHES holds short names, so a
+    # fully-qualified ref compared as unprotected (GH-1049 gap 4).
+    ref="${arg##*:}"
+    ref="${ref#+}"
+    ref="${ref#refs/heads/}"
+    target_branches+=("$ref")
+    # Source half of src:dst — what was actually pushed, and therefore
+    # what the reported sha must describe. Bare `branch` is its own
+    # source; a delete refspec (`:dst`) has none (GH-1220).
+    src="${arg%%:*}"
+    src="${src#+}"
+    src="${src#refs/heads/}"
+    source_refs+=("$src")
 done
 
+if [[ ${#target_branches[@]} -eq 0 ]]; then
+    # GH-1285: `--abbrev-ref` answers "HEAD" on a detached HEAD and the
+    # fallback answered "" when it failed outright, so every payload could
+    # carry a `ref` that names nothing.
+    head_ref=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    if [[ -z "$head_ref" || "$head_ref" == "HEAD" ]]; then
+        detached_sha=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+        if [[ -z "$detached_sha" ]]; then
+            echo "BLOCKED: cannot resolve HEAD — no branch and no commit." >&2
+            echo "Name the refspec explicitly, e.g. push_safe(args=[\"-u\",\"origin\",\"<branch>\"])." >&2
+            printf '{"pushed":false,"ref":"","remote":"%s","blocked_reason":"unresolvable_head"}\n' \
+                "$remote"
+            exit 2
+        fi
+        echo "BLOCKED: HEAD is detached at $detached_sha — refusing to guess a target branch." >&2
+        echo "Check out a branch, or name the refspec explicitly." >&2
+        printf '{"pushed":false,"ref":"%s","remote":"%s","blocked_reason":"detached_head"}\n' \
+            "$detached_sha" "$remote"
+        exit 2
+    fi
+    target_branches=("$head_ref")
+    source_refs=("HEAD")
+fi
+
+# The ref reported in every JSON payload: the first target, matching the
+# single-refspec shape callers already parse.
+target_branch="${target_branches[0]}"
+
+# EVERY target is checked, not just the first — a push may carry several
+# refspecs, and inspecting one let `origin feature +evil:develop` through.
 if [[ $force -eq 1 ]]; then
-    target_branch=""
-    for arg in "${PUSH_ARGS[@]}"; do
-        if [[ "$arg" != -* ]]; then
-            target_branch="${arg##*:}"
+    for branch in "${target_branches[@]}"; do
+        if is_protected_branch "$branch"; then
+            # JSON blocked result on stdout (success exit code so callers can
+            # parse the structured payload), plus a human-readable warning on
+            # stderr.
+            echo "BLOCKED: --force push to protected branch '$branch' is not allowed." >&2
+            echo "Use --force-with-lease on a feature branch instead." >&2
+            printf '{"pushed":false,"ref":"%s","remote":"%s","blocked_reason":"protected_branch_force_push"}\n' \
+                "$branch" "$remote"
+            exit 2
         fi
     done
+fi
 
-    if [[ -z "$target_branch" ]]; then
-        target_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-    fi
+# Base-ancestry gate for a leased force-push to a protected branch (GH-1270).
+#
+# A lease only compares the remote against the LOCAL remote-tracking ref,
+# so a stale one leases against its own copy and drops every merge landed
+# since. Bare `--force` never reaches here — the block above refused it —
+# so this gate covers the spelling allowed everywhere else.
+if [[ $lease -eq 1 ]]; then
+    for index in "${!target_branches[@]}"; do
+        branch="${target_branches[$index]}"
+        is_protected_branch "$branch" || continue
+        # A delete refspec (`:dst`) pushes no commit, so there is no
+        # source ref to compare the remote tip against.
+        src="${source_refs[$index]}"
+        [[ -n "$src" ]] || continue
 
-    if is_protected_branch "$target_branch"; then
-        echo "BLOCKED: --force push to protected branch '$target_branch' is not allowed." >&2
-        echo "Use --force-with-lease on a feature branch instead." >&2
-        exit 2
+        if ! git fetch --quiet "$remote" "$branch" 2>/dev/null; then
+            # A branch absent from the remote has nothing to lose;
+            # anything else means the check could not run, and an
+            # unverifiable force-push is what this gate exists to stop.
+            # --exit-code separates the two (2 = no matching refs, 128 =
+            # unreachable); empty stdout does not.
+            ls_remote_rc=0
+            git ls-remote --exit-code --heads "$remote" "$branch" >/dev/null 2>&1 ||
+                ls_remote_rc=$?
+            if [[ $ls_remote_rc -eq 2 ]]; then
+                continue
+            fi
+            echo "BLOCKED: cannot verify '$remote/$branch' before a forced push." >&2
+            echo "Fetch failed, so the commits this push would drop are unknown." >&2
+            printf '{"pushed":false,"ref":"%s","remote":"%s","blocked_reason":"base_fetch_failed"}\n' \
+                "$branch" "$remote"
+            exit 2
+        fi
+
+        remote_tip=$(git rev-parse --quiet --verify FETCH_HEAD) || continue
+        if ! git merge-base --is-ancestor "$remote_tip" "$src"; then
+            echo "BLOCKED: '$src' does not contain the current tip of '$remote/$branch'." >&2
+            echo "Forcing this push would drop these commits:" >&2
+            git log --oneline "$src..$remote_tip" >&2
+            echo "" >&2
+            echo "Rebase onto '$remote/$branch' first, then push again." >&2
+            printf '{"pushed":false,"ref":"%s","remote":"%s","blocked_reason":"base_behind_remote"}\n' \
+                "$branch" "$remote"
+            exit 2
+        fi
+    done
+fi
+
+# Run the push, capturing BOTH streams so this script's stdout carries
+# nothing but the JSON payload (GH-1099).
+#
+# `git push -u` announces "branch '…' set up to track '…'" on **stdout**.
+# The wrapper parses this script's whole stdout with `json.loads` and
+# falls back to `{}` when that fails, so one line of git chatter ahead of
+# the payload silently replaced the entire result — every `-u` push
+# reported `{}` while a plain push reported the full payload. That is why
+# "push_safe returning {} means success" was passed around as folklore:
+# it was never a design, it was this. A caller asking "did the write
+# land?" was answered by a parser failing open.
+#
+# `.claude/rules/script-domain-boundaries.md` already states the rule a
+# stdout-parsed script must keep: one channel, payload only. Git's own
+# chatter is diagnostics, so it joins stderr.
+push_stdout=$(mktemp)
+push_stderr=$(mktemp)
+trap 'rm -f "$push_stdout" "$push_stderr"' EXIT
+if ! git push "${PUSH_ARGS[@]}" >"$push_stdout" 2>"$push_stderr"; then
+    rc=$?
+    cat "$push_stdout" "$push_stderr" >&2
+    printf '{"pushed":false,"ref":"%s","remote":"%s","blocked_reason":"push_failed"}\n' \
+        "$target_branch" "$remote"
+    exit "$rc"
+fi
+cat "$push_stdout" "$push_stderr" >&2
+
+# Report the ref that was PUSHED, not whatever HEAD happens to be here
+# (GH-1220). Sibling worktrees share one object store and one set of
+# refs, so `git push origin <branch>` succeeds from any of them — while
+# `rev-parse HEAD` answers for the checkout the process happens to be
+# standing in. After an EnterWorktree the MCP daemon's inherited CWD is
+# a DIFFERENT worktree, so the push landed correctly and the payload
+# described another branch's commit. Resolving the source refspec makes
+# the answer independent of where the script ran.
+source_ref="${source_refs[0]}"
+if [[ -n "$source_ref" ]]; then
+    sha=$(git rev-parse --short "$source_ref" 2>/dev/null || echo "")
+    upstream_ref="${source_ref}@{u}"
+    [[ "$source_ref" == "HEAD" ]] && upstream_ref="@{u}"
+    tracking=$(git rev-parse --abbrev-ref --symbolic-full-name "$upstream_ref" 2>/dev/null || echo "")
+else
+    # A delete refspec (`git push origin :old-branch`) pushes no commit.
+    sha=""
+    tracking=""
+fi
+
+# Confirm the remote actually carries what we just pushed (GH-1099).
+#
+# `git push` exiting 0 is the local process's account of a network
+# exchange, and a write wrapper's job is to report the state that
+# resulted, not the call that was made. The worked case is a crew worker
+# whose `update_pr` was silently lost mid-transport: the payload said
+# nothing, and only the worker's own re-read caught it.
+#
+# Be precise about what this does and does not catch. It confirms the
+# remote ref matches the ref that was pushed. It cannot notice that the
+# LOCAL ref moved somewhere the caller did not intend before the push —
+# a truthful report of pushing the wrong commit still reads as success.
+# A caller that needs a specific commit on the remote must compare
+# against the sha it meant, not merely trust `pushed`.
+#
+# A delete refspec pushes no commit, so there is nothing to confirm.
+remote_verified="null"
+remote_sha=""
+if [[ -n "$source_ref" && -n "$target_branch" ]]; then
+    remote_sha=$(git ls-remote --heads "$remote" "$target_branch" 2>/dev/null | cut -f1)
+    pushed_full=$(git rev-parse "$source_ref" 2>/dev/null || echo "")
+    if [[ -z "$remote_sha" || -z "$pushed_full" ]]; then
+        # An unreadable remote is not evidence of a bad push — say
+        # "unknown" rather than manufacturing either verdict.
+        remote_verified="null"
+    elif [[ "$remote_sha" == "$pushed_full" ]]; then
+        remote_verified="true"
+    else
+        remote_verified="false"
     fi
 fi
 
-exec git push "${PUSH_ARGS[@]}"
+printf '{"pushed":true,"ref":"%s","remote":"%s","sha":"%s","tracking":"%s","remote_sha":"%s","remote_verified":%s,"ci_run_url":null}\n' \
+    "$target_branch" "$remote" "$sha" "$tracking" "$remote_sha" "$remote_verified"

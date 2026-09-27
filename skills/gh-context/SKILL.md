@@ -12,7 +12,10 @@ user-invocable: false
 allowed-tools:
   - mcp__plugin_Dev10x_cli__*
   - Bash(${CLAUDE_PLUGIN_ROOT}/skills/gh-context/scripts/:*)
-  - Bash(/tmp/claude/bin/mktmp.sh:*)
+  - Bash(/tmp/Dev10x/bin/mktmp.sh:*)
+  - Bash(gh pr view:*)
+  - Bash(gh repo view:*)
+  - Bash(gh api:*)
 ---
 
 # Dev10x:gh-context — GitHub CLI helpers
@@ -131,7 +134,7 @@ When a single Bash call needs the variables (e.g., chaining with
 another command), use the temp-file pattern:
 
 ```bash
-ENVFILE=$(/tmp/claude/bin/mktmp.sh git pr-detect .env)
+ENVFILE=$(/tmp/Dev10x/bin/mktmp.sh git pr-detect .env)
 ${CLAUDE_PLUGIN_ROOT}/skills/gh-context/scripts/gh-pr-detect.sh "$ARG" > "$ENVFILE"
 source "$ENVFILE"
 echo "PR #$PR_NUMBER"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dev10x.domain import HookInput, HookResult
+from dev10x.domain import HookAllow, HookAsk, HookInput, HookResult
 
 
 class TestHookInputFromDict:
@@ -40,26 +40,34 @@ class TestHookInputFromEmptyDict:
 
 
 class TestHookResult:
-    def test_emit_exits_with_code_2(self) -> None:
-        result = HookResult(message="blocked")
-        with pytest.raises(SystemExit) as exc_info:
-            result.emit()
-        assert exc_info.value.code == 2
+    def test_to_dict_decision_deny(self) -> None:
+        assert HookResult(message="blocked").to_dict()["decision"] == "deny"
+
+    def test_to_dict_message(self) -> None:
+        assert HookResult(message="blocked").to_dict()["message"] == "blocked"
 
 
 class TestHookAllow:
-    def test_emit_exits_with_code_0(self) -> None:
-        from dev10x.domain import HookAllow
+    def test_to_dict_decision_allow(self) -> None:
+        assert HookAllow().to_dict()["decision"] == "allow"
 
-        allow = HookAllow()
-        with pytest.raises(SystemExit) as exc_info:
-            allow.emit()
-        assert exc_info.value.code == 0
+    def test_to_dict_message_defaults_empty(self) -> None:
+        assert HookAllow().to_dict()["message"] == ""
 
-    def test_emit_with_message_exits_0(self) -> None:
-        from dev10x.domain import HookAllow
+    def test_to_dict_message_preserved(self) -> None:
+        assert HookAllow(message="auto-approved").to_dict()["message"] == "auto-approved"
 
-        allow = HookAllow(message="auto-approved")
-        with pytest.raises(SystemExit) as exc_info:
-            allow.emit()
-        assert exc_info.value.code == 0
+
+class TestHookAsk:
+    def test_to_dict_decision_ask(self) -> None:
+        assert HookAsk().to_dict()["decision"] == "ask"
+
+    def test_to_dict_message_and_reason_default_empty(self) -> None:
+        result = HookAsk().to_dict()
+        assert result["message"] == ""
+        assert result["reason"] == ""
+
+    def test_to_dict_preserves_message_and_reason(self) -> None:
+        result = HookAsk(message="sensitive", reason="DX014 INFRA target").to_dict()
+        assert result["message"] == "sensitive"
+        assert result["reason"] == "DX014 INFRA target"

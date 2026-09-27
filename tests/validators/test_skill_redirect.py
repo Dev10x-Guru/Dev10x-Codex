@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 import textwrap
+import warnings
 from pathlib import Path
 
 import pytest
 import yaml
 
+from dev10x.config.loader import load_config
+from dev10x.domain.rules.validation_rule import Compensation, MatchingRule
 from dev10x.validators.skill_redirect import (
+    _REGEX_METACHARS_RE,
     _YAML_PATH,
     SkillRedirectValidator,
+    _format_alternatives_msg,
     _load_config,
+    format_unreachable_report,
+    names_quick_token,
+    unreachable_patterns,
 )
 from tests.fakers import BashHookInputFaker
+from tests.validators.loop_shapes import BARE_POLL_LOOP, UNTIL_POLL_LOOP
 
 
 def _make_input(*, command: str) -> BashHookInputFaker:
@@ -59,6 +68,48 @@ class TestShouldRun:
         assert validator.should_run(inp=inp) is False
 
 
+class TestPsqlWriteRedirect:
+    """GH-1034: destructive psql must reach evaluate_command() and block."""
+
+    @pytest.mark.parametrize(
+        "verb",
+        ["DROP", "DELETE", "UPDATE", "INSERT", "TRUNCATE", "ALTER", "GRANT", "REVOKE"],
+    )
+    def test_should_run_for_psql_write(self, validator: SkillRedirectValidator, verb: str) -> None:
+        """Without a quick token for the client, should_run() short-circuits
+        before the rule is ever evaluated."""
+        inp = _make_input(command=f"docker exec c psql -d db -c '{verb} FROM users'")
+        assert validator.should_run(inp=inp) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "docker exec tt-pos-postgis psql -U u -d postgres -c 'DROP DATABASE IF EXISTS t'",
+            "psql -d postgres -c 'TRUNCATE users'",
+            "psql -d mydb -f /tmp/teardown.sql",
+            "psql -d postgres -tAc 'DROP TABLE users'",
+            "psql -d mydb -tAf /tmp/teardown.sql",
+        ],
+    )
+    def test_blocks_psql_write(self, validator: SkillRedirectValidator, command: str) -> None:
+        inp = _make_input(command=command)
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "Dev10x:db-psql" in result.message
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "docker exec c psql -d db -c 'SELECT count(*) FROM users'",
+            "psql -d mydb -c 'SELECT 1'",
+        ],
+    )
+    def test_reads_stay_advisory(self, validator: SkillRedirectValidator, command: str) -> None:
+        """The generic psql rule is hook_block: false — reads must not hard-block."""
+        inp = _make_input(command=command)
+        assert validator.validate(inp=inp) is None
+
+
 class TestGitCommitRedirect:
     def test_blocks_git_commit_with_m_flag(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command='git commit -m "Enable feature X"')
@@ -75,21 +126,21 @@ class TestGitCommitRedirect:
         assert "Dev10x:git-commit" in result.message
 
     def test_allows_git_commit_f_with_skill_temp(self, validator: SkillRedirectValidator) -> None:
-        inp = _make_input(command="git commit -F /tmp/claude/git/commit-msg.W9DryMXsQ5Aw.txt")
+        inp = _make_input(command="git commit -F /tmp/Dev10x/git/commit-msg.W9DryMXsQ5Aw.txt")
         result = validator.validate(inp=inp)
         assert result is None
 
     def test_allows_git_commit_f_with_alternate_prefix(
         self, validator: SkillRedirectValidator
     ) -> None:
-        inp = _make_input(command="git commit -F /tmp/claude/git/msg.RnUr0daBNpSj.txt")
+        inp = _make_input(command="git commit -F /tmp/Dev10x/git/msg.RnUr0daBNpSj.txt")
         result = validator.validate(inp=inp)
         assert result is None
 
     def test_allows_git_commit_f_without_mktmp_suffix(
         self, validator: SkillRedirectValidator
     ) -> None:
-        inp = _make_input(command="git commit -F /tmp/claude/git/commit-259-v2.txt")
+        inp = _make_input(command="git commit -F /tmp/Dev10x/git/commit-259-v2.txt")
         result = validator.validate(inp=inp)
         assert result is None
 
@@ -104,14 +155,14 @@ class TestGitCommitRedirect:
     def test_blocks_git_commit_f_with_non_git_namespace(
         self, validator: SkillRedirectValidator
     ) -> None:
-        inp = _make_input(command="git commit -F /tmp/claude/commit/msg.knDXJdfzYnVI.txt")
+        inp = _make_input(command="git commit -F /tmp/Dev10x/commit/msg.knDXJdfzYnVI.txt")
         result = validator.validate(inp=inp)
         assert result is not None
         assert "mcp__plugin_Dev10x_cli__mktmp" in result.message
         assert "wrong temp file path" in result.message
 
     def test_healing_msg_suggests_git_namespace(self, validator: SkillRedirectValidator) -> None:
-        inp = _make_input(command="git commit -F /tmp/claude/commit/msg.abc123.txt")
+        inp = _make_input(command="git commit -F /tmp/Dev10x/commit/msg.abc123.txt")
         result = validator.validate(inp=inp)
         assert result is not None
         assert 'namespace="git"' in result.message
@@ -148,8 +199,8 @@ class TestGhPrCreateRedirect:
 
 
 class TestGitPushRedirect:
-    def test_blocks_git_push(self, validator: SkillRedirectValidator) -> None:
-        inp = _make_input(command="git push origin feature-branch")
+    def test_blocks_git_push_to_protected_branch(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="git push origin main")
         result = validator.validate(inp=inp)
         assert result is not None
         assert "Dev10x:git" in result.message
@@ -159,11 +210,275 @@ class TestGitPushRedirect:
         result = validator.validate(inp=inp)
         assert result is None
 
-    def test_blocks_git_push_u(self, validator: SkillRedirectValidator) -> None:
-        inp = _make_input(command="git push -u origin feature-branch")
+    def test_blocks_git_push_u_to_protected_branch(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        inp = _make_input(command="git push -u origin develop")
         result = validator.validate(inp=inp)
         assert result is not None
         assert "Dev10x:git" in result.message
+
+
+class TestGitPushUnattendedEscapeHatch:
+    """GH-963: a non-force push naming an explicit, non-protected branch
+    needs neither the skill nor MCP — it is already the safe case
+    push_safe/git-push-safe.sh would have allowed anyway."""
+
+    def test_allows_push_to_explicit_feature_branch(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        inp = _make_input(command="git push origin feature-branch")
+        result = validator.validate(inp=inp)
+        assert result is None
+
+    def test_allows_push_u_to_explicit_feature_branch(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        inp = _make_input(command="git push -u origin janusz/GH-963/my-fix")
+        result = validator.validate(inp=inp)
+        assert result is None
+
+    def test_allows_refspec_form(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="git push origin my-branch:my-branch")
+        result = validator.validate(inp=inp)
+        assert result is None
+
+    def test_blocks_bare_push_no_resolvable_target(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        inp = _make_input(command="git push")
+        result = validator.validate(inp=inp)
+        assert result is not None
+
+    def test_blocks_push_with_remote_only(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="git push origin")
+        result = validator.validate(inp=inp)
+        assert result is not None
+
+    def test_blocks_push_symbolic_head_ref(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="git push origin HEAD")
+        result = validator.validate(inp=inp)
+        assert result is not None
+
+    def test_blocks_bare_force_to_feature_branch(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="git push --force origin feature-branch")
+        result = validator.validate(inp=inp)
+        assert result is not None
+
+    def test_blocks_short_force_flag_to_feature_branch(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        inp = _make_input(command="git push -f origin feature-branch")
+        result = validator.validate(inp=inp)
+        assert result is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push -uf origin feature-branch",
+            "git push -fu origin feature-branch",
+            "git push -vuf origin feature-branch",
+        ],
+    )
+    def test_blocks_bundled_short_force_flag(
+        self,
+        validator: SkillRedirectValidator,
+        command: str,
+    ) -> None:
+        """GH-1047: POSIX short flags bundle, so a force push can be
+        spelled without ever producing a lone ``-f`` token."""
+        result = validator.validate(inp=_make_input(command=command))
+        assert result is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push -u origin feature-branch",
+            "git push -vu origin feature-branch",
+            "git push --force-with-lease origin feature-branch",
+        ],
+    )
+    def test_allows_non_force_flags_without_f(
+        self,
+        validator: SkillRedirectValidator,
+        command: str,
+    ) -> None:
+        """GH-1047: cluster decomposition must not report a force push
+        for clusters that carry no ``f``, nor match ``--force-with-lease``
+        on a substring."""
+        result = validator.validate(inp=_make_input(command=command))
+        assert result is None
+
+    def test_still_blocks_protected_branch_by_name(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        for branch in ("main", "develop", "master", "development", "trunk"):
+            inp = _make_input(command=f"git push origin {branch}")
+            result = validator.validate(inp=inp)
+            assert result is not None, f"Expected block for push to {branch}"
+
+
+class TestGitPushForceSpellingsThatEvadedTheGuard:
+    """GH-1049: six spellings that read as a safe push but force-push a
+    protected branch.
+
+    GH-1047 closed the bundled-short-flag hole; these are the remaining
+    ones, all sharing a root cause — the guard decides "is this a force
+    push, and what does it target?" by statically matching the command
+    text, and each case below is a spelling that static matching missed.
+
+    Every case must produce a block, i.e. route to ``Skill(Dev10x:git)``
+    rather than being waved through as the safe direct-push case.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push -o ci.skip origin main",
+            "git push --push-option ci.skip origin develop",
+            "git push --receive-pack /usr/bin/git-receive-pack origin master",
+        ],
+    )
+    def test_value_taking_flag_value_is_not_read_as_a_positional(
+        self,
+        validator: SkillRedirectValidator,
+        command: str,
+    ) -> None:
+        """Gap 2: dropping only ``-``-prefixed tokens leaves the flag's
+        value in the positional list, shifting every index after it — so
+        the remote was read as the branch and the real branch never
+        reached the protected-branch check."""
+        assert validator.validate(inp=_make_input(command=command)) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push origin +evil:main",
+            "git push origin +main",
+            "git push origin feature +evil:develop",
+        ],
+    )
+    def test_plus_prefixed_refspec_counts_as_force(
+        self,
+        validator: SkillRedirectValidator,
+        command: str,
+    ) -> None:
+        """Gap 3: refspec syntax force-pushes with no force *flag* at all,
+        and only the first refspec was ever inspected."""
+        assert validator.validate(inp=_make_input(command=command)) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push origin +feature:refs/heads/main",
+            "git push --force origin refs/heads/develop",
+        ],
+    )
+    def test_fully_qualified_ref_is_recognised_as_protected(
+        self,
+        validator: SkillRedirectValidator,
+        command: str,
+    ) -> None:
+        """Gap 4: ``PROTECTED_BRANCHES`` holds short names, so a
+        ``refs/heads/``-qualified target compared as unprotected."""
+        assert validator.validate(inp=_make_input(command=command)) is not None
+
+    def test_decoy_push_token_cannot_shift_target_resolution(
+        self,
+        validator: SkillRedirectValidator,
+    ) -> None:
+        """Gap 5: the subcommand was located by the first bare ``push``
+        anywhere in the string, so an earlier decoy shifted every offset."""
+        command = "echo push && git push origin +evil:main"
+        assert validator.validate(inp=_make_input(command=command)) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push origin $BRANCH",
+            "git push origin ${TARGET}",
+            "git push $(cat /tmp/flags) origin feature",
+            "git push origin feature-`date +%s`",
+        ],
+    )
+    def test_shell_expansion_fails_closed(
+        self,
+        validator: SkillRedirectValidator,
+        command: str,
+    ) -> None:
+        """Gap 6: an expansion can produce a force flag or a protected
+        target at execution time with no matching token in the parsed
+        text. What the guard cannot read, it must not clear."""
+        assert validator.validate(inp=_make_input(command=command)) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push -o ci.skip origin feature-branch",
+            "git push origin feature:refs/heads/feature",
+            "git push origin feature other-feature",
+        ],
+    )
+    def test_ordinary_safe_pushes_still_pass(
+        self,
+        validator: SkillRedirectValidator,
+        command: str,
+    ) -> None:
+        """The escape hatch must survive the tightening: these name
+        explicit, non-protected targets and carry no force in any
+        spelling."""
+        assert validator.validate(inp=_make_input(command=command)) is None
+
+
+class TestPushHelpersOnNonPushCommands:
+    """GH-1049: the helpers must answer safely for a command with no
+    ``git push`` in it at all.
+
+    The validator only reaches them behind the ``git-push`` rule, so these
+    branches are unreachable through ``validate``. They are still the
+    contract every helper leans on — ``_has_refspec_force`` must not report
+    force, and target resolution must not invent a target, when there is no
+    push to read. Exercised directly rather than left to a future caller to
+    discover.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo push",
+            "git status",
+            "npm run push",
+            "",
+        ],
+    )
+    def test_no_git_push_yields_no_args(self, command: str) -> None:
+        from dev10x.validators.skill_redirect import _push_args
+
+        assert _push_args(command) is None
+
+    @pytest.mark.parametrize("command", ["echo push", "git status"])
+    def test_no_git_push_yields_no_targets(self, command: str) -> None:
+        from dev10x.validators.skill_redirect import _explicit_push_targets
+
+        assert _explicit_push_targets(command) is None
+
+    @pytest.mark.parametrize("command", ["echo push +evil:main", "git status"])
+    def test_no_git_push_is_not_refspec_force(self, command: str) -> None:
+        from dev10x.validators.skill_redirect import _has_refspec_force
+
+        assert _has_refspec_force(command) is False
+
+    def test_unbalanced_quotes_fall_back_to_whitespace_split(self) -> None:
+        """``shlex`` raises on an unterminated quote; the fallback keeps the
+        guard reading the command instead of throwing inside a hook."""
+        from dev10x.validators.skill_redirect import _tokenize
+
+        assert _tokenize("git push origin 'unterminated") == [
+            "git",
+            "push",
+            "origin",
+            "'unterminated",
+        ]
 
 
 class TestGitRebaseRedirect:
@@ -210,6 +525,77 @@ class TestGhPrChecksWatchRedirect:
 
     def test_allows_gh_pr_checks_with_pr_number(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command="gh pr checks 42")
+        result = validator.validate(inp=inp)
+        assert result is None
+
+
+class TestGhPrMergeRedirect:
+    def test_blocks_gh_pr_merge(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh pr merge 111 --squash --delete-branch")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "Dev10x:gh-pr-merge" in result.message
+
+    def test_blocks_gh_pr_merge_minimal(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh pr merge")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "Dev10x:gh-pr-merge" in result.message
+
+    def test_blocks_gh_pr_merge_rebase(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh pr merge 42 --rebase")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "Dev10x:gh-pr-merge" in result.message
+
+    def test_should_run_true_for_gh_pr_merge(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh pr merge 111 --squash")
+        assert validator.should_run(inp=inp) is True
+
+    def test_message_includes_pre_merge_checks(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh pr merge 111 --squash")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "pre-merge checks" in result.message
+
+
+class TestGhPrViewRedirect:
+    """gh pr view routes to pr_get unless it carries the DoD allow marker (GH-668)."""
+
+    def test_blocks_gh_pr_view_isdraft(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh pr view 42 --json isDraft")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "mcp__plugin_Dev10x_cli__pr_get" in result.message
+
+    def test_blocks_gh_pr_view_minimal(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh pr view 7")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "mcp__plugin_Dev10x_cli__pr_get" in result.message
+
+    def test_allows_gh_pr_view_with_cli_friction_marker(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        """DoD-runner check templates carry the marker and must NOT be blocked."""
+        inp = _make_input(
+            command=(
+                "gh pr view 42 --repo o/r --json isDraft -q .isDraft  "
+                "# cli-friction: allow raw-gh-pr — DoD runner executes this template"
+            )
+        )
+        result = validator.validate(inp=inp)
+        assert result is None
+
+    def test_allows_gh_pr_view_review_requests_with_marker(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        inp = _make_input(
+            command=(
+                "gh pr view 42 --repo o/r --json reviewRequests "
+                "-q '.reviewRequests | length'  # cli-friction: allow raw-gh-pr"
+            )
+        )
         result = validator.validate(inp=inp)
         assert result is None
 
@@ -270,6 +656,245 @@ class TestGhIssueCreateRedirect:
         assert validator.should_run(inp=inp) is True
 
 
+class TestSearchToolFalsePositive:
+    """GH-210: filename appearing as a search argument is not a script call."""
+
+    def test_find_name_git_push_safe_allowed(self, validator: SkillRedirectValidator) -> None:
+        cmd = "find . -path ./node_modules -prune -o -name 'git-push-safe.sh' -print"
+        result = validator.validate(inp=_make_input(command=cmd))
+        assert result is None
+
+    def test_grep_l_git_push_safe_allowed(self, validator: SkillRedirectValidator) -> None:
+        cmd = "grep -l git-push-safe.sh src/"
+        result = validator.validate(inp=_make_input(command=cmd))
+        assert result is None
+
+    def test_rg_git_push_safe_allowed(self, validator: SkillRedirectValidator) -> None:
+        result = validator.validate(inp=_make_input(command="rg git-push-safe.sh src/"))
+        assert result is None
+
+    def test_xargs_with_filename_allowed(self, validator: SkillRedirectValidator) -> None:
+        cmd = "xargs grep git-rebase-groom.sh"
+        result = validator.validate(inp=_make_input(command=cmd))
+        assert result is None
+
+    def test_bash_wrapped_find_allowed(self, validator: SkillRedirectValidator) -> None:
+        cmd = "bash -c 'find . -name git-push-safe.sh'"
+        result = validator.validate(inp=_make_input(command=cmd))
+        # GH-1084 made this assertable: the script name sits inside the
+        # `-c` payload, never in an invocation position, so the rule no
+        # longer fires. Previously the tokenizer could not see past the
+        # wrapper and the test asserted a tautology.
+        assert result is None
+
+    def test_direct_script_invocation_still_blocked(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        cmd = "/work/skills/git/scripts/git-push-safe.sh origin develop"
+        result = validator.validate(inp=_make_input(command=cmd))
+        assert result is not None
+        assert "mcp__plugin_Dev10x_cli__push_safe" in result.message
+
+    def test_bash_invocation_still_blocked(self, validator: SkillRedirectValidator) -> None:
+        cmd = "bash git-push-safe.sh origin develop"
+        result = validator.validate(inp=_make_input(command=cmd))
+        assert result is not None
+        assert "mcp__plugin_Dev10x_cli__push_safe" in result.message
+
+
+class TestQuotedAlternationIsNotAPipeline:
+    """GH-1214 finding 6: `|` inside a quoted argument is regex, not a pipe.
+
+    The search-tool exemption above bails out on any `|`, on the
+    reasonable theory that a pipeline can run the searched-for binary. It
+    read the whole command string, so an `-E` alternation lost the
+    exemption and the pattern's own text was evaluated as a command —
+    denying a watchdog that was auditing a crew brief for exactly the
+    banned shapes it names.
+    """
+
+    def test_grep_alternation_naming_blocked_commands_allowed(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        cmd = "grep -n -i -E 'manage\\.py|check-adr|gh api|gh pr edit|update_pr' brief.md"
+        assert validator.validate(inp=_make_input(command=cmd)) is None
+
+    def test_rg_alternation_naming_blocked_commands_allowed(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        cmd = 'rg -e "gh pr create|gh pr merge" skills/'
+        assert validator.validate(inp=_make_input(command=cmd)) is None
+
+    def test_real_pipeline_into_search_tool_still_evaluated(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        # An unquoted `|` is a genuine pipeline: the exemption must stay off.
+        cmd = "grep -l foo src/ | xargs git push"
+        assert validator.validate(inp=_make_input(command=cmd)) is not None
+
+    def test_pipeline_after_quoted_alternation_still_evaluated(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        # Quoted alternation AND a real pipe — the real pipe must win.
+        cmd = "grep -E 'a|b' src/ | xargs git push"
+        assert validator.validate(inp=_make_input(command=cmd)) is not None
+
+    def test_find_with_exec_still_blocks(self, validator: SkillRedirectValidator) -> None:
+        cmd = "find . -name '*.sh' -exec git-push-safe.sh {} ;"
+        result = validator.validate(inp=_make_input(command=cmd))
+        assert result is not None
+
+
+class TestScriptMentionVsInvocation:
+    """GH-1084: `match_position: invocation` guards running a guarded
+    script, not naming it.
+
+    The rule's pattern is a bare filename, and patterns are searched
+    against the whole command string, so every command that merely
+    CONTAINED `git-push-safe.sh` was denied — including the two the
+    supervisor hit while shipping the force-push guard itself: linting
+    the script through pre-commit, and renaming it. Neither executes
+    anything, and `push_safe` — the compensation the block names — can
+    neither lint nor move a file, so the steer had no valid target."""
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "pre-commit run --files skills/git/scripts/git-push-safe.sh",
+            "pre-commit run --all-files --files skills/git/scripts/git-push-safe.sh",
+            "mv /tmp/Dev10x/git-push-safe.sh /tmp/Dev10x/oldguard.sh",
+            "cp skills/git/scripts/git-push-safe.sh /tmp/Dev10x/backup.sh",
+            "shellcheck skills/git/scripts/git-push-safe.sh",
+            "wc -l skills/git/scripts/git-push-safe.sh",
+        ],
+    )
+    def test_mentioning_the_script_is_allowed(
+        self,
+        cmd: str,
+        validator: SkillRedirectValidator,
+    ) -> None:
+        assert validator.validate(inp=_make_input(command=cmd)) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "skills/git/scripts/git-push-safe.sh --force origin main",
+            "./git-push-safe.sh --force origin main",
+            "/work/skills/git/scripts/git-push-safe.sh origin develop",
+            "bash skills/git/scripts/git-push-safe.sh --force origin main",
+        ],
+    )
+    def test_running_the_script_is_still_denied(
+        self,
+        cmd: str,
+        validator: SkillRedirectValidator,
+    ) -> None:
+        result = validator.validate(inp=_make_input(command=cmd))
+        assert result is not None
+        assert "mcp__plugin_Dev10x_cli__push_safe" in result.message
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "GIT_TRACE=1 skills/git/scripts/git-push-safe.sh --force origin main",
+            "FOO=bar BAZ=qux ./git-push-safe.sh --force origin main",
+            "env GIT_TRACE=1 skills/git/scripts/git-push-safe.sh --force origin main",
+        ],
+    )
+    def test_env_assignment_prefix_does_not_evade_the_deny(
+        self,
+        cmd: str,
+        validator: SkillRedirectValidator,
+    ) -> None:
+        """An assignment prefix changes the environment, not the program."""
+        assert validator.validate(inp=_make_input(command=cmd)) is not None
+
+    def test_script_after_a_chain_operator_is_still_denied(
+        self,
+        validator: SkillRedirectValidator,
+    ) -> None:
+        """Each shell segment carries its own invocation position."""
+        cmd = "echo starting && skills/git/scripts/git-push-safe.sh --force origin main"
+        assert validator.validate(inp=_make_input(command=cmd)) is not None
+
+
+class TestGhPrEditRedirect:
+    def test_blocks_gh_pr_edit(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh pr edit 203 --title '♻️ GH-90 Bundle'")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "mcp__plugin_Dev10x_cli__update_pr" in result.message
+
+    def test_blocks_gh_pr_edit_body(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh pr edit 42 --body-file /tmp/body.md")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "mcp__plugin_Dev10x_cli__update_pr" in result.message
+
+    def test_blocks_gh_pr_edit_label(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh pr edit 1 --add-label bug")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "mcp__plugin_Dev10x_cli__update_pr" in result.message
+
+    def test_mcp_message_uses_tool_label(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh pr edit 1 --title hi")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "MCP tool" in result.message
+        assert "Skill(" not in result.message
+
+    def test_should_run_true_for_gh_pr_edit(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh pr edit 1 --title hi")
+        assert validator.should_run(inp=inp) is True
+
+
+class TestGhIssueEditRedirect:
+    def test_blocks_gh_issue_edit(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh issue edit 42 --title 'New title'")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "mcp__plugin_Dev10x_cli__issue_edit" in result.message
+
+    def test_blocks_gh_issue_edit_milestone(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh issue edit 1 --milestone 'M2'")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "mcp__plugin_Dev10x_cli__issue_edit" in result.message
+
+    def test_should_run_true_for_gh_issue_edit(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh issue edit 1 --title hi")
+        assert validator.should_run(inp=inp) is True
+
+
+class TestGhIssueCommentRedirect:
+    def test_blocks_gh_issue_comment(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh issue comment 42 --body 'thanks'")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "mcp__plugin_Dev10x_cli__issue_comment" in result.message
+
+    def test_blocks_gh_issue_comment_body_file(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh issue comment 1 --body-file /tmp/c.md")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "mcp__plugin_Dev10x_cli__issue_comment" in result.message
+
+
+class TestGhMilestoneCreateRedirect:
+    def test_blocks_milestone_create_method_post(self, validator: SkillRedirectValidator) -> None:
+        cmd = "gh api repos/Dev10x-Guru/Dev10x-Claude/milestones --method POST -f title=M3"
+        result = validator.validate(inp=_make_input(command=cmd))
+        assert result is not None
+        assert "mcp__plugin_Dev10x_cli__milestone_create" in result.message
+
+    def test_blocks_milestone_create_x_post(self, validator: SkillRedirectValidator) -> None:
+        cmd = "gh api repos/o/r/milestones -X POST -f title=M"
+        result = validator.validate(inp=_make_input(command=cmd))
+        assert result is not None
+        assert "mcp__plugin_Dev10x_cli__milestone_create" in result.message
+
+
 class TestMessageContent:
     def test_message_includes_skill_name(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command="git push origin main")
@@ -297,18 +922,120 @@ class TestMessageContent:
         assert "Dev10x-Guru/dev10x-claude" in result.message
 
 
-class TestFrictionLevels:
+class TestLoopShapesReachTheEngine:
+    """A loop is matched on its shape, not the command inside it (GH-1212).
+
+    The dispatcher tests cover the same ground end-to-end, but they run
+    the hook in a subprocess — these exercise the validator in-process so
+    the branches are actually measured.
+    """
+
+    def test_should_run_on_a_loop_naming_no_cli_verb(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        """`sleep` is the token that gets the loop past the fast path."""
+        assert validator.should_run(inp=_make_input(command=BARE_POLL_LOOP)) is True
+
+    def test_should_run_on_a_watch_invocation(self, validator: SkillRedirectValidator) -> None:
+        assert validator.should_run(inp=_make_input(command="watch -n 5 date")) is True
+
+    def test_multiline_loop_is_blocked(self, validator: SkillRedirectValidator) -> None:
+        assert validator.validate(inp=_make_input(command=BARE_POLL_LOOP)) is not None
+
+    def test_until_loop_is_blocked(self, validator: SkillRedirectValidator) -> None:
+        assert validator.validate(inp=_make_input(command=UNTIL_POLL_LOOP)) is not None
+
+    def test_plain_sleep_without_a_loop_is_not_blocked(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        """The fast-path token widening must not block a bare sleep."""
+        assert validator.validate(inp=_make_input(command="sleep 5")) is None
+
+
+@pytest.fixture()
+def loop_block_message(validator: SkillRedirectValidator) -> str:
+    result = validator.validate(inp=_make_input(command=BARE_POLL_LOOP))
+    assert result is not None
+    return result.message
+
+
+class TestAlternativesMessage:
+    """`use-alternative` rules render their steer (GH-1212).
+
+    These compensations have no `skill`/`tool`, so the skill branch
+    emitted a bare `Skill()` — a deny naming no remedy at all.
+    """
+
+    def test_message_never_renders_an_empty_skill_call(self, loop_block_message: str) -> None:
+        assert "Skill()" not in loop_block_message
+
+    def test_message_lists_the_non_prompting_alternatives_first(
+        self, loop_block_message: str
+    ) -> None:
+        assert loop_block_message.index("run_in_background") < loop_block_message.index(
+            "dev10x foreman watch"
+        )
+
+    def test_message_names_a_tool_carrying_alternative(self, loop_block_message: str) -> None:
+        assert "mcp__plugin_Dev10x_cli__ci_check_status" in loop_block_message
+
+    def test_shape_matching_rule_is_labelled_by_name(self, loop_block_message: str) -> None:
+        assert "watch-loop-handrolled" in loop_block_message
+
+    def test_shape_matching_rule_label_is_not_a_raw_regex(self, loop_block_message: str) -> None:
+        assert r"\bsleep\b" not in loop_block_message
+
+    def test_command_prefix_rule_keeps_its_readable_label(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        """Only shape matchers fall back to the rule name."""
+        result = validator.validate(inp=_make_input(command="git push origin main"))
+        assert result is not None
+        assert "`git push`" in result.message
+
+    def test_a_skill_carrying_alternative_renders_its_skill_call(self) -> None:
+        """No shipped rule mixes a skill into an alternatives list yet.
+
+        The branch exists so one can, without regressing to the empty
+        `Skill()` this replaced.
+        """
+        message = _format_alternatives_msg(
+            label="some-rule",
+            comps=[
+                Compensation(type="use-alternative", description="Do the cheap thing."),
+                Compensation(
+                    type="use-skill", skill="Dev10x:gh-pr-monitor", description="Or this."
+                ),
+            ],
+            plugin_repo="",
+        )
+        assert "Invoke `Skill(Dev10x:gh-pr-monitor)`." in message
+        assert "Do the cheap thing." in message
+
+
+class TestBlockMessageFallback:
+    """GH-1194: the fallback clause is unconditional.
+
+    It used to vary by the ADR-0002 `config.friction_level` axis, which
+    only ever shipped as `guided`. With the axis collapsed, an agent that
+    cannot reach the sanctioned path always sees what to do instead —
+    which is the behaviour every real session already got.
+    """
+
     def _make_yaml(
         self,
         *,
-        friction_level: str,
         fallback: str = "",
+        description: str = "",
         comp_type: str = "use-skill",
     ) -> str:
+        # The two branches read different fields: `use-skill` renders
+        # `fallback`, `use-tool` renders `description` as its
+        # MCP-unavailable escape.
         skill_or_tool = "skill" if comp_type == "use-skill" else "tool"
-        return textwrap.dedent(f"""\
+        return textwrap.dedent(
+            f"""\
             config:
-              friction_level: {friction_level}
               plugin_repo: https://github.com/Dev10x-Guru/dev10x-claude
             rules:
               - name: test-rule
@@ -321,66 +1048,58 @@ class TestFrictionLevels:
                   - type: {comp_type}
                     {skill_or_tool}: Dev10x:test-skill
                     guardrails: test guardrail
+                    description: "{description}"
                     fallback: "{fallback}"
-        """)
-
-    def test_guided_mode_includes_fallback(self, tmp_path: Path) -> None:
-        yaml_file = tmp_path / "map.yaml"
-        yaml_file.write_text(
-            self._make_yaml(
-                friction_level="guided",
-                fallback="Apply manual guardrail here.",
-            )
+        """
         )
-        config = _load_config(yaml_path=yaml_file)
-        assert config.friction_level == "guided"
 
+    def _validate(self, *, yaml_file: Path):
+        config, engine = _load_config(yaml_path=yaml_file)
         validator = SkillRedirectValidator()
         inp = _make_input(command="test cmd foo")
 
         import dev10x.validators.skill_redirect as mod
 
-        original = mod._CONFIG
-        mod._CONFIG = config
+        orig_config, orig_engine = mod._CONFIG, mod._ENGINE
+        mod._CONFIG, mod._ENGINE = config, engine
         try:
-            result = validator.validate(inp=inp)
+            return config, validator.validate(inp=inp)
         finally:
-            mod._CONFIG = original
+            mod._CONFIG, mod._ENGINE = orig_config, orig_engine
+
+    def test_skill_fallback_is_always_included(self, tmp_path: Path) -> None:
+        yaml_file = tmp_path / "map.yaml"
+        yaml_file.write_text(self._make_yaml(fallback="Apply manual guardrail here."))
+
+        _config, result = self._validate(yaml_file=yaml_file)
 
         assert result is not None
         assert "Apply manual guardrail here." in result.message
 
-    def test_strict_mode_omits_fallback(self, tmp_path: Path) -> None:
+    def test_absent_fallback_adds_no_empty_clause(self, tmp_path: Path) -> None:
         yaml_file = tmp_path / "map.yaml"
-        yaml_file.write_text(
-            self._make_yaml(
-                friction_level="strict",
-                fallback="Apply manual guardrail here.",
-            )
-        )
-        config = _load_config(yaml_path=yaml_file)
+        yaml_file.write_text(self._make_yaml(fallback=""))
 
-        validator = SkillRedirectValidator()
-        inp = _make_input(command="test cmd foo")
-
-        import dev10x.validators.skill_redirect as mod
-
-        original = mod._CONFIG
-        mod._CONFIG = config
-        try:
-            result = validator.validate(inp=inp)
-        finally:
-            mod._CONFIG = original
+        _config, result = self._validate(yaml_file=yaml_file)
 
         assert result is not None
-        assert "Apply manual guardrail here." not in result.message
+        assert "apply these guardrails manually" not in result.message
+
+    def test_config_carries_no_friction_level(self, tmp_path: Path) -> None:
+        yaml_file = tmp_path / "map.yaml"
+        yaml_file.write_text(self._make_yaml(fallback="x"))
+
+        config, _result = self._validate(yaml_file=yaml_file)
+
+        assert not hasattr(config, "friction_level")
 
     def test_hook_block_false_entries_not_loaded(self, tmp_path: Path) -> None:
         yaml_file = tmp_path / "map.yaml"
         yaml_file.write_text(
-            textwrap.dedent("""\
+            textwrap.dedent(
+                """\
                 config:
-                  friction_level: guided
+                  plugin_repo: https://github.com/Dev10x-Guru/dev10x-claude
                 rules:
                   - name: ignored-rule
                     matcher: Bash
@@ -390,63 +1109,50 @@ class TestFrictionLevels:
                     compensations:
                       - type: use-skill
                         skill: Dev10x:ignored
-            """)
+            """
+            )
         )
-        config = _load_config(yaml_path=yaml_file)
+        config, _engine = _load_config(yaml_path=yaml_file)
         assert config.rules == []
 
-    def test_mcp_type_guided_uses_mcp_template(self, tmp_path: Path) -> None:
+    def test_mcp_type_uses_mcp_template_with_fallback(self, tmp_path: Path) -> None:
         yaml_file = tmp_path / "map.yaml"
         yaml_file.write_text(
             self._make_yaml(
-                friction_level="guided",
-                fallback="Use gh issue view directly.",
+                description="Use gh issue view directly.",
                 comp_type="use-tool",
             )
         )
-        config = _load_config(yaml_path=yaml_file)
 
-        validator = SkillRedirectValidator()
-        inp = _make_input(command="test cmd foo")
+        _config, result = self._validate(yaml_file=yaml_file)
 
-        import dev10x.validators.skill_redirect as mod
+        assert result is not None
+        assert "MCP tool" in result.message
+        assert "Skill(" not in result.message
+        assert "Use gh issue view directly." in result.message
 
-        original = mod._CONFIG
-        mod._CONFIG = config
-        try:
-            result = validator.validate(inp=inp)
-        finally:
-            mod._CONFIG = original
+    def test_mcp_type_without_fallback_still_uses_mcp_template(self, tmp_path: Path) -> None:
+        yaml_file = tmp_path / "map.yaml"
+        yaml_file.write_text(self._make_yaml(comp_type="use-tool"))
+
+        _config, result = self._validate(yaml_file=yaml_file)
 
         assert result is not None
         assert "MCP tool" in result.message
         assert "Skill(" not in result.message
 
-    def test_mcp_type_strict_uses_mcp_template(self, tmp_path: Path) -> None:
-        yaml_file = tmp_path / "map.yaml"
-        yaml_file.write_text(
-            self._make_yaml(
-                friction_level="strict",
-                comp_type="use-tool",
-            )
-        )
-        config = _load_config(yaml_path=yaml_file)
 
-        validator = SkillRedirectValidator()
-        inp = _make_input(command="test cmd foo")
+_RULES: list[dict] = yaml.safe_load(_YAML_PATH.read_text())["rules"]
+_HOOK_BLOCK_RULES: list[dict] = [entry for entry in _RULES if entry.get("hook_block")]
+_COMPENSATION_PAIRS: list[tuple[str, str]] = [
+    (entry.get("name", "<unnamed>"), comp["type"])
+    for entry in _RULES
+    for comp in entry.get("compensations", [])
+]
 
-        import dev10x.validators.skill_redirect as mod
 
-        original = mod._CONFIG
-        mod._CONFIG = config
-        try:
-            result = validator.validate(inp=inp)
-        finally:
-            mod._CONFIG = original
-
-        assert result is not None
-        assert "MCP tool" in result.message
-        assert "Skill(" not in result.message
+def _rule_ids(rules: list[dict]) -> list[str]:
+    return [entry.get("name", f"rule-{i}") for i, entry in enumerate(rules)]
 
 
 class TestYamlSchema:
@@ -454,30 +1160,36 @@ class TestYamlSchema:
         data = yaml.safe_load(_YAML_PATH.read_text())
         assert "config" in data
         assert "rules" in data
-        assert data["config"]["friction_level"] in {"strict", "guided", "adaptive"}
+        assert data["config"]["plugin_repo"]
+        # GH-1194: the ADR-0002 command-redirect axis is collapsed. A
+        # re-added key would be inert — nothing reads it — so assert its
+        # absence rather than letting it drift back in as decoration.
+        assert "friction_level" not in data["config"]
 
-    def test_all_hook_block_entries_have_compensations(self) -> None:
-        data = yaml.safe_load(_YAML_PATH.read_text())
-        for entry in data["rules"]:
-            if entry.get("hook_block"):
-                assert "compensations" in entry, f"{entry['name']} missing compensations"
-                assert entry["compensations"], f"{entry['name']} has empty compensations"
+    @pytest.mark.parametrize("entry", _HOOK_BLOCK_RULES, ids=_rule_ids(_HOOK_BLOCK_RULES))
+    def test_hook_block_entry_has_compensations(self, entry: dict) -> None:
+        assert "compensations" in entry, f"{entry['name']} missing compensations"
+        assert entry["compensations"], f"{entry['name']} has empty compensations"
 
-    def test_all_rules_have_name(self) -> None:
-        data = yaml.safe_load(_YAML_PATH.read_text())
-        for entry in data["rules"]:
-            assert "name" in entry, f"Rule missing name: {entry}"
-            assert entry["name"], f"Rule has empty name: {entry}"
+    @pytest.mark.parametrize("entry", _RULES, ids=_rule_ids(_RULES))
+    def test_rule_has_name(self, entry: dict) -> None:
+        assert "name" in entry, f"Rule missing name: {entry}"
+        assert entry["name"], f"Rule has empty name: {entry}"
 
-    def test_all_rules_have_matcher(self) -> None:
-        data = yaml.safe_load(_YAML_PATH.read_text())
-        for entry in data["rules"]:
-            assert "matcher" in entry, f"{entry['name']} missing matcher"
-            assert entry["matcher"] in {"Bash", "Edit|Write"}, (
-                f"{entry['name']} has invalid matcher: {entry['matcher']}"
-            )
+    @pytest.mark.parametrize("entry", _RULES, ids=_rule_ids(_RULES))
+    def test_rule_has_matcher(self, entry: dict) -> None:
+        assert "matcher" in entry, f"{entry['name']} missing matcher"
+        assert entry["matcher"] in {
+            "Bash",
+            "Edit|Write",
+        }, f"{entry['name']} has invalid matcher: {entry['matcher']}"
 
-    def test_compensation_types_are_valid(self) -> None:
+    @pytest.mark.parametrize(
+        ("rule_name", "comp_type"),
+        _COMPENSATION_PAIRS,
+        ids=[f"{name}:{ctype}" for name, ctype in _COMPENSATION_PAIRS],
+    )
+    def test_compensation_type_is_valid(self, rule_name: str, comp_type: str) -> None:
         valid_types = {
             "use-skill",
             "use-tool",
@@ -488,12 +1200,7 @@ class TestYamlSchema:
             "use-file-flag",
             "file-issue",
         }
-        data = yaml.safe_load(_YAML_PATH.read_text())
-        for entry in data["rules"]:
-            for comp in entry.get("compensations", []):
-                assert comp["type"] in valid_types, (
-                    f"{entry['name']} has invalid compensation type: {comp['type']}"
-                )
+        assert comp_type in valid_types, f"{rule_name} has invalid compensation type: {comp_type}"
 
 
 class TestLegitimateSkillCommands:
@@ -505,7 +1212,7 @@ class TestLegitimateSkillCommands:
             ("git commit --fixup=abc1234", "git-fixup skill creates fixup commits"),
             ("git commit --amend", "git-groom may amend during rebase"),
             (
-                "git commit -F /tmp/claude/git/commit-msg.abc123.txt",
+                "git commit -F /tmp/Dev10x/git/commit-msg.abc123.txt",
                 "git-commit skill uses -F with mktmp path",
             ),
             (
@@ -542,28 +1249,48 @@ class TestLegitimateSkillCommands:
 
 
 class TestCommandPrefixOverride:
-    """DEV10X_SKIP_CMD_VALIDATION=true prefix bypasses all checks."""
+    """DEV10X_SKIP_CMD_VALIDATION rationale form bypasses, boolean is rejected (GH-226)."""
 
-    def test_prefix_bypasses_should_run(
+    def test_rationale_form_bypasses_should_run(
         self,
         validator: SkillRedirectValidator,
     ) -> None:
-        inp = _make_input(command="DEV10X_SKIP_CMD_VALIDATION=true git push origin main")
+        inp = _make_input(
+            command=(
+                'DEV10X_SKIP_CMD_VALIDATION="inside Dev10x:git-commit skill: '
+                'commit -F path validated by mktmp" git commit -F /tmp/x.txt'
+            )
+        )
         assert validator.should_run(inp=inp) is False
 
-    def test_prefix_case_insensitive(
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "DEV10X_SKIP_CMD_VALIDATION=true git push origin main",
+            "DEV10X_SKIP_CMD_VALIDATION=True git commit -m 'test'",
+            "DEV10X_SKIP_CMD_VALIDATION=1 gh pr create --title test",
+            "DEV10X_SKIP_CMD_VALIDATION=yes gh issue view 42",
+        ],
+    )
+    def test_boolean_form_is_rejected(
+        self,
+        validator: SkillRedirectValidator,
+        command: str,
+    ) -> None:
+        inp = _make_input(command=command)
+        assert validator.should_run(inp=inp) is True
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "Un-rationalized" in result.message
+        assert "rationale string of at least 20 chars" in result.message
+
+    def test_short_rationale_is_rejected(
         self,
         validator: SkillRedirectValidator,
     ) -> None:
-        inp = _make_input(command="DEV10X_SKIP_CMD_VALIDATION=True git commit -m 'test'")
-        assert validator.should_run(inp=inp) is False
-
-    def test_prefix_accepts_1(
-        self,
-        validator: SkillRedirectValidator,
-    ) -> None:
-        inp = _make_input(command="DEV10X_SKIP_CMD_VALIDATION=1 gh pr create --title test")
-        assert validator.should_run(inp=inp) is False
+        """Rationale strings shorter than 20 chars don't qualify as bypass."""
+        inp = _make_input(command='DEV10X_SKIP_CMD_VALIDATION="too short" git push origin main')
+        assert validator.should_run(inp=inp) is True
 
     def test_no_prefix_does_not_bypass(
         self,
@@ -572,14 +1299,25 @@ class TestCommandPrefixOverride:
         inp = _make_input(command="git push origin main")
         assert validator.should_run(inp=inp) is True
 
-    def test_override_hint_in_block_message(
+    def test_override_hint_shows_rationale_form(
         self,
         validator: SkillRedirectValidator,
     ) -> None:
         inp = _make_input(command="git push origin main")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "DEV10X_SKIP_CMD_VALIDATION=true" in result.message
+        assert 'DEV10X_SKIP_CMD_VALIDATION="' in result.message
+        assert "rationale" in result.message.lower()
+
+    def test_override_hint_calls_out_boolean_rejection(
+        self,
+        validator: SkillRedirectValidator,
+    ) -> None:
+        inp = _make_input(command="git push origin main")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "boolean form" in result.message.lower()
+        assert "GH-226" in result.message
 
     def test_hint_instructs_prefix_not_env_var(
         self,
@@ -591,6 +1329,34 @@ class TestCommandPrefixOverride:
         assert "prefix it with" in result.message
 
 
+class TestMcpUnavailableHint:
+    """MCP tool redirect messages must warn against DEV10X_SKIP_CMD_VALIDATION
+    as a workaround for MCP disconnect (GH-957)."""
+
+    def test_mcp_block_includes_reconnect_guidance(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        inp = _make_input(command="gh issue view 42")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "MCP server is disconnected" in result.message
+        assert "/mcp" in result.message
+
+    def test_mcp_block_warns_against_skip_flag(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="gh issue view 42")
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "Do NOT use DEV10X_SKIP_CMD_VALIDATION" in result.message
+
+    def test_skill_redirect_does_not_include_mcp_hint(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        inp = _make_input(command='git commit -m "test"')
+        result = validator.validate(inp=inp)
+        assert result is not None
+        assert "MCP server is disconnected" not in result.message
+
+
 class TestBlockedVsAllowed:
     """Verify the boundary between blocked and allowed for each hook rule."""
 
@@ -598,13 +1364,19 @@ class TestBlockedVsAllowed:
         ("command", "should_block"),
         [
             ("git push origin main", True),
-            ("git push -u origin feature", True),
+            ("git push -u origin feature", False),
             ("git push --force-with-lease origin feature", False),
             ("git push --force-with-lease", False),
+            ("git push --force origin feature", True),
+            ("git push -f origin feature", True),
+            ("git push -uf origin feature", True),
+            ("git push", True),
+            ("git push origin", True),
+            ("git push origin HEAD", True),
             ("git commit -m 'test'", True),
             ("git commit --fixup=abc", False),
             ("git commit --amend", False),
-            ("git commit -F /tmp/claude/git/msg.abc.txt", False),
+            ("git commit -F /tmp/Dev10x/git/msg.abc.txt", False),
             ("gh pr create --title test", True),
             ("gh issue view 42", True),
             ("gh issue create --title test", True),
@@ -617,6 +1389,9 @@ class TestBlockedVsAllowed:
             ("gh pr checks -w", True),
             ("gh pr checks 42", False),
             ("gh pr checks", False),
+            ("gh pr merge 111 --squash --delete-branch", True),
+            ("gh pr merge", True),
+            ("gh pr merge 42 --rebase", True),
         ],
     )
     def test_blocked_vs_allowed(
@@ -633,6 +1408,237 @@ class TestBlockedVsAllowed:
             assert result is None, (
                 f"Unexpected block for: {command}\nMessage: {result.message if result else 'N/A'}"
             )
+
+
+class TestNodeTestsNpmMonorepo:
+    """GH-880: scoped monorepo `npm --prefix <dir> test` is hard-blocked and
+    steered to run_node_tests; plain `npm test` / `npm run test` are not."""
+
+    def test_should_run_true_for_npm(self, validator: SkillRedirectValidator) -> None:
+        inp = _make_input(command="npm --prefix apps/web test -- NavList")
+        assert validator.should_run(inp=inp) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "npm --prefix apps/web test -- NavList",
+            "npm --prefix=apps/web test",
+            "npm -C apps/web test",
+            "npm -w web test",
+            "npm --prefix apps/web test -- NavList 2>&1 | tail -30",
+        ],
+    )
+    def test_blocks_monorepo_scoped_test(
+        self, validator: SkillRedirectValidator, command: str
+    ) -> None:
+        result = validator.validate(inp=_make_input(command=command))
+        assert result is not None
+        assert "run_node_tests" in result.message
+
+    def test_block_message_carries_cwd_translation(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        result = validator.validate(
+            inp=_make_input(command="npm --prefix apps/web test -- NavList")
+        )
+        assert result is not None
+        assert "cwd" in result.message
+
+    @pytest.mark.parametrize(
+        "command",
+        ["npm test", "npm run test", "npm install", "npm ci"],
+    )
+    def test_allows_generic_npm(self, validator: SkillRedirectValidator, command: str) -> None:
+        result = validator.validate(inp=_make_input(command=command))
+        assert result is None
+
+
+NARROW_PYTEST_COMMANDS = [
+    "pytest -k test_name",
+    "pytest tests/validators/",
+    "pytest src/dev10x/ --no-cov",
+    "python -m pytest tests/",
+    "uv run pytest -k test_name",
+    "uv run --extra dev pytest -k test_name",
+    "uv run --extra dev pytest tests/validators/test_skill_redirect.py -q",
+    "uv run --extra dev pytest tests/ --no-cov",
+]
+
+FULL_SUITE_PYTEST_COMMANDS = [
+    "pytest --cov --cov-report=term-missing",
+    "uv run pytest --cov --cov-report=term-missing",
+    "uv run --extra dev pytest --cov --cov-report=term-missing",
+]
+
+
+class TestPytestInnerLoop:
+    """GH-1337: the routing contract binds every run, not only the gate.
+
+    All six deviations in the audited session were targeted ``-k`` /
+    path-scoped raw invocations inside an edit-run-edit loop, with a
+    working wrapper available. Two things had to change for anything to
+    bite there: the rule had to block rather than advise (``from_config``
+    drops every ``hook_block: false`` rule before the engine sees it), and
+    the command had to survive ``should_run``'s ``_QUICK_TOKENS``
+    fast path, which a command naming only its runner did not — the same
+    registered-but-inert shape GH-1211/GH-1212 recorded for ``Monitor``.
+    """
+
+    @pytest.mark.parametrize("command", NARROW_PYTEST_COMMANDS)
+    def test_should_run_reaches_the_rule_engine(
+        self, validator: SkillRedirectValidator, command: str
+    ) -> None:
+        assert validator.should_run(inp=_make_input(command=command)) is True
+
+    @pytest.mark.parametrize("command", NARROW_PYTEST_COMMANDS)
+    def test_narrow_run_is_steered_to_run_tests(
+        self, validator: SkillRedirectValidator, command: str
+    ) -> None:
+        result = validator.validate(inp=_make_input(command=command))
+        assert result is not None, f"No steer for: {command}"
+        assert "run_tests" in result.message
+
+    def test_steer_carries_the_args_translation(self, validator: SkillRedirectValidator) -> None:
+        """A steer that does not show the narrowing shape re-teaches the
+        misreading that the wrapper only runs the whole suite."""
+        result = validator.validate(inp=_make_input(command="pytest -k test_name"))
+        assert result is not None
+        assert "args=" in result.message
+        assert "coverage=false" in result.message
+
+    @pytest.mark.parametrize("command", FULL_SUITE_PYTEST_COMMANDS)
+    def test_full_coverage_form_stays_unblocked(
+        self, validator: SkillRedirectValidator, command: str
+    ) -> None:
+        """``Dev10x:py-test``'s documented MCP-unavailable fallback, and the
+        shape that seeds a fresh worktree's virtualenv. Blocking it would
+        leave such a session no sanctioned path, and is the flip GH-155
+        reverted."""
+        assert validator.validate(inp=_make_input(command=command)) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        ["pip install pytest", "uv add --dev pytest", "rg -n pytest src/"],
+    )
+    def test_does_not_fire_on_non_invocations(
+        self, validator: SkillRedirectValidator, command: str
+    ) -> None:
+        assert validator.validate(inp=_make_input(command=command)) is None
+
+
+def _blocking_rule_literal_patterns() -> list[tuple[str, str]]:
+    """``_load_config`` already narrows to blocking Bash rules — the engine's
+    ``command_rules``, which is exactly what ``validate`` evaluates."""
+    config, _ = _load_config()
+    return [
+        (rule.name, pattern)
+        for rule in config.rules
+        for pattern in rule.patterns
+        if not _REGEX_METACHARS_RE.search(pattern)
+    ]
+
+
+def _advisory_bash_rules() -> list[MatchingRule]:
+    """The rules ``RuleEngine.from_config`` drops, which ``_load_config``
+    therefore cannot return — read the full YAML instead."""
+    full = load_config(yaml_path=_YAML_PATH)
+    return [r for r in full.rules if r.matcher == "Bash" and not r.hook_block]
+
+
+class TestEveryBlockingRuleSurvivesTheFastPath:
+    """GH-1337: a rule the fast path drops is registered but inert.
+
+    ``should_run`` short-circuits on ``_QUICK_TOKENS`` before any rule
+    regex is applied, so a blocking rule whose literal pattern names none
+    of those tokens can never fire — it reads as wired up everywhere a
+    maintainer would think to look. That is how ``pytest-inner-loop``'s
+    predecessor went unnoticed, and it is the same shape GH-1211/GH-1212
+    found in the ``Monitor`` matcher and GH-1215 found in MCP discovery.
+
+    Scoped to metachar-free patterns: a shape matcher (a loop, a psql
+    verb list) matches a command that need not contain the pattern text,
+    so the token that gates it is a deliberate separate choice, already
+    pinned by that rule's own tests.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr view 123 --json body",
+            "gh pr ready 123",
+            "gh pr ready --undo 123",
+        ],
+    )
+    def test_gh_pr_view_and_ready_are_steered(
+        self, validator: SkillRedirectValidator, command: str
+    ) -> None:
+        """Found by the guard below, not by a report: both rules were
+        blocking and unreachable, while the routed-CLI map documented them
+        as live."""
+        assert validator.should_run(inp=_make_input(command=command)) is True
+        assert validator.validate(inp=_make_input(command=command)) is not None
+
+    @pytest.mark.parametrize(
+        ("rule_name", "pattern"), _blocking_rule_literal_patterns(), ids=lambda v: str(v)
+    )
+    def test_literal_pattern_contains_a_quick_token(self, rule_name: str, pattern: str) -> None:
+        assert names_quick_token(pattern=pattern), (
+            f"Rule {rule_name!r} pattern {pattern!r} names no _QUICK_TOKENS entry, "
+            "so should_run() short-circuits before it is ever evaluated. "
+            "Add a gating token to _QUICK_TOKENS in skill_redirect.py."
+        )
+
+
+class TestReachabilityIsDerived:
+    """GH-1398: the map states intentions; only the fast path states behaviour.
+
+    ``command-skill-map.yaml`` is read as authoritative — by
+    ``Dev10x:diag-friction``, by ``.claude/rules/mcp-tools.md``'s routed-CLI
+    table, and by humans, GH-1211 included. Nothing in it was coupled to
+    whether the hook could actually see a rule, so a false claim survived
+    in three documents at once.
+
+    These pin the derivation both sides share, rather than a second
+    hand-maintained field free to drift from what it attests.
+    """
+
+    def test_literal_pattern_naming_a_token_is_reachable(self) -> None:
+        assert names_quick_token(pattern="gh pr view") is True
+
+    def test_literal_pattern_naming_no_token_is_not(self) -> None:
+        assert names_quick_token(pattern="kubectl get pods") is False
+
+    def test_token_match_ignores_pattern_case(self) -> None:
+        assert names_quick_token(pattern="GH PR READY") is True
+
+    def test_unreachable_patterns_names_the_dropped_pair(self) -> None:
+        rules = [MatchingRule(name="kubectl", patterns=["kubectl get", "gh pr view"])]
+        assert unreachable_patterns(rules=rules) == [("kubectl", "kubectl get")]
+
+    def test_shape_matchers_are_excluded(self) -> None:
+        """A shape matcher matches a command that need not contain the
+        pattern text, so its gating token is a separate deliberate choice."""
+        rules = [MatchingRule(name="loop", patterns=[r"\bwhile\b.*\bdo\b"])]
+        assert unreachable_patterns(rules=rules) == []
+
+    def test_report_names_every_drifted_rule(self) -> None:
+        report = format_unreachable_report(
+            pairs=[("kubectl", "kubectl get"), ("bash-n", "bash -n")]
+        )
+        assert "2 advisory rule pattern(s)" in report
+        assert "kubectl" in report
+        assert "bash-n" in report
+        assert "_QUICK_TOKENS" in report
+
+
+def test_advisory_rules_that_would_ship_inert_are_reported() -> None:
+    """GH-1398: report, never assert — an advisory rule is under no
+    obligation to be hook-reachable, so failing here would pin something
+    untrue. What must not happen is the drift going unnamed until someone
+    flips ``hook_block`` and ships a rule that can never fire."""
+    pairs = unreachable_patterns(rules=_advisory_bash_rules())
+    if pairs:
+        warnings.warn(format_unreachable_report(pairs=pairs), UserWarning, stacklevel=1)
 
 
 # Make _YAML_PATH accessible for tests above

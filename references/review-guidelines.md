@@ -4,6 +4,44 @@ Review **workflow** rules — how to conduct reviews, manage threads,
 write summaries, and interact with authors. For **what to check**
 in code, see the domain-specific agent specs in `.claude/agents/`.
 
+## Approval State Guard (GH-993)
+
+Before requesting review (or re-review) on a PR, the
+`Dev10x:request-review` skill family **must** check the PR's
+current review state to avoid pinging reviewers on already-approved
+PRs.
+
+**Decision rule:**
+
+1. Fetch state via `gh pr view N --json reviewDecision,reviews,headRefOid`
+   (or the equivalent MCP tool).
+2. If `reviewDecision == "APPROVED"` AND the latest review's
+   `commit.oid` matches `headRefOid` → PR is approved on the
+   current HEAD. **Short-circuit** the request and offer
+   `Dev10x:gh-pr-merge` instead via `AskUserQuestion`.
+3. If `reviewDecision == "APPROVED"` but newer commits have
+   invalidated the approval (review SHA != HEAD SHA) →
+   proceed with re-request, but **filter out** any reviewer whose
+   most recent review on the current HEAD is already `APPROVED`.
+4. Otherwise (`CHANGES_REQUESTED`, `REVIEW_REQUIRED`, or `null`) →
+   proceed normally.
+
+**Bypass:** Callers may pass `bypass_approval_check: true` (or a
+`--force` flag) to skip the guard. This is intended for explicit
+internal flows — e.g., `Dev10x:gh-pr-monitor` Phase 3 re-request
+after fixups, where the caller has already validated state. Do
+not bypass for direct user invocations.
+
+**Why?** Re-pings on approved PRs create reviewer fatigue and
+churn — the supervisor's next action is merge, not another review
+cycle. The guard turns a mid-flow noise event into an explicit
+choice between merge and force-request.
+
+The guard applies to:
+- `Dev10x:request-review` (orchestrator) — Step 1.5 precheck
+- `Dev10x:gh-pr-request-review` — Pre-flight Approval State Check
+- `Dev10x:slack-review-request` — Step 0 precheck
+
 ## Review Workflow
 
 1. Check existing review comments (mcp__github__get_pull_request_review_comments)
@@ -17,8 +55,10 @@ in code, see the domain-specific agent specs in `.claude/agents/`.
    - Changed but issue remains → reply with update
 5. Use inline comment tools ONLY for NEW issues
 6. Hide obsolete review summaries before posting the new one:
-   a. Query `reviewThreads` via `gh api graphql` — for each thread,
-      check `isResolved` and group by `pullRequestReview.databaseId`
+   a. Query review threads via the `pr_comments` /
+      `unresolved_threads` MCP wrappers (never raw `gh api graphql`,
+      GH-598) — for each thread, check `isResolved` and group by
+      `pullRequestReview.databaseId`
    b. For each previous Claude review with a non-empty body:
       - ALL threads `isResolved: true` → minimize as OUTDATED
       - ANY thread unresolved → leave visible
@@ -189,9 +229,12 @@ fixed code here
 ## Review Comment Format & JTBD Variants
 
 Structure findings as **[REQUIRED/RECOMMENDED]** — [title], explanation,
-rule reference, fix. For JTBD grammar: first-person forms like "**I want
-to**" or "**so I can**" violate `git-jtbd.md`; require an explicit
-third-person actor and beneficiary instead.
+rule reference, fix. For JTBD grammar: name a concrete beneficiary in the
+outcome clause — "**so the dealer can** reconcile payouts" (per
+`git-jtbd.md`). When the actor and beneficiary are the same role, repeating
+it is fine; a differing beneficiary must be named explicitly. Faceless
+"**so the user can**" or first-person "**so I can**" phrasing is a
+RECOMMENDED fix toward a concrete role.
 
 For story and scenario language, require the project or ticket language.
 When BDD or Gherkin-derived keywords appear, validate them against
@@ -213,3 +256,34 @@ When a PR demonstrates excellent practices:
 - Only suggest: bugs, security, architecture, performance, logic,
   naming
 - When in doubt: skip it
+
+## Courtesy-Fixup Disposition (GH-323)
+
+`Dev10x:gh-pr-review` classifies each finding with a
+**courtesy-fixup disposition**: mechanical, unambiguous findings
+may be pushed as `fixup!` commits by the reviewer, with consent,
+instead of posting an inline comment. The scope gate (Step 6b)
+fires only when courtesy-fixable findings exist; reviews with no
+mechanical changes see no extra interaction.
+
+### Design decisions
+
+**Batch vs per-finding confirmation**: Batch — all courtesy-fixable
+findings are presented in a single `AskUserQuestion` so the
+reviewer authorizes the full push scope in one interaction. A
+"Pick individually" option is available for granular control.
+
+**Default on/off**: The courtesy-fixup classification runs on
+every review by default. The scope gate (Step 6b) fires only when
+there are courtesy-fixable findings, so reviews with no mechanical
+fixes see no additional interaction.
+
+**friction_level interaction**: The Step 6b gate is `ALWAYS_ASK`
+(fires at all friction levels including `adaptive`). Rationale:
+pushing to another author's branch is an outward-facing action
+with real branch-state consequences. Auto-advancing past this gate
+at `adaptive` would push commits the reviewer never explicitly
+authorized. The gate is the guardrail, not friction.
+
+See [`references/courtesy-fixup-disposition.md`](courtesy-fixup-disposition.md)
+for criteria, examples, reply framing, and the required "feel free to amend or drop" language.

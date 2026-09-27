@@ -12,6 +12,7 @@ user-invocable: true
 invocation-name: Dev10x:release-notes
 allowed-tools:
   - Bash(${CLAUDE_PLUGIN_ROOT}/skills/release-notes/scripts/collect-prs.py:*)
+  - mcp__plugin_Dev10x_cli__collect_prs
   - Bash(gh pr view:*)
   - Bash(gh pr list:*)
   - Bash(gh release edit:*)
@@ -48,7 +49,7 @@ This skill is driven by playbook configuration. The default playbook
 lives at `${CLAUDE_PLUGIN_ROOT}/skills/release-notes/references/playbook.yaml`.
 Projects can override via the 4-tier resolution in
 `references/config-resolution.md` (global preferred:
-`~/.claude/memory/Dev10x/playbooks/release-notes.yaml`).
+`~/.config/Dev10x/playbooks/release-notes.yaml`).
 
 ### Plays
 

@@ -32,6 +32,11 @@ Files matching: `**/tests/**/*.py`
    Assert in test methods
 2. **`build()` over `create()`** — prefer in-memory Fakers when
    persistence not needed
+2b. **Subprocess assertion consistency** — When tests call external
+   commands via subprocess.run(), verify all similar tests assert
+   returncode consistently. If test A asserts result.returncode == 0 but
+   test B calls the same tool without asserting, the unasserted test may
+   silently fail. Flag mixed assertion patterns as RECOMMENDED fix.
 3. **Named parametrize** — project-specific parametrize helper
    preferred over `pytest.mark.parametrize` for named cases
 4. **Set complement** — `set(Enum) - ALLOWED` is standard pattern
@@ -41,6 +46,12 @@ Files matching: `**/tests/**/*.py`
    definition file
 8. **Fixture DRY** — flag 3+ methods constructing same value;
    suggest result fixture extraction
+8b. **Fixture-parametrization alignment** — When a test loads external
+   fixture data (baseline JSON, config files, etc.) and uses parametrize()
+   to test entries, verify the parametrize list covers all fixture entries.
+   If baseline has 4 entries but parametrize only covers 3, regression
+   detection is incomplete. Flag as RECOMMENDED: either remove the unused
+   fixture entry or add it to parametrize coverage.
 9. **Mock-to-integration upgrade** — when mock-based tests are
    replaced by DB-backed, note as improvement
 10. **Mockito teardown** — `unstub()` must be in fixture teardown

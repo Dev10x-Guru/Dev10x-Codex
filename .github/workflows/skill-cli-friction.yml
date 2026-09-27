@@ -1,0 +1,87 @@
+name: Skill CLI Friction
+
+on:
+  pull_request:
+    branches: [develop]
+    paths:
+      - "skills/**/SKILL.md"
+      - "skills/**/instructions.md"
+      - "skills/**/references/**/*.md"
+      - "skills/**/references/**/*.yaml"
+      - "skills/**/references/**/*.yml"
+      - "references/**/*.md"
+      - "references/**/*.yaml"
+      - "references/**/*.yml"
+      - "src/dev10x/skills/audit/cli_friction.py"
+      - "tests/skills/audit/test_cli_friction.py"
+      - "bin/check-skill-cli-friction.py"
+      - ".github/workflows/skill-cli-friction.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scanner-tests:
+    name: Scanner unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Run scanner unit tests
+        run: |
+          uv run --extra dev pytest tests/skills/audit/test_cli_friction.py \
+            -v --tb=short -o 'addopts='
+
+  changed-files:
+    name: Scan changed skill docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Collect changed skill docs
+        id: changed
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          # Diff PR head against the merge base with the target branch so
+          # we only scan files this PR actually changed.
+          BASE_SHA="$(git merge-base "origin/${BASE_REF}" HEAD)"
+          git diff --name-only --diff-filter=AM "${BASE_SHA}" HEAD \
+            | grep -E '^(skills/[^/]+/|references/).*\.(md|yaml|yml)$' \
+            | grep -v '/scripts/' \
+            | grep -v '/evals/' \
+            > /tmp/changed-skill-docs.txt || true
+          echo "count=$(wc -l < /tmp/changed-skill-docs.txt)" >> "$GITHUB_OUTPUT"
+          if [ -s /tmp/changed-skill-docs.txt ]; then
+            echo "Changed skill docs:"
+            cat /tmp/changed-skill-docs.txt
+          else
+            echo "No skill docs changed in this PR."
+          fi
+
+      - name: Scan changed files
+        if: steps.changed.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          xargs -a /tmp/changed-skill-docs.txt \
+            uv run --extra dev bin/check-skill-cli-friction.py

@@ -7,28 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --project $CLAUDE_PLUGIN_ROOT dev10x hook session git-aliases",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "uv run --project $CLAUDE_PLUGIN_ROOT dev10x hook session tmpdir",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "uv run --project $CLAUDE_PLUGIN_ROOT dev10x hook session guidance",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "uv run --project $CLAUDE_PLUGIN_ROOT dev10x hook session migrate-permissions",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/session-start-reload.py",
-            "timeout": 5
+            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/audit-wrap session-start $CLAUDE_PLUGIN_ROOT/hooks/scripts/session-start.py",
+            "timeout": 15
           }
         ]
       }
@@ -39,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --project $CLAUDE_PLUGIN_ROOT dev10x hook skill tmpdir",
+            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/audit-wrap skill-pre $CLAUDE_PLUGIN_ROOT/hooks/scripts/skill-pre.py",
             "timeout": 5
           }
         ]
@@ -49,7 +29,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/validate-bash-command.py",
+            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/audit-wrap validate-bash $CLAUDE_PLUGIN_ROOT/hooks/scripts/validate-bash-command.py",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Monitor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/audit-wrap validate-bash $CLAUDE_PLUGIN_ROOT/hooks/scripts/validate-bash-command.py",
             "timeout": 10
           }
         ]
@@ -59,7 +49,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/validate-edit-write.py",
+            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/audit-wrap validate-edit-write $CLAUDE_PLUGIN_ROOT/hooks/scripts/validate-edit-write.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "TaskUpdate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/audit-wrap task-guard $CLAUDE_PLUGIN_ROOT/hooks/scripts/task-guard.py",
             "timeout": 5
           }
         ]
@@ -71,13 +71,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --project $CLAUDE_PLUGIN_ROOT dev10x hook session goodbye",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "uv run --project $CLAUDE_PLUGIN_ROOT dev10x hook session persist",
-            "timeout": 5
+            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/audit-wrap session-stop $CLAUDE_PLUGIN_ROOT/hooks/scripts/session-stop.py",
+            "timeout": 10
           }
         ]
       }
@@ -88,7 +83,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/precompact-context.py",
+            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/audit-wrap precompact-context $CLAUDE_PLUGIN_ROOT/hooks/scripts/precompact-context.py",
             "timeout": 5
           }
         ]
@@ -100,7 +95,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/permission-denied.py",
+            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/audit-wrap permission-denied $CLAUDE_PLUGIN_ROOT/hooks/scripts/permission-denied.py",
             "timeout": 10
           }
         ]
@@ -112,7 +107,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --project $CLAUDE_PLUGIN_ROOT dev10x hook skill metrics",
+            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/audit-wrap skill-post $CLAUDE_PLUGIN_ROOT/hooks/scripts/skill-post.py",
             "timeout": 3
           }
         ]
@@ -122,7 +117,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --project $CLAUDE_PLUGIN_ROOT dev10x hook ruff-format",
+            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/audit-wrap ruff-format $CLAUDE_PLUGIN_ROOT/hooks/scripts/ruff-format.py",
             "timeout": 15
           }
         ]
@@ -132,7 +127,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/task-plan-sync.py",
+            "command": "$CLAUDE_PLUGIN_ROOT/hooks/scripts/audit-wrap task-plan-sync $CLAUDE_PLUGIN_ROOT/hooks/scripts/task-plan-sync.py",
             "timeout": 5
           }
         ]

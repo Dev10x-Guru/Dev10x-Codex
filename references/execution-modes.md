@@ -1,8 +1,9 @@
 # Execution Modes — Per-Step Behavioral Adaptation
 
 Declarative mode system for playbook steps. Modes control *what
-steps exist and who is involved* independently of friction levels
-(which control *how gates fire*).
+steps exist and who is involved*. How a gate fires is not a
+per-step axis — one baseline answers that for every step
+(ADR-0022).
 
 ## Problem
 
@@ -15,26 +16,20 @@ Execution modes are implemented inconsistently across skills:
 Project overrides that want different behavior must fork entire
 plays (~310 lines), causing drift when defaults improve.
 
-## Design Principle: Orthogonal Dimensions
-
-Friction levels and modes are **independent axes**:
-
-|  | strict | guided | adaptive |
-|---|---|---|---|
-| **team** (default) | All gates block, reviewers required | Gates with recommendations | Auto-advance, reviewers auto-assigned |
-| **solo-maintainer** | All gates block, no reviewer/Slack | Gates with recommendations, no reviewer | Auto-advance, no reviewer, self-merge |
-
-**Friction level** = how gates behave (block, recommend, auto).
-Adaptive friction covers AFK/unattended behavior — no separate
-`afk` or `auto-advance` modes needed.
+## Design Principle: Structure, Not Pacing
 
 **Mode** = what steps exist and who is involved (structural).
+
+Gate behavior is not a second axis to compose with: the single
+shipped baseline covers AFK/unattended behavior, so no separate
+`afk` or `auto-advance` mode is needed, and a step never restates
+its pacing per level.
 
 ## Mode Taxonomy
 
 Modes are purely structural — they change *what* happens, not
-*how aggressively* the agent proceeds. Pacing and gate behavior
-belong to `friction_level` (strict/guided/adaptive).
+*how aggressively* the agent proceeds. Gate posture is baseline
+policy plus overlays, resolved by `resolve_gate`.
 
 | Mode | Intent | Replaces |
 |------|--------|----------|
@@ -42,26 +37,59 @@ belong to `friction_level` (strict/guided/adaptive).
 | `supervised` | Extra approval gates at design/PR/merge | Default attended behavior |
 | `cautious` | Extra verification, confirm destructive ops | No current equivalent |
 | `pair-review` | Human review at implementation checkpoints | No current equivalent |
+| `auto-plan` | Auto-approve the plan gate only; downstream gates follow baseline policy | Unreachable friction cell (GH-678) |
 
-**Not modes** (use friction_level instead):
-- `afk` -> `friction_level: adaptive`
-- `auto-advance` -> `friction_level: adaptive`
-- `--unattended` -> `friction_level: adaptive`
+### Gate-flipping modes (the `solo-maintainer` / `auto-plan` exception)
+
+Most modes are *purely* structural. Two are not: `solo-maintainer`
+and `auto-plan` change how the **plan-approval gate** resolves. This
+is a deliberate, bounded exception — the plan gate is a single,
+well-known gate, and expressing "trust the plan" as a mode lets it
+compose with any gate overlay (auto-approve the plan, attend
+everything else). `auto-plan` flips
+*only* the plan gate; it never touches downstream gate pacing.
+
+**ADR-0016 (GH-760):** the actual gate resolution now runs through
+`resolve_gate` (`dev10x.domain.gate_policy`), not the former
+`session_rules.plan_gate_auto_approves()` predicate. The
+`solo-maintainer` effect lives in the `solo-maintainer` overlay
+(`presets/friction/overlays/solo-maintainer.yaml`:
+`request_review`/`external_notify: skip`, `merge: auto-advance`) and
+the `plan_approval` posture lives in the shipped baseline. These
+modes still describe *intent* here; their gate effect is encoded as
+preset/overlay data the resolver composes. See
+[`friction-levels.md`](friction-levels.md) § The model and
+[ADR-0014](../docs/adr/0014-auto-plan-mode-for-plan-approval-gate.md).
+
+**Not modes** (composed as a preset or overlay instead):
+- `afk` -> `gate_overlays: [afk]` on the baseline — the `afk`
+  overlay carries `session_adoption`/`doubt_sink`
+- `auto-advance` -> `gate_preset: adaptive`
+- `--unattended` -> `gate_preset: adaptive`
 
 ## Configuration
 
-### Session-level (set by Phase 0 of work-on/fanout)
+### Durable, per-project (set by Phase 0 of work-on/fanout)
 
 ```yaml
-# .claude/Dev10x/session.yaml
-friction_level: adaptive
-active_modes: [solo-maintainer]
+# ~/.config/Dev10x/friction.yaml — ADR-0018 D1
+defaults:
+  active_modes: []
+projects:
+  - match: ["*/<repo>", "*/<repo>-*"]
+    active_modes: [solo-maintainer]
 ```
+
+The retired `.claude/Dev10x/session.yaml` is **not** a config source
+(ADR-0018 D2; its remaining task-index role moved out of the repo in
+D5). Writing prefs there costs a self-settings consent prompt and is
+read only in a repo with no `friction.yaml` entry — so in any
+configured repo the value was written and never read (GH-950).
 
 ### Project-level (persistent across sessions)
 
 ```yaml
-# ~/.claude/memory/Dev10x/playbooks/work-on.yaml (global, preferred)
+# ~/.config/Dev10x/playbooks/work-on.yaml (global, preferred)
 # or .claude/Dev10x/playbooks/work-on.yaml (project-local)
 active_modes: [solo-maintainer]
 
@@ -75,9 +103,10 @@ mode_extensions:
 
 ### Resolution order
 
-1. Session override (`.claude/Dev10x/session.yaml`)
-2. Project override (`memory/playbooks/<skill>.yaml`)
-3. Default (no modes active)
+1. Project entry in `~/.config/Dev10x/friction.yaml` (first match wins)
+2. Project override (`~/.config/Dev10x/playbooks/<skill>.yaml`)
+3. `defaults:` block in `friction.yaml`
+4. Default (no modes active)
 
 ## Per-Step Mode Mappings
 
@@ -87,30 +116,26 @@ Steps declare how they adapt under each mode:
 - subject: Draft Job Story
   type: detailed
   skills: [Dev10x:jtbd]
+  prompt: >
+    Accept what the skill produces and auto-advance.
+    No approval needed.
   modes:
     solo-maintainer:
       prompt: >
         Draft JTBD as a documentation artifact. Useful as
         an indicator of how well the agent understood the task.
-  friction:
-    adaptive:
-      prompt: >
-        Accept what the skill produces and auto-advance.
-        No approval needed.
 
 - subject: Request review
   type: detailed
   skills: [Dev10x:gh-pr-request-review]
+  prompt: >
+    Auto-assign reviewers from CODEOWNERS. No
+    AskUserQuestion for reviewer selection.
   modes:
     solo-maintainer:
       subject: Mark PR ready for review
       prompt: >
         Run `gh pr ready`. No reviewers, no Slack.
-  friction:
-    adaptive:
-      prompt: >
-        Auto-assign reviewers from CODEOWNERS. No
-        AskUserQuestion for reviewer selection.
 ```
 
 ### Mode Actions
@@ -121,15 +146,9 @@ Steps declare how they adapt under each mode:
 | `{subject, prompt, skills, ...}` | Override specific fields |
 | (absent) | Step unchanged under this mode |
 
-### Friction Actions (per-step)
-
-Same actions as modes, declared under `friction:`:
-
-| Action | Meaning |
-|--------|---------|
-| `skip: true` | Remove step at this friction level |
-| `{prompt, subject, skills, ...}` | Override fields at this level |
-| (absent) | Step unchanged at this level |
+There is no per-step friction key. With one baseline, a step's
+pacing is not a variable — the step's own `prompt` states what it
+does, once.
 
 ## Resolution Order
 
@@ -140,11 +159,7 @@ Same actions as modes, declared under `friction:`:
    b. Apply `skip` actions (remove steps)
    c. Apply field overrides (merge, not replace)
    d. Apply `mode_extensions` from project file (merge on top)
-4. Apply friction-level adaptations (per-step `friction:`)
-5. Apply `overrides` if present (full replacement, escape hatch)
-
-Modes run before friction so mode-added steps can have their
-own `friction:` mappings resolved in step 4.
+4. Apply `overrides` if present (full replacement, escape hatch)
 
 ## Mode Precedence
 
@@ -157,64 +172,60 @@ When multiple active modes conflict on the same step field:
 
 ## Skill Integration
 
-Skills read session config from `.claude/Dev10x/session.yaml`:
-
-```yaml
-# .claude/Dev10x/session.yaml
-friction_level: adaptive
-active_modes: [solo-maintainer]
-```
+Skills read the resolved prefs from the matching `projects[]` entry
+of `~/.config/Dev10x/friction.yaml` (see § Configuration). Prefer
+`mcp__plugin_Dev10x_cli__resolve_gate` over reading the file: it owns
+the preset / overlay / project-pin / safety-floor precedence, and
+re-deriving that from raw keys drifts.
 
 Skills check `active_modes` for structural behavior:
 - `solo-maintainer` in active_modes -> skip reviewer assignment
 - `supervised` in active_modes -> add approval gates
 
-Skills check `friction_level` for pacing behavior:
-- `adaptive` -> auto-advance, skip non-ALWAYS_ASK gates
-- `guided` -> present recommendations
-- `strict` -> block for user input
+Pacing is not something a skill selects: the baseline
+auto-advances and skips every gate that is not ALWAYS_ASK, and
+`resolve_gate` is the only reader of that policy.
 
-The playbook resolver applies per-step mode and friction
-mappings before task creation, so most skills receive
-pre-adapted prompts and don't need detection at all.
+The playbook resolver applies per-step mode mappings before
+task creation, so most skills receive pre-adapted prompts and
+don't need detection at all.
 
-## Matrix Interaction Examples
+## Mode Interaction Examples
 
-**solo-maintainer + adaptive** (AFK solo dev):
+**solo-maintainer** (solo dev):
 - "Draft Job Story" -> auto-draft, accept and advance (no approval)
 - "Request review" -> "Mark PR ready" (mode: solo-maintainer)
-- All gates auto-resolve (friction: adaptive)
 - Auto-merge when CI green
 
-**solo-maintainer + guided** (solo dev, checkpoints):
-- "Draft Job Story" -> draft as doc artifact (mode: solo-maintainer)
-- "Request review" -> "Mark PR ready" (mode: solo-maintainer)
-- Gates present recommendations (friction: guided)
-
-**team + adaptive** (team project, fast shipping):
+**no modes active** (team project):
 - "Draft Job Story" -> auto-draft, accept and advance
-- "Request review" -> auto-assign reviewers (friction: adaptive)
-- Merge gate is ALWAYS_ASK regardless of friction
+- "Request review" -> auto-assign reviewers from CODEOWNERS
+- Merge gate is ALWAYS_ASK
 
-**team + strict** (regulated project):
-- Every gate blocks for user input
-- Reviewer assignment requires explicit selection
+**supervised** (team project, extra checkpoints):
+- "Draft Job Story" -> presented for approval before it is written
+- "Code review" -> findings presented before auto-fixing
 - Merge requires approval + all checks passing
+
+**auto-plan** (trust the plan, attend the calls — GH-678):
+- Plan-approval gate -> auto-approved, execution starts
+- Merge gate is ALWAYS_ASK regardless -> fires
+- Net: no babysitting the plan gate; hand stays on every judgment call
 
 ## Migration from Ad-Hoc Patterns
 
 | Current pattern | Maps to |
 |----------------|---------|
-| `--unattended` flag per skill | `friction_level: adaptive` |
-| Auto-advance in task-orchestration.md | `friction_level: adaptive` |
+| `--unattended` flag per skill | baseline gate policy |
+| Auto-advance in task-orchestration.md | baseline gate policy |
 | Solo-maintainer prompt hints | `active_modes: [solo-maintainer]` |
-| "Draft Job Story" unattended mode | `friction: { adaptive: { prompt: "accept and advance" } }` |
+| "Draft Job Story" unattended mode | the step's own `prompt: "accept and advance"` |
 | "Request review" -> "Mark PR ready" | `solo-maintainer` mode on step |
-| Full play override (310 lines) | `active_modes: [solo-maintainer]` + `friction_level: adaptive` (2 lines) |
+| Full play override (310 lines) | `active_modes: [solo-maintainer]` (1 line) |
 
 ## References
 
-- `references/friction-levels.md` — gate behavior per level
+- `references/friction-levels.md` — gate behavior
 - `skills/playbook/references/playbook.yaml` — step schema
 - `skills/playbook/SKILL.md` — playbook manager documentation
 - `skills/work-on/SKILL.md` — Phase 3 mode resolution

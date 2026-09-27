@@ -76,3 +76,48 @@ class TestValidate:
         inp = _make_input(command='git commit -m "\u2728 PAY-32 Add multi-location routing"')
         result = validator.validate(inp=inp)
         assert result is not None
+
+
+class TestBypassGitmoji:
+    @pytest.fixture()
+    def validator(self) -> CommitJtbdValidator:
+        return CommitJtbdValidator()
+
+    @pytest.mark.parametrize(
+        "gitmoji",
+        ["\U0001f516", "\U0001f4dd", "\U0001f500"],
+        ids=["bookmark", "memo", "twisted-arrows"],
+    )
+    def test_bypasses_jtbd_for_maintenance_gitmoji(
+        self,
+        validator: CommitJtbdValidator,
+        gitmoji: str,
+    ) -> None:
+        inp = _make_input(command=f'git commit -m "{gitmoji} Update changelog"')
+        result = validator.validate(inp=inp)
+        assert result is None
+
+    @pytest.mark.parametrize(
+        "gitmoji",
+        ["\u2728", "\U0001f41b", "\u267b\ufe0f"],
+        ids=["sparkles", "bug", "recycle"],
+    )
+    def test_still_blocks_non_bypass_gitmoji(
+        self,
+        validator: CommitJtbdValidator,
+        gitmoji: str,
+    ) -> None:
+        inp = _make_input(command=f'git commit -m "{gitmoji} Update changelog"')
+        result = validator.validate(inp=inp)
+        assert result is not None
+
+    def test_bypass_with_ticket_prefix(self, validator: CommitJtbdValidator) -> None:
+        inp = _make_input(command='git commit -m "\U0001f4dd GH-797 Update changelog for v0.55.0"')
+        result = validator.validate(inp=inp)
+        assert result is None
+
+    def test_custom_bypass_set(self) -> None:
+        validator = CommitJtbdValidator(bypass_gitmoji=frozenset({"\u2728"}))
+        inp = _make_input(command='git commit -m "\u2728 Add something"')
+        result = validator.validate(inp=inp)
+        assert result is None

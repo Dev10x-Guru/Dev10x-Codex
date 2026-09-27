@@ -1,0 +1,170 @@
+"""CLI for Dev10x userspace config — migration helpers (GH-215)."""
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import click
+
+from dev10x.domain.dev10x_paths import (
+    Dev10xConfigDir,
+    migrate_all,
+    stale_legacy_paths,
+)
+
+
+@click.group()
+def config() -> None:
+    """Manage Dev10x userspace configuration."""
+
+
+@config.command(name="root")
+def root() -> None:
+    """Print the resolved Dev10x config root."""
+    click.echo(Dev10xConfigDir.home())
+
+
+@config.command(name="migrate")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show which legacy files would be copied without writing.",
+)
+def migrate(*, dry_run: bool) -> None:
+    """Copy legacy ~/.claude/{memory/Dev10x,Dev10x}/ files to ~/.config/Dev10x/."""
+    stale = stale_legacy_paths()
+    if not stale:
+        click.echo("No legacy Dev10x config files found.")
+        return
+    if dry_run:
+        click.echo(f"Would migrate {len(stale)} legacy entr{'y' if len(stale) == 1 else 'ies'}:")
+        for path in stale:
+            click.echo(f"  - {path}")
+        return
+    migrated = migrate_all()
+    if not migrated:
+        click.echo("Nothing to migrate — destination already populated.")
+        return
+    click.echo(f"Migrated {len(migrated)} entr{'y' if len(migrated) == 1 else 'ies'}:")
+    for path in migrated:
+        click.echo(f"  - {path}")
+
+
+def _schema_report(*, cwd: str | None, dry_run: bool) -> dict[str, Any]:
+    """Run the v1 → v2 walk, surfacing a domain failure as a CLI error.
+
+    The domain layer returns ``Result`` so the same call is reusable from
+    an MCP boundary; the script layer owns the exit code (GH-246 H7).
+    """
+    from dev10x.domain.common.result import SuccessResult
+    from dev10x.domain.config_migration import migrate_configs
+
+    result = migrate_configs(toplevel=cwd or os.getcwd(), dry_run=dry_run)
+    if not isinstance(result, SuccessResult):
+        raise click.ClickException(result.error)
+    return result.value
+
+
+@config.command(name="migrate-schema")
+@click.option(
+    "--cwd",
+    "cwd",
+    default=None,
+    help="Repo root whose legacy .claude/Dev10x/config.yaml is folded in.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Report the posture change per entry without writing.",
+)
+def migrate_schema(*, cwd: str | None, dry_run: bool) -> None:
+    """Convert v1 durable configs to ADR-0022 schema v2 (GH-1166).
+
+    Rewrites `gate_preset` / `friction_level` / `human_review` /
+    `walk_away` into `supervisor_review` + `gate_overlays`. Idempotent —
+    a run with nothing left to convert writes nothing.
+    """
+    report = _schema_report(cwd=cwd, dry_run=dry_run)
+    if not report["pending"]:
+        click.echo("Dev10x config: already at schema v2 (ADR-0022).")
+        return
+    verb = "Would convert" if dry_run else "Converted"
+    plural = "y" if report["pending"] == 1 else "ies"
+    click.echo(f"{verb} {report['pending']} durable config entr{plural}:")
+    for store, part in report.items():
+        if not isinstance(part, dict):
+            continue
+        for entry in part.get("entries", ()):
+            click.echo(f"  - [{store}] {entry['scope']}")
+            click.echo(f"      supervisor_review: {entry['supervisor_review']}")
+            if entry["dropped_preset"]:
+                click.echo(f"      retired preset dropped: {entry['dropped_preset']}")
+            if entry["added_overlays"]:
+                click.echo(f"      overlays added: {', '.join(entry['added_overlays'])}")
+            if entry["dropped_keys"]:
+                click.echo(f"      keys dropped: {', '.join(entry['dropped_keys'])}")
+    if dry_run:
+        click.echo("\nRun `dev10x config migrate-schema` to apply.")
+
+
+def _report_projects_lists() -> None:
+    """Report Tier-2 `projects:` lists that select nothing (GH-1375, ADR-0026).
+
+    Four outcomes are kept apart on purpose. A file with no ``projects:``
+    list is silent, a matched list prints one confirmation line, and the
+    two failures — evaluated and matched nothing, versus never evaluated
+    because the target was unknown — say which happened. Collapsing the
+    last two is the defect: "no config applies" and "nobody checked"
+    look identical to a reader and mean opposite things.
+    """
+    from dev10x.domain.project_match import ProjectsStatus, describe
+    from dev10x.session.projects_scan import scan_projects_lists
+
+    reports = scan_projects_lists()
+    findings = [report for report in reports if report.needs_attention]
+    evaluated = [report for report in reports if report.status is not ProjectsStatus.ABSENT]
+    if not evaluated:
+        click.echo("\nDev10x config: no Tier-2 file carries a `projects:` list.")
+        return
+    if not findings:
+        matched = sum(1 for r in evaluated if r.status is ProjectsStatus.MATCHED)
+        click.echo(
+            f"\nDev10x config: {matched} of {len(evaluated)} `projects:` list(s) "
+            "select this checkout; none are misaddressed."
+        )
+        return
+    click.echo(f"\nFound {len(findings)} `projects:` list(s) worth a look:")
+    for report in findings:
+        for line in describe(report):
+            click.echo(line)
+    click.echo(
+        "\n`match:` is a directory-path glob (friction.yaml); `match_repo:` is an "
+        "org/repo glob (playbooks, settings-pr-merge.yaml, gitmoji.yaml). See ADR-0026."
+    )
+
+
+@config.command(name="doctor")
+def doctor() -> None:
+    """Report legacy Dev10x config files and v1 schema entries needing migration."""
+    stale = stale_legacy_paths()
+    if stale:
+        found = len(stale)
+        click.echo(f"Found {found} legacy Dev10x config entr{'y' if found == 1 else 'ies'}:")
+        for path in stale:
+            click.echo(f"  - {path}")
+        click.echo("\nRun `dev10x config migrate` to copy them to ~/.config/Dev10x/.")
+    else:
+        click.echo("Dev10x config: all files at canonical XDG location.")
+
+    # Schema-v1 residue is a separate axis from file *location* (GH-1166):
+    # a config already at the XDG path can still name a retired preset,
+    # which post-GH-1162 resolution cannot honour.
+    pending = _schema_report(cwd=None, dry_run=True)["pending"]
+    if not pending:
+        click.echo("Dev10x config: durable prefs are at schema v2 (ADR-0022).")
+    else:
+        click.echo(f"\nFound {pending} durable config entr{'y' if pending == 1 else 'ies'} on v1.")
+        click.echo("Run `dev10x config migrate-schema --dry-run` to preview the conversion.")
+
+    _report_projects_lists()

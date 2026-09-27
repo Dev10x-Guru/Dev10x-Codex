@@ -1,0 +1,157 @@
+"""Hook transport adapter — owns stdin reads and the wire response.
+
+GH-511: the Claude Code hook envelope (``hookSpecificOutput`` +
+``sys.exit``) and stdin parsing are process-boundary concerns. They
+live here in the ``dev10x.hooks`` adapter layer rather than on the
+``dev10x.domain.events`` value objects, per
+``.claude/rules/script-domain-boundaries.md`` (GH-246 H3/H7): domain
+objects keep their data shape and ``to_dict()``; this thin adapter
+translates a domain decision into the wire response and owns the
+exit code.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import sys
+from typing import NoReturn
+
+from dev10x.domain.events.hook_event import HookEventName
+from dev10x.domain.events.hook_input import HookAllow, HookAsk, HookInput, HookResult, HookRetry
+from dev10x.harness import is_codex
+from dev10x.subprocess_utils import effective_cwd
+
+
+def read_hook_input() -> HookInput:
+    """Parse the hook JSON envelope from stdin into a ``HookInput``.
+
+    Resolves the effective working directory (bound worktree wins,
+    process CWD is the fallback) so downstream git/gh subprocesses
+    target the caller's root — the transport-layer counterpart to the
+    GH-979 CWD discipline.
+    """
+    try:
+        data = json.load(sys.stdin)
+    except (json.JSONDecodeError, EOFError):
+        data = {}
+    return HookInput.from_dict(data=data, cwd=effective_cwd() or os.getcwd())
+
+
+def _record_attribution(*, rule_id: str, reason: str) -> None:
+    """Hand a deny/ask decision to the audit layer before exiting (GH-1095).
+
+    Never let telemetry break the hook: a failure here would turn a
+    clean deny into a crash, so the catch stays broad and the audit
+    record falls back to its pre-GH-1095 shape.
+
+    It is logged rather than silently dropped (GH-494's "always
+    surface" precedent): a future signature change in
+    ``set_decision_attribution`` would otherwise fail here invisibly
+    and defeat attribution with no trail.
+    """
+    if not rule_id and not reason:
+        return
+    try:
+        from dev10x.hooks.audit_emit import set_decision_attribution
+
+        set_decision_attribution(rule_id=rule_id, reason=reason)
+    except Exception:  # pragma: no cover - telemetry must never block a hook
+        logging.getLogger(__name__).debug(
+            "attribution recording failed; audit record falls back to its pre-GH-1095 shape",
+            exc_info=True,
+        )
+
+
+def _render_for_codex(
+    result: HookResult | HookAllow | HookAsk | HookRetry,
+) -> HookResult | HookAllow | HookAsk | HookRetry:
+    from dataclasses import replace
+
+    from dev10x.validators.codex_messages import adapt_message_for_codex
+
+    rendered = replace(result, message=adapt_message_for_codex(result.message))
+    if isinstance(rendered, HookAsk) and rendered.reason:
+        rendered = replace(rendered, reason=adapt_message_for_codex(rendered.reason))
+    return rendered
+
+
+def _emit_codex(result: HookResult | HookAllow | HookAsk | HookRetry) -> NoReturn:
+    result = _render_for_codex(result)
+    if isinstance(result, HookResult):
+        _record_attribution(rule_id=result.rule_id, reason=result.message)
+        print(result.message, file=sys.stderr)
+        sys.exit(2)
+
+    if isinstance(result, HookRetry):
+        sys.exit(0)
+
+    hook_output: dict[str, str] = {"hookEventName": HookEventName.PRE_TOOL_USE}
+    if isinstance(result, HookAsk):
+        _record_attribution(rule_id=result.rule_id, reason=result.reason or result.message)
+        hook_output["permissionDecision"] = "ask"
+        hook_output["permissionDecisionReason"] = result.reason or result.message
+    else:
+        hook_output["permissionDecision"] = "allow"
+
+    payload: dict[str, object] = {"hookSpecificOutput": hook_output}
+    if result.message:
+        payload["systemMessage"] = result.message
+    print(json.dumps(payload))
+    sys.exit(0)
+
+
+def emit(result: HookResult | HookAllow | HookAsk | HookRetry) -> NoReturn:
+    """Write the Claude Code hook envelope for ``result`` and exit.
+
+    ``HookResult`` denies the tool call (exit 2); ``HookAllow``,
+    ``HookAsk``, and ``HookRetry`` all exit 0 with their
+    decision-specific envelope. ``HookAsk`` returns
+    ``permissionDecision: "ask"`` so Claude Code shows the in-session
+    approval dialog (GH-604) — exit 0, not 2, since the decision is
+    carried in the JSON rather than the exit code.
+    """
+    if is_codex():
+        _emit_codex(result)
+
+    if isinstance(result, HookResult):
+        _record_attribution(rule_id=result.rule_id, reason=result.message)
+        payload: dict[str, object] = {
+            "hookSpecificOutput": {"permissionDecision": "deny"},
+            "systemMessage": result.message,
+        }
+        print(json.dumps(payload), file=sys.stderr)
+        sys.exit(2)
+
+    if isinstance(result, HookAllow):
+        payload = {"hookSpecificOutput": {"permissionDecision": "allow"}}
+        if result.message:
+            payload["systemMessage"] = result.message
+        print(json.dumps(payload), file=sys.stderr)
+        sys.exit(0)
+
+    if isinstance(result, HookAsk):
+        _record_attribution(rule_id=result.rule_id, reason=result.reason or result.message)
+        payload = {
+            "hookSpecificOutput": {
+                "hookEventName": HookEventName.PRE_TOOL_USE,
+                "permissionDecision": "ask",
+                "permissionDecisionReason": result.reason or result.message,
+            },
+        }
+        if result.message:
+            payload["systemMessage"] = result.message
+        print(json.dumps(payload), file=sys.stderr)
+        sys.exit(0)
+
+    payload = {
+        "hookSpecificOutput": {
+            "hookEventName": HookEventName.PERMISSION_DENIED,
+            "retry": True,
+        },
+    }
+    if result.message:
+        payload["systemMessage"] = result.message
+    print(json.dumps(payload), file=sys.stderr)
+    sys.exit(0)

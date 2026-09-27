@@ -1,0 +1,1104 @@
+# Dev10x Baseline Permissions (GH-99)
+#
+# Catalog of safe-to-allow tools the plugin's permission doctor should
+# seed by default into every project's allow list. Grouped by application
+# target so maintainers can prune/extend per audience.
+#
+# Conventions:
+#   - Use `${CLAUDE_PLUGIN_ROOT}/...` for plugin-script rules. Never paste
+#     resolved cache paths (e.g. `/plugins/cache/Dev10x-Guru/Dev10x/0.71.0/`)
+#     — those rot on every plugin upgrade. Do NOT rewrite them to a
+#     `**` wildcard either (GH-715): a `Bash()` rule is matched as a
+#     literal command prefix, so `**` is just two characters there.
+#     That is a fact about `Bash()` only — `Read`/`Edit`/`Write` rules
+#     are gitignore patterns whose `**` does cross directories
+#     (GH-1325). Keep pinned paths current with
+#     `dev10x permission update-paths`, which runs on every upgrade.
+#   - Trailing wildcard form: prefer `Bash(cmd:*)` (colon). GH-127 audit
+#     showed the colon form is the only one that reliably matches
+#     general invocations like `rg -n PATTERN path/`. The space form
+#     (`Bash(cmd *)`) is retained for tools where it has historically
+#     been written by the UI on "always allow", but new rules should
+#     use the colon form. Keep both when the historical space form is
+#     already widespread in user settings (rewriting risks breaking
+#     existing matches).
+#   - Built-in read-only commands (`ls`, `cat`, `head`, `tail`, `grep`,
+#     `find`, `wc`, `diff`, `stat`, `du`, `cd`) are NOT listed — they
+#     never prompt for the command itself. Path access still gated by
+#     `additionalDirectories`.
+#
+# Tiers:
+#   tier-1: ship as plugin base permissions (universal — git/gh/skills/scaffold)
+#   tier-2: ship as plugin base permissions (common dev tools — uv, node, docker)
+#   tier-3: ship as opt-in groups (heavier or domain-specific)
+
+version: 1
+last_audited: 2026-05-15
+source_issue: GH-99
+
+groups:
+
+  # ─── TIER 1 ─────────────────────────────────────────────────────────
+
+  git-core:
+    tier: 1
+    description: Day-to-day git porcelain. Universal across every project.
+    rules:
+      - Bash(git status:*)
+      - Bash(git branch:*)
+      - Bash(git checkout:*)
+      - Bash(git switch:*)
+      - Bash(git add:*)
+      - Bash(git commit:*)
+      - Bash(git commit -m:*)
+      - Bash(git log:*)
+      - Bash(git diff:*)
+      - Bash(git fetch:*)
+      - Bash(git push:*)
+      - Bash(git pull:*)
+      - Bash(git rebase:*)
+      - Bash(git rebase -i:*)
+      - Bash(git reset:*)
+      - Bash(git reset --soft:*)
+      - Bash(git reset --hard:*)
+      # `git restore` and `git checkout --` discard uncommitted work
+      # identically. The baseline allows both; a supervisor who denies one
+      # must deny the other, or the rail has a second spelling wide open
+      # (GH-1039). See skills/diag-friction/references/
+      # deny-rail-vs-approval-gate.md.
+      - Bash(git restore:*)
+      - Bash(git restore --staged:*)
+      - Bash(git stash:*)
+      - Bash(git show:*)
+      - Bash(git symbolic-ref:*)
+      - Bash(git rev-parse:*)
+      - Bash(git rev-list:*)
+      - Bash(git reflog:*)
+      - Bash(git remote:*)
+      - Bash(git merge:*)
+      - Bash(git merge-base:*)
+      - Bash(git merge-tree:*)
+      - Bash(git mv:*)
+      - Bash(git tag:*)
+      - Bash(git cherry-pick:*)
+      - Bash(git cherry:*)
+      - Bash(git blame:*)
+      - Bash(git ls-files:*)
+      - Bash(git ls-remote:*)
+      - Bash(git ls-tree:*)
+      - Bash(git describe:*)
+      - Bash(git shortlog:*)
+      - Bash(git worktree:*)
+      - Bash(git check-ignore:*)
+      - Bash(git grep:*)
+      - Bash(git config --get:*)
+      - Bash(git config --list:*)
+      - Bash(git config --show-origin:*)
+      - Bash(git diff-tree:*)
+
+  git-aliases-dev10x:
+    tier: 1
+    description: Aliases installed by Dev10x:git-alias-setup.
+    rules:
+      - Bash(git nopager:*)
+      - Bash(git nocolor:*)
+      - Bash(git develop-log:*)
+      - Bash(git develop-diff:*)
+      - Bash(git develop-rebase:*)
+      - Bash(git autosquash-develop:*)
+      - Bash(git development-log:*)
+      - Bash(git development-diff:*)
+      - Bash(git development-rebase:*)
+      - Bash(git autosquash-development:*)
+      - Bash(git main-log:*)
+      - Bash(git main-diff:*)
+      - Bash(git main-rebase:*)
+      - Bash(git autosquash-main:*)
+      - Bash(git master-log:*)
+      - Bash(git master-diff:*)
+      - Bash(git master-rebase:*)
+      - Bash(git autosquash-master:*)
+      - Bash(git trunk-log:*)
+      - Bash(git trunk-diff:*)
+      - Bash(git trunk-rebase:*)
+      - Bash(git autosquash-trunk:*)
+
+  git-safe-flags:
+    tier: 2
+    description: >
+      Flag-stratified safe forms of verbs whose bare form is gated.
+      Each entry expands to Bash(<cmd> <flag>:*) allow rules (GH-372).
+    # NOTE: `find`'s "safe unless -delete/-exec" case is OUT OF SCOPE for
+    # flag_overrides — it INVERTS this additive model (denying a dangerous
+    # flag, not allowing a safe one). A companion deny-flag mechanism for
+    # `find -delete` is deferred (GH-372). Do NOT add deny-flags here.
+    flag_overrides:
+      "git clean":
+        - "-n"
+        - "--dry-run"
+      # Local-branch deletion is pre-approved in every spelling (GH-1067).
+      # `-D` removes a ref, not history: the deleted tip stays reachable
+      # via `git log -g` for the reflog retention window, which is the same
+      # recoverability argument already accepted for `git reset --hard` and
+      # `git push --force` (GH-1053). Unattended cleanup after killed
+      # workers must never wedge on a prompt no one is present to answer,
+      # so these must not be seeded into ask/deny — see the shipped
+      # accepted-findings catalog in
+      # src/dev10x/domain/common/accepted_findings.py.
+      "git branch":
+        - "-d"
+        - "-D"
+        - "--delete"
+      "git reset":
+        - "--dry-run"
+
+  github-cli:
+    tier: 1
+    description: >
+      GitHub CLI ops for PRs, issues, runs, workflows. Writes flow
+      through gh-pr-create / ticket-create skills.
+    rules:
+      - Bash(gh auth:*)
+      - Bash(gh auth login:*)
+      - Bash(gh auth status:*)
+      - Bash(gh api:*)
+      - Bash(gh browse:*)
+      - Bash(gh repo clone:*)
+      - Bash(gh repo list:*)
+      - Bash(gh repo view:*)
+      - Bash(gh search:*)
+      - Bash(gh pr view:*)
+      - Bash(gh pr list:*)
+      - Bash(gh pr status:*)
+      - Bash(gh pr diff:*)
+      - Bash(gh pr checks:*)
+      - Bash(gh pr edit:*)
+      - Bash(gh pr review:*)
+      - Bash(gh pr ready:*)
+      - Bash(gh pr reopen:*)
+      - Bash(gh pr create:*)
+      - Bash(gh pr comment:*)
+      - Bash(gh pr merge:*)
+      - Bash(gh issue view:*)
+      - Bash(gh issue list:*)
+      - Bash(gh issue status:*)
+      - Bash(gh issue create:*)
+      - Bash(gh issue close:*)
+      - Bash(gh issue edit:*)
+      - Bash(gh issue comment:*)
+      - Bash(gh label list:*)
+      - Bash(gh label create:*)
+      - Bash(gh label edit:*)
+      - Bash(gh milestone:*)
+      - Bash(gh release list:*)
+      - Bash(gh release view:*)
+      - Bash(gh run list:*)
+      - Bash(gh run view:*)
+      - Bash(gh run watch:*)
+      - Bash(gh run download:*)
+      - Bash(gh run rerun:*)
+      # gh workflow (GH-373): read-only forms pre-approved. The
+      # cost-bearing forms `gh workflow run|enable|disable` are
+      # deliberately omitted so they keep prompting (ask-tier) —
+      # they trigger CI spend or flip workflow state.
+      - Bash(gh workflow list:*)
+      - Bash(gh workflow view:*)
+      # gh project (GH-1078): read-only forms pre-approved, stratified
+      # the same way as `gh run` / `gh workflow`. The board-mutating
+      # forms `gh project create|edit|delete|link|unlink|
+      # mark-template|item-add|item-edit|item-delete|item-archive` are
+      # deliberately omitted so they keep prompting (ask-tier) — a
+      # delete verb removes items no reflog can recover. Following the
+      # GH-310 doctrine there is intentionally NO blanket
+      # `Bash(gh project *)` deny: deny-first precedence would also
+      # block the safe read surface below.
+      - Bash(gh project list:*)
+      - Bash(gh project view:*)
+      - Bash(gh project item-list:*)
+      - Bash(gh project field-list:*)
+
+  dev10x-scaffolding:
+    tier: 1
+    description: >
+      Shared scaffolding for Dev10x skills. Plugin scripts use
+      `${CLAUDE_PLUGIN_ROOT}` so they survive upgrades.
+    rules:
+      - Skill(Dev10x:*)
+      # A path rule's leading `//` anchors at the filesystem root; a
+      # single `/` anchors at the settings source instead (GH-1325).
+      # Edit(path) covers all file-editing tools (Write, Edit,
+      # NotebookEdit); Write(path) rules are no longer matched by
+      # Claude Code's file-permission checks (GH-862). mktmp writes
+      # under /tmp/Dev10x/<namespace>/ — the legacy /tmp/claude
+      # spelling is retired (GH-949, GH-1395).
+      - Read(//tmp/Dev10x/**)
+      - Edit(//tmp/Dev10x/**)
+      # GH-127 #4: skills load their own instructions.md and references
+      # from the marketplace cache; without this, every fresh skill
+      # invocation triggers a Read prompt.
+      - "Read(~/.claude/plugins/marketplaces/Dev10x-Guru/**)"
+      - "Read(~/.claude/plugins/cache/Dev10x-Guru/**)"
+      - "Bash(${CLAUDE_PLUGIN_ROOT}/bin/**)"
+      - "Bash(${CLAUDE_PLUGIN_ROOT}/hooks/scripts/**)"
+      - "Bash(${CLAUDE_PLUGIN_ROOT}/skills/**)"
+      - "Bash(${CLAUDE_PLUGIN_ROOT}/lib/**)"
+      # GH-370: documented arbitrary-code escape destinations. When an
+      # agent follows GH-308 steering and extracts an inline probe into
+      # /tmp/Dev10x/<id>.py or ~/.claude/tools/<name>.py, the Write
+      # permission already exists — but executing the result prompts
+      # again. Same trust model as ${CLAUDE_PLUGIN_ROOT}/skills above.
+      - "Bash(/tmp/Dev10x/*.py:*)"
+      - "Bash(/tmp/Dev10x/**/*.py:*)"
+      - "Bash(/tmp/Dev10x/*.sh:*)"
+      - "Bash(/tmp/Dev10x/**/*.sh:*)"
+      - "Bash(~/.claude/tools/*:*)"
+      - "Bash(~/.claude/tools/*.py:*)"
+      - "Bash(~/.claude/tools/*.sh:*)"
+      # Twin absolute-path form — some sessions normalize ~, others use
+      # the literal /home/<user> (GH-271 evidence #192, #215).
+      - "Bash(/home/*/.claude/tools/*:*)"
+
+  dev10x-cli:
+    tier: 1
+    description: >
+      Per-subcommand allow-rules for the version-stable `uvx dev10x`
+      CLI (GH-269). Enumerated explicitly — never `Bash(uvx dev10x:*)`
+      — so users can audit exactly which dev10x subcommands the
+      plugin is authorized to invoke. Replaces per-script
+      `Bash(${CLAUDE_PLUGIN_ROOT}/skills/upgrade-cleanup/scripts/*.py:*)`
+      rules, which rot on every plugin upgrade because the cache
+      path encodes the version. The `permission update-paths`
+      rewriter collapses legacy per-script rules to the matching
+      `uvx dev10x permission <subcommand>:*` form during upgrade.
+    rules:
+      - Bash(uvx dev10x permission clean:*)
+      - Bash(uvx dev10x permission doctor:*)
+      - Bash(uvx dev10x permission ensure-base:*)
+      - Bash(uvx dev10x permission ensure-reads:*)
+      - Bash(uvx dev10x permission ensure-scripts:*)
+      - Bash(uvx dev10x permission ensure-workspace:*)
+      - Bash(uvx dev10x permission enumerate-mcp:*)
+      - Bash(uvx dev10x permission codex-rules:*)
+      - Bash(uvx dev10x permission generalize:*)
+      - Bash(uvx dev10x permission init:*)
+      - Bash(uvx dev10x permission investigate:*)
+      - Bash(uvx dev10x permission merge-worktree:*)
+      - Bash(uvx dev10x permission record-upgrade:*)
+      - Bash(uvx dev10x permission update-paths:*)
+      - Bash(uvx dev10x doctor run:*)
+      - Bash(uvx dev10x session seed:*)
+      - Bash(uvx dev10x playbook diff:*)
+      - Bash(uvx dev10x skill count-instructions:*)
+      - Bash(uvx dev10x skill notify:*)
+      - Bash(uvx dev10x config:*)
+      - Bash(uvx dev10x platform:*)
+      - Bash(uvx dev10x init:*)
+      - Bash(uvx dev10x github-app:*)
+
+  # ─── TIER 2 ─────────────────────────────────────────────────────────
+
+  shell-helpers:
+    tier: 2
+    description: >
+      Common shell utilities not on Claude Code's built-in read-only
+      list. Built-ins (find, grep, ls, cat, head, tail, wc, diff,
+      stat, du, cd) intentionally absent.
+    rules:
+      - Bash(jq:*)
+      - Bash(yq:*)
+      # GH-127: colon-form matches `rg <pattern> <path>` invocations;
+      # space-form (`Bash(rg *)`) does not match the common case.
+      - Bash(rg:*)
+      - Bash(rg --files *)
+      - Bash(sed:*)
+      - Bash(sed *)
+      - Bash(awk *)
+      - Bash(awk:*)
+      - Bash(xargs cat:*)
+      - Bash(xargs ls:*)
+      - Bash(xargs rg:*)
+      - Bash(chmod:*)
+      - Bash(chmod +x:*)
+      - Bash(chmod a+x:*)
+      - Bash(chmod u+x:*)
+      - Bash(chmod -x:*)
+      - Bash(mkdir:*)
+      - Bash(cp /tmp:*)
+      - Bash(mv /tmp:*)
+      - Bash(ln:*)
+      - Bash(basename:*)
+      - Bash(printenv:*)
+      - Bash(env:*)
+      - Bash(date:*)
+      - Bash(pwd:*)
+      - Bash(alias:*)
+      - Bash(comm:*)
+      - Bash(source:*)
+      - Bash(tar *)
+      - Bash(gzip *)
+      - Bash(base64:*)
+      - Bash(curl -fsSL:*)
+      - Bash(curl -s*:*)
+      - Bash(curl -si:*)
+      - Bash(curl -sI:*)
+      - Bash(which *)
+      - Bash([ -f .git ])
+
+  python-toolchain:
+    tier: 2
+    description: >
+      Python dev tools. `uv:*` is broad because uv has no destructive
+      subcommands unless `publish` is explicitly invoked.
+    rules:
+      - Bash(uv:*)
+      - Bash(pip list:*)
+      - Bash(pip show:*)
+      - Bash(pip index:*)
+      - Bash(pip install:*)
+      - Bash(pipx list:*)
+      - Bash(python:*)
+      - Bash(python3:*)
+      - Bash(ipython:*)
+      # ruff/black/isort/mypy: the DX016 validator blocks inline linters
+      # (GH-596) when active, but these allow-rules are kept as a fallback
+      # so linting still works without prompts when DX016 is disabled
+      # (minimal profile or DEV10X_HOOK_DISABLE=DX016).
+      - Bash(ruff check:*)
+      - Bash(ruff format:*)
+      - Bash(black:*)
+      - Bash(isort:*)
+      - Bash(mypy:*)
+      - Bash(python -m pytest *)
+      - Bash(pytest:*)
+
+  imagemagick-evidence:
+    tier: 2
+    description: >
+      ImageMagick composition for QA evidence sheets (GH-1141). The
+      plugin already depends on ImageMagick — qa-self's
+      verify-evidence.py shells out to `identify` — but shipped no rule
+      for it, so stacking screenshots prompted and offered `magick *`
+      as the "don't ask again" answer.
+
+      Every entry-point spelling is covered: IM7 renamed `convert` to
+      `magick`, and a rule for one does not cover the other (the same
+      spelling-alias class as `uvx dev10x` vs `dev10x`). GH-1317 moved
+      them onto `command_spellings:`, so the aliases are declared once
+      as spellings of one capability rather than as three unrelated
+      rules that happen to sit together. `identify` is read-only. The
+      composing verbs can overwrite an existing output file and nothing
+      else — none of the GH-310 exclusions (arbitrary code, network
+      exec, destructive filesystem ops) applies — but they are grouped
+      at tier 2 rather than default-seeded because the sanctioned path
+      is the fixed-shape `convert-evidence.sh stitch`, which the
+      versioned per-file script rule already covers.
+    rules:
+      - Bash(identify:*)
+    command_spellings:
+      - commands: [magick, montage, convert]
+
+  node-toolchain:
+    tier: 2
+    description: JavaScript / TypeScript runtime + package managers.
+    rules:
+      - Bash(node *)
+      - Bash(node:*)
+      - Bash(node --version)
+      - Bash(npm:*)
+      - Bash(npm run:*)
+      - Bash(npm test:*)
+      - Bash(npm view:*)
+      - Bash(npm run lint:*)
+      - Bash(npx:*)
+      - Bash(npx eslint:*)
+      - Bash(npx prettier:*)
+      - Bash(npx prettier --write:*)
+      - Bash(npx tsc:*)
+      - Bash(npx jest:*)
+      - Bash(npx vitest:*)
+      - Bash(npx vitest run:*)
+      - Bash(pnpm:*)
+      - Bash(pnpm test:*)
+      - Bash(pnpm lint:*)
+      - Bash(pnpm build:*)
+      - Bash(pnpm check:*)
+      - Bash(pnpm exec:*)
+      - Bash(pnpm remove:*)
+      - Bash(yarn:*)
+      - Bash(yarn test)
+      - Bash(yarn build *)
+      - Bash(yarn install *)
+      - Bash(yarn eslint *)
+      - Bash(yarn prettier *)
+      - Bash(yarn lint:eslint:*)
+      - Bash(yarn lint:tsc)
+
+  # GH-703: generalized read-only / idempotent node dev-loop shapes
+  # (build, typecheck). `yarn build:<app>` and `yarn typecheck` re-prompt
+  # because the default node-toolchain lacks the `:*` generalization
+  # (evidence #17/#33). These run arbitrary package.json scripts, so they
+  # are trusted-exec — tier 3 (per-project opt-in), NEVER default-seeded,
+  # the same class as uv:*/python:*. Aggressive default seeding is D7
+  # (deferred to PERM-M2). Jest/`yarn … test` run via the run_node_tests
+  # MCP wrapper instead, which sidesteps the Bash layer entirely.
+  node-dev-loop:
+    tier: 3
+    sensitivity: mutating
+    description: >
+      Generalized read-only / idempotent node dev-loop commands
+      (build, typecheck). Trusted-exec, per-project opt-in (GH-703).
+    rules:
+      - Bash(yarn build:*)
+      - Bash(yarn typecheck)
+      - Bash(yarn typecheck:*)
+      - Bash(yarn tsc --noEmit)
+      - Bash(npm run build:*)
+      - Bash(npm run typecheck:*)
+      - Bash(pnpm typecheck:*)
+
+  docker:
+    tier: 2
+    description: >
+      Docker / docker-compose for local dev environments. Write ops
+      scoped — no broad `docker run *` without `--rm`.
+    rules:
+      - Bash(docker compose:*)
+      - Bash(docker ps:*)
+      - Bash(docker logs:*)
+      - Bash(docker inspect:*)
+      - Bash(docker exec:*)
+      - Bash(docker image:*)
+      - Bash(docker images:*)
+      - Bash(docker network:*)
+      - Bash(docker pull:*)
+      - Bash(docker run --rm:*)
+      - Bash(docker start:*)
+      - Bash(docker stop:*)
+      - Bash(docker rm:*)
+      - Bash(docker info:*)
+      - Bash(docker history:*)
+
+  database-readonly:
+    tier: 2
+    description: >
+      Read-only DB inspection. Writes always require explicit user
+      approval per Dev10x CLAUDE.md rule.
+    rules:
+      - Bash(psql:*)
+      - Bash(pg_dump:*)
+
+  apt-and-system:
+    tier: 2
+    description: System inspection (read-only). Package install excluded.
+    rules:
+      - Bash(apt list:*)
+      - Bash(apt-cache policy:*)
+      - Bash(dpkg:*)
+      - Bash(flatpak list:*)
+      - Bash(pgrep:*)
+      - Bash(lsmod)
+      - Bash(lspci)
+
+  # ─── TIER 3 ─────────────────────────────────────────────────────────
+
+  sudo-apt:
+    tier: 3
+    description: >
+      Escape valve (GH-326) for users who routinely run package management
+      under sudo. NOT shipped by default — `sudo` is denied for any shape in
+      the privilege-escalation tier (see base_denies in projects.yaml).
+      Enabling this group is a two-step operation, because deny-first
+      precedence means these narrow allows alone cannot override the blanket
+      `Bash(sudo:*)` deny: the permission doctor must first narrow that deny
+      (drop `Bash(sudo:*)` / `Bash(sudo *)`, keep the destructive shapes such
+      as `Bash(sudo -n *)` and `Bash(sudo rm:*)`), then seed these rules.
+      Scope stays limited to apt/apt-get package management — never a blanket
+      sudo allow.
+    rules:
+      - Bash(sudo apt update:*)
+      - Bash(sudo apt-get update:*)
+      - Bash(sudo apt install:*)
+      - Bash(sudo apt-get install:*)
+      - Bash(sudo apt upgrade:*)
+      - Bash(sudo apt-get upgrade:*)
+
+  media-and-format:
+    tier: 3
+    description: Image/video/PDF tooling. Opt-in for content/design workflows.
+    rules:
+      - Bash(ffmpeg:*)
+      - Bash(ffprobe:*)
+      - Bash(convert:*)
+      - Bash(java -jar ~/.local/bin/plantuml.jar:*)
+      # Piper reads a text file and writes a WAV — it never reaches the
+      # network and never mutates anything but its own output path, so it
+      # sits at the same tier as ffmpeg rather than behind a prompt. Voice
+      # models are fetched separately (see Dev10x:tts § Installing a voice),
+      # which is why no download form is allowed here.
+      - Bash(piper:*)
+
+  gog-readonly:
+    tier: 3
+    description: >
+      Read-only surface of the gog Google CLI (https://gogcli.sh), used by
+      Dev10x:yt-upload's preflight and post-upload read-back (GH-1119) and
+      by Dev10x:gog, which runs gog directly at the Bash layer (GH-1156).
+      Opt-in — gog is a personal tool, not a Dev10x dependency, so most
+      users have nothing to grant here. Scoped to the exact subcommands
+      those skills run: a blanket `Bash(gog youtube:*)` would also
+      pre-approve the delete verbs, and `Bash(gog drive:*)` would
+      pre-approve `gog drive delete`.
+
+      Note these rules are NOT required for Dev10x:yt-upload. Its gog calls
+      live inside `skills/yt-upload/scripts/upload-video.py`, and the
+      permission layer only sees Bash tool invocations — not subprocess
+      calls made from within a script — so the scripts glob already covers
+      them. This group is for direct gog use at the Bash layer, which is
+      Dev10x:gog's entire surface.
+
+      Every verb here is non-mutating. `drive audit` is the sharing-audit
+      command that exists precisely to answer "who has access?" without
+      changing anything; `drive raw` is a lossless Files.Get. Read verbs
+      that write a local artifact (`drive download`, `drive inventory`) are
+      deliberately absent, as is `chat dm space`, which CREATES a DM space
+      when one does not exist — its `find`-like name is the trap.
+    rules:
+      - Bash(gog --version)
+      - Bash(gog schema:*)
+      - Bash(gog auth list:*)
+      - Bash(gog auth status:*)
+      - Bash(gog auth doctor:*)
+      - Bash(gog auth services:*)
+      - Bash(gog chat spaces list:*)
+      - Bash(gog chat spaces find:*)
+      - Bash(gog chat messages list:*)
+      - Bash(gog chat threads list:*)
+      - Bash(gog drive ls:*)
+      - Bash(gog drive search:*)
+      - Bash(gog drive tree:*)
+      - Bash(gog drive du:*)
+      - Bash(gog drive get:*)
+      - Bash(gog drive raw:*)
+      - Bash(gog drive permissions:*)
+      - Bash(gog drive drives:*)
+      - Bash(gog drive audit:*)
+      - Bash(gog youtube channels list:*)
+      - Bash(gog youtube videos list:*)
+
+  gog-credentialed:
+    tier: 3
+    sensitivity: secret
+    description: >
+      gog's credential-export and Drive-write surface (GH-1119). NOT shipped
+      by default, and deliberately separated from `gog-readonly` so enabling
+      the read surface cannot silently enable a token export.
+
+      `sensitivity: secret` matches `secrets-listing-readonly`, which is
+      tagged that way even though a bare list never prints values. This rule
+      does more than enumerate: it materializes a LIVE, usable OAuth access
+      token on disk.
+
+      **What enabling this actually grants.** A bare
+      `Bash(gog auth tokens export:*)` allow-rule approves ANY shape of that
+      command at the shell — including an operator- or injection-supplied
+      `--out` pointing anywhere writable, with no `chmod`, no shred, and no
+      cleanup. Dev10x:yt-upload's wrapper does all of that carefully, but
+      the wrapper's protections are properties of `upload-video.py`, NOT of
+      this permission grant: as `gog-readonly` notes, subprocess calls made
+      from inside a script are never seen by the permission layer, so the
+      skill needs no gog rule at all. Enable this group only for DIRECT gog
+      use at the Bash layer, and only if you actually do that — pre-approving
+      a credential export you never invoke is pure downside.
+
+      `gog drive upload` writes to Drive. `mkdir`, `share` and every delete
+      verb are deliberately absent — add them per-command if a workflow
+      needs them, rather than widening to `Bash(gog drive:*)`.
+    rules:
+      - Bash(gog auth tokens export:*)
+      - Bash(gog drive upload:*)
+
+  aws-readonly:
+    tier: 3
+    description: >
+      AWS CLI read-only ops via aws-vault. The credentialed `aws-vault
+      exec` surface is verb-blind, so the read allowlist is enforced by
+      the `aws.sh` wrapper (GH-606 D6): it passes only describe-/list-/
+      get-/lookup-/… operations and denies secret-exfil reads
+      (`secretsmanager get-secret-value`, `ssm get-parameter
+      --with-decryption`, `kms decrypt`, …) that DX014 also screens
+      (GH-605). The wrapper rule below is verb-safe at `:*` because the
+      script self-filters; a bare `Bash(aws-vault exec:*)` is
+      deliberately ABSENT (it would grant every mutating verb — the
+      GH-606 evidence #4 footgun). The two `aws ecr describe-*` forms are
+      retained for the non-credentialed read path.
+    rules:
+      - Bash(${CLAUDE_PLUGIN_ROOT}/skills/aws-vault/scripts/aws.sh:*)
+      - Bash(aws ecr describe-images:*)
+      - Bash(aws ecr describe-repositories:*)
+
+  bigquery-readonly:
+    tier: 3
+    description: BigQuery inspection.
+    rules:
+      - Bash(bq ls:*)
+      - Bash(bq show:*)
+
+  kubernetes-readonly:
+    tier: 3
+    description: >
+      kubectl read-only inspection. Namespace-scoped wildcards because
+      real-world usage always passes `-n <namespace>`. Excludes
+      apply/delete/patch/exec/scale/rollout/edit/create — those mutate
+      cluster state and must stay prompted. `port-forward`, `proxy`,
+      `exec`, and `cp` intentionally excluded (escape hatches / arbitrary
+      code).
+    rules:
+      - Bash(kubectl get:*)
+      - Bash(kubectl -n * get:*)
+      - Bash(kubectl describe:*)
+      - Bash(kubectl -n * describe:*)
+      - Bash(kubectl logs:*)
+      - Bash(kubectl -n * logs:*)
+      - Bash(kubectl top:*)
+      - Bash(kubectl -n * top:*)
+      - Bash(kubectl explain:*)
+      - Bash(kubectl api-resources:*)
+      - Bash(kubectl api-versions:*)
+      - Bash(kubectl version:*)
+      - Bash(kubectl cluster-info:*)
+      - Bash(kubectl config get-contexts:*)
+      - Bash(kubectl config current-context:*)
+      - Bash(kubectl config view:*)
+
+  network-diagnostics:
+    tier: 3
+    description: >
+      Read-only network/VPN/system inspection. Opt-in. Write forms
+      (ip route add, nmcli connection modify, iptables -A/-D/-I)
+      intentionally excluded — they change system state.
+    rules:
+      - Bash(ip route:*)
+      - Bash(ip addr:*)
+      - Bash(ip -4 addr:*)
+      - Bash(ip -6 addr:*)
+      - Bash(ip link:*)
+      - Bash(resolvectl:*)
+      - Bash(nmcli:*)
+      - Bash(nmcli -t:*)
+      - Bash(nmcli connection show:*)
+      - Bash(nmcli device:*)
+      - Bash(ss:*)
+      - Bash(ss -tlnp:*)
+      - Bash(netstat:*)
+      - Bash(dig:*)
+      - Bash(nslookup:*)
+      - Bash(host:*)
+      - Bash(traceroute:*)
+      - Bash(ping -c:*)
+      - Bash(ps -ef:*)
+      - Bash(ps aux:*)
+      - Bash(pgrep:*)
+
+  build-tools:
+    tier: 3
+    description: Make and language-agnostic build runners.
+    rules:
+      - Bash(make:*)
+      - Bash(pre-commit run:*)
+      - Bash(gitlint:*)
+      - Bash(bump-my-version:*)
+
+  railway-cli:
+    tier: 3
+    description: >
+      Railway.app deployment CLI (GH-373, evidence GH-271 #225–#234).
+      Opt-in (tier 3) — Railway is project-specific, not universal.
+      Stratified like `gh run`: read-only inspection is pre-approved;
+      cost-bearing deploys (`up`, `deploy`, `redeploy`, `run`) are
+      deliberately ABSENT so they keep prompting. Following the GH-310
+      doctrine, there is intentionally NO blanket `Bash(railway *)` deny:
+      deny-first precedence means a catch-all deny would also block the
+      safe read surface below (the same reason GH-310 forbids
+      `Bash(git *)` denies). The safe-known `railway run` read forms
+      (printenv/env/cat) are pre-approved as explicit exceptions.
+    rules:
+      - Bash(railway --version)
+      - Bash(railway --help)
+      - Bash(railway status:*)
+      - Bash(railway whoami:*)
+      - Bash(railway projects:*)
+      - Bash(railway services:*)
+      - Bash(railway logs:*)
+      - Bash(railway variables:*)
+      - Bash(railway link:*)
+      - Bash(railway unlink:*)
+      - Bash(railway run printenv:*)
+      - Bash(railway run env:*)
+      - Bash(railway run cat:*)
+
+  webfetch-public-docs:
+    tier: 2
+    description: >
+      Canonical public documentation domains (GH-369). Promoted to tier 2
+      so it ships as a plugin default — routine doc lookups on these hosts
+      must never stall an unattended session on a WebFetch prompt. GH-271
+      evidence showed 6+ distinct doc domains hit in a single session, each
+      one a fresh prompt. Scope: HTTPS documentation hosts only, read-only
+      content fetches — no API endpoints, no fetch-and-exec. Each entry is a
+      single FQDN (`WebFetch(domain:<host>)`); wildcard subdomains are
+      deliberately avoided so the approved surface stays auditable.
+    rules:
+      # Python ecosystem
+      - WebFetch(domain:docs.python.org)
+      - WebFetch(domain:peps.python.org)
+      - WebFetch(domain:packaging.python.org)
+      - WebFetch(domain:docs.pytest.org)
+      - WebFetch(domain:docs.astral.sh)
+      - WebFetch(domain:black.readthedocs.io)
+      - WebFetch(domain:docs.pydantic.dev)
+      - WebFetch(domain:pip.pypa.io)
+      # Django / web frameworks
+      - WebFetch(domain:docs.djangoproject.com)
+      - WebFetch(domain:fastapi.tiangolo.com)
+      - WebFetch(domain:flask.palletsprojects.com)
+      - WebFetch(domain:docs.celeryq.dev)
+      - WebFetch(domain:docs.gunicorn.org)
+      - WebFetch(domain:gunicorn.org)
+      # Frontend
+      - WebFetch(domain:developer.mozilla.org)
+      - WebFetch(domain:svelte.dev)
+      - WebFetch(domain:kit.svelte.dev)
+      - WebFetch(domain:react.dev)
+      - WebFetch(domain:nodejs.org)
+      - WebFetch(domain:docs.npmjs.com)
+      # Infrastructure & cloud
+      - WebFetch(domain:docs.docker.com)
+      - WebFetch(domain:kubernetes.io)
+      - WebFetch(domain:docs.aws.amazon.com)
+      - WebFetch(domain:health.aws.amazon.com)
+      - WebFetch(domain:cloud.google.com)
+      # Datastores
+      - WebFetch(domain:www.postgresql.org)
+      - WebFetch(domain:redis.io)
+      # Dev platforms & tooling services
+      - WebFetch(domain:docs.github.com)
+      - WebFetch(domain:docs.gitlab.com)
+      - WebFetch(domain:docs.sentry.io)
+      - WebFetch(domain:resend.com)
+
+  # ─── Curated read-only third-party surfaces (GH-601, S1) ────────────
+  # Default-safe reads across MCP + CLI + skills. Split from the opt-in
+  # sensitive groups in tier 3 by the manifest's sensitivity axis (GH-600,
+  # S3): only `sensitivity: benign` reads are seeded by default. Write
+  # tools are deliberately absent (write-precedence) so they keep prompting.
+
+  mcp-sentry-readonly:
+    tier: 2
+    sensitivity: benign
+    description: >
+      Sentry read-only MCP tools (evidence #1). Issue/event/resource
+      reads and tool discovery — default-safe. Write tools
+      (``update_issue``, ``execute_sentry_tool``) are absent so they keep
+      prompting; ``analyze_issue_with_seer`` is also excluded because it
+      triggers a cost-bearing Seer analysis (same doctrine as
+      ``gh workflow run``).
+    rules:
+      - mcp__claude_ai_Sentry__find_organizations
+      - mcp__claude_ai_Sentry__find_projects
+      - mcp__claude_ai_Sentry__get_sentry_resource
+      - mcp__claude_ai_Sentry__search_events
+      - mcp__claude_ai_Sentry__search_issues
+      - mcp__claude_ai_Sentry__search_sentry_tools
+
+  mcp-atlassian-readonly:
+    tier: 2
+    sensitivity: benign
+    description: >
+      Atlassian / JIRA read-only MCP tools (evidence #6). Issue and
+      project reads plus JQL search — default-safe. Write tools
+      (``createJiraIssue``, ``editJiraIssue``, ``addCommentToJiraIssue``,
+      ``transitionJiraIssue``, ``createIssueLink``, ``addWorklogToJiraIssue``)
+      live in the separate ``mcp-atlassian-write`` group (GH-631), not
+      here — this group stays reads-only.
+    rules:
+      - mcp__claude_ai_Atlassian__atlassianUserInfo
+      - mcp__claude_ai_Atlassian__getAccessibleAtlassianResources
+      - mcp__claude_ai_Atlassian__getIssueLinkTypes
+      - mcp__claude_ai_Atlassian__getJiraIssue
+      - mcp__claude_ai_Atlassian__getJiraIssueRemoteIssueLinks
+      - mcp__claude_ai_Atlassian__getJiraIssueTypeMetaWithFields
+      - mcp__claude_ai_Atlassian__getJiraProjectIssueTypesMetadata
+      - mcp__claude_ai_Atlassian__getTransitionsForJiraIssue
+      - mcp__claude_ai_Atlassian__getVisibleJiraProjects
+      - mcp__claude_ai_Atlassian__lookupJiraAccountId
+      - mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql
+      - mcp__claude_ai_Atlassian__fetch
+      - mcp__claude_ai_Atlassian__search
+
+  mcp-atlassian-write:
+    tier: 2
+    sensitivity: mutating
+    description: >
+      Atlassian / JIRA ticket-management write MCP tools (GH-631).
+      Seeded by default so Dev10x:ticket-create's JIRA path — which
+      dispatches a background agent that cannot answer a permission
+      prompt — does not stall on ``createJiraIssue``. This
+      DELIBERATELY overrides the GH-593 write-precedence default
+      (which would keep these camelCase writes prompting): the
+      maintainer accepted pre-approval of these non-destructive
+      create / edit / comment / link / transition / worklog verbs in
+      exchange for an unattended JIRA-creation path. No delete verbs
+      are included — destructive Atlassian ops are NOT pre-approved
+      and keep prompting. This is the one tier-2 group whose
+      ``sensitivity`` is ``mutating`` rather than ``benign``; the
+      curation test (``test_atlassian_write_is_deliberate_exception``)
+      asserts the exception is intentional, not a leak.
+    rules:
+      - mcp__claude_ai_Atlassian__createJiraIssue
+      - mcp__claude_ai_Atlassian__editJiraIssue
+      - mcp__claude_ai_Atlassian__addCommentToJiraIssue
+      - mcp__claude_ai_Atlassian__createIssueLink
+      - mcp__claude_ai_Atlassian__transitionJiraIssue
+      - mcp__claude_ai_Atlassian__addWorklogToJiraIssue
+
+  vercel-cli-readonly:
+    tier: 2
+    sensitivity: benign
+    description: >
+      Vercel CLI read-only subcommands (evidence #24). Enumerated
+      per-subcommand — never ``Bash(vercel:*)`` — because the vercel verb
+      surface mixes reads with deploys / promotes / removes. Inspect, list,
+      and logs only. ``vercel env`` listings expose secret NAMES and live
+      in the opt-in ``secrets-listing-readonly`` group, not here.
+    rules:
+      - Bash(vercel ls:*)
+      - Bash(vercel list:*)
+      - Bash(vercel inspect:*)
+      - Bash(vercel logs:*)
+      - Bash(vercel whoami:*)
+      - Bash(vercel teams ls:*)
+      - Bash(vercel projects ls:*)
+      - Bash(vercel domains ls:*)
+      - Bash(vercel certs ls:*)
+      - Bash(vercel dns ls:*)
+      - Bash(vercel git ls:*)
+
+  readonly-skills:
+    tier: 2
+    sensitivity: benign
+    description: >
+      Analysis-first skills safe to INVOKE without a prompt (evidence
+      #20). The grant pre-approves invocation only; any edits a skill
+      proposes (review fixups, `simplify` clarity passes) still flow
+      through the Write/Edit permission rules, so no write access is
+      granted here. Heavily-mutating skills (commit, PR, merge) are
+      absent — they ship through their own delegation paths.
+      D13 (GH-608) resolved CONSERVATIVE: seed only first-party review
+      skills plus `simplify`. Wildcard non-Dev10x families
+      (`impeccable:*`, `superpowers:*`, personal `my:*`, third-party)
+      are deliberately NOT pre-approved — `classify_skill_access`
+      (skills/permission/manifest.py) grades read vs mutating, but
+      *which families to trust* stays a per-user opt-in, not a default.
+    rules:
+      - Skill(code-review)
+      - Skill(security-review)
+      - Skill(review)
+      - Skill(simplify)
+
+  obsidian-cli:
+    tier: 3
+    description: >
+      Obsidian CLI (v1.12+) for vault automation via IPC to a running
+      Obsidian desktop. Read + safe-write ops only. Destructive or
+      arbitrary-code commands (`delete`, `eval`, `dev:*`,
+      `plugin:install`, `plugin:uninstall`, `theme:install`,
+      `theme:uninstall`, `reload`, `restart`) intentionally excluded.
+      Known gotcha: snap-installed Obsidian may hang silently on
+      multi-line `daily:append` content; fall back to direct vault-file
+      Write.
+    rules:
+      - Bash(obsidian read:*)
+      - Bash(obsidian create:*)
+      - Bash(obsidian append:*)
+      - Bash(obsidian prepend:*)
+      - Bash(obsidian move:*)
+      - Bash(obsidian rename:*)
+      - Bash(obsidian files:*)
+      - Bash(obsidian folders:*)
+      - Bash(obsidian file:*)
+      - Bash(obsidian random:*)
+      - Bash(obsidian daily:*)
+      - Bash(obsidian search:*)
+      - Bash(obsidian properties:*)
+      - Bash(obsidian property:*)
+      - Bash(obsidian aliases:*)
+      - Bash(obsidian tags:*)
+      - Bash(obsidian tag:*)
+      - Bash(obsidian tasks:*)
+      - Bash(obsidian task:*)
+      - Bash(obsidian backlinks:*)
+      - Bash(obsidian links:*)
+      - Bash(obsidian unresolved:*)
+      - Bash(obsidian orphans:*)
+      - Bash(obsidian deadends:*)
+      - Bash(obsidian bookmarks:*)
+      - Bash(obsidian bookmark:*)
+      - Bash(obsidian templates:*)
+      - Bash(obsidian template:read:*)
+      - Bash(obsidian template:insert:*)
+      - Bash(obsidian plugins:*)
+      - Bash(obsidian plugin:enable:*)
+      - Bash(obsidian plugin:disable:*)
+      - Bash(obsidian sync:status:*)
+      - Bash(obsidian sync:history:*)
+      - Bash(obsidian sync:read:*)
+      - Bash(obsidian sync:deleted:*)
+      - Bash(obsidian themes:*)
+      - Bash(obsidian theme:set:*)
+      - Bash(obsidian snippets:*)
+      - Bash(obsidian snippet:enable:*)
+      - Bash(obsidian snippet:disable:*)
+      - Bash(obsidian commands:*)
+      - Bash(obsidian command:*)
+      - Bash(obsidian hotkeys:*)
+      - Bash(obsidian hotkey:*)
+      - Bash(obsidian bases:*)
+      - Bash(obsidian base:query:*)
+      - Bash(obsidian base:views:*)
+      - Bash(obsidian history:list:*)
+      - Bash(obsidian history:read:*)
+      - Bash(obsidian workspace:*)
+      - Bash(obsidian tabs:*)
+      - Bash(obsidian tab:open:*)
+      - Bash(obsidian diff:*)
+      - Bash(obsidian vault:*)
+      - Bash(obsidian vaults:*)
+      - Bash(obsidian version:*)
+      - Bash(obsidian outline:*)
+      - Bash(obsidian wordcount:*)
+      - Bash(obsidian recents:*)
+      - Skill(obsidian-cli:*)
+
+  # ─── Opt-in sensitive read surfaces (GH-601, S1; D7) ────────────────
+  # These reads use benign verbs (read/get/list/search) but touch
+  # sensitive TARGETS, so the manifest's sensitivity axis (GH-600) flags
+  # them non-default-safe. They are tier 3 / opt-in — enable per project
+  # with `dev10x permission doctor --enable-group=<name>`. The proactive
+  # seed (GH-603) never auto-promotes a non-benign group.
+
+  mcp-google-workspace-readonly:
+    tier: 3
+    sensitivity: pii
+    description: >
+      Google Drive / Gmail / Calendar read-only MCP tools (evidence #5).
+      The verbs are benign but the data is personal (PII), so this group
+      is OPT-IN — never seeded by default. Write tools (create/update/
+      delete/label/send) are absent regardless.
+    rules:
+      - mcp__claude_ai_Google_Drive__search_files
+      - mcp__claude_ai_Google_Drive__read_file_content
+      - mcp__claude_ai_Google_Drive__get_file_metadata
+      - mcp__claude_ai_Google_Drive__get_file_permissions
+      - mcp__claude_ai_Google_Drive__list_recent_files
+      - mcp__claude_ai_Google_Drive__download_file_content
+      - mcp__claude_ai_Gmail__search_threads
+      - mcp__claude_ai_Gmail__get_thread
+      - mcp__claude_ai_Gmail__list_labels
+      - mcp__claude_ai_Gmail__list_drafts
+      - mcp__claude_ai_Google_Calendar__list_calendars
+      - mcp__claude_ai_Google_Calendar__list_events
+      - mcp__claude_ai_Google_Calendar__get_event
+      - mcp__claude_ai_Google_Calendar__suggest_time
+
+  secrets-listing-readonly:
+    tier: 3
+    sensitivity: secret
+    description: >
+      Secret / env-var NAME listings (D7). Enumerating which secrets exist
+      is a reconnaissance step (see domain/sensitivity.py SECRET), so these
+      reads are OPT-IN even though a bare list never prints values.
+    rules:
+      - Bash(vercel env ls:*)
+      - Bash(gh secret list:*)
+      - Bash(gh variable list:*)
+
+# ─── DEPRECATIONS ─────────────────────────────────────────────────────
+# Rules the doctor should rewrite or remove on sweep.
+
+# GH-715: version-pinned plugin paths are NOT canonicalized to `**`
+# wildcards here. `**` matching is unreliable in the permission engine, so
+# pinned paths are refreshed in place by `dev10x permission update-paths`
+# on every upgrade instead of being rewritten to a wildcard.
+deprecations:
+  - pattern: '^Bash\(/tmp/claude/bin/mktmp\.sh:\*\)$'
+    reason: >
+      Legacy mktmp shell helper. Superseded by MCP tool
+      `mcp__plugin_Dev10x_cli__mktmp`.
+    action: remove
+  - pattern: '^Write\('
+    replacement: 'Edit('
+    reason: >
+      Claude Code file-permission checks match Edit(path) rules only;
+      Write(path) rules are ignored and warned about at session start.
+      Edit(path) covers all file-editing tools (Write, Edit,
+      NotebookEdit), so Write(X) is rewritten to Edit(X) and deduped
+      against any existing Edit(X) (GH-862).
+    action: rewrite
+
+# ─── INVARIANTS THE DOCTOR ENFORCES ───────────────────────────────────
+
+invariants:
+  - id: no-resolved-plugin-cache
+    description: >
+      No allow rule may reference a resolved plugin cache path. Use
+      `${CLAUDE_PLUGIN_ROOT}`, or a version-pinned `~/.claude/plugins/
+      cache/<pub>/<plugin>/<version>/` path kept current by
+      `update-paths`. Do NOT use a `**` wildcard (GH-715) — `**`
+      matching is unreliable in the permission engine.
+  - id: no-cross-project-paths
+    description: >
+      No allow rule may reference another project's absolute path
+      (cross-contamination from copy-pasted settings).
+  - id: no-worktree-source-paths
+    description: >
+      When CWD is a worktree, allow rules must not reference the source
+      repository by absolute path — the same files exist inside the
+      worktree at relative paths. Detect via `git rev-parse --git-common-dir`.
+  - id: additional-directories-not-bash
+    description: >
+      Bash allow rules cannot substitute for `additionalDirectories`.
+      When a prompt persists with a matching Bash rule, diagnose path
+      scope first.
+  - id: no-redundant-readonly-builtins
+    description: >
+      Built-in read-only commands (find, grep, ls, cat, head, tail, wc,
+      diff, stat, du, cd) must NOT be added as allow rules — they're
+      redundant and clutter the list.
+
+# ─── DOCTOR CONSUMPTION ───────────────────────────────────────────────
+# How `Dev10x:plugin-maintenance` consumes this catalog:
+#
+# 1. Tier 1 + Tier 2 groups: record the INTENDED plugin-default set.
+#    They are NOT merged into base_permissions by `ensure-base`
+#    (GH-1095 — the previous claim here was false). `ensure-base`
+#    renders only from the flat catalog in
+#    `skills/upgrade-cleanup/projects.yaml`; `migrate_flat_config`
+#    reads this file solely to attach tier/group/sensitivity metadata
+#    to rules already present there, and adds no rules of its own.
+#    A group defined only here reaches no settings file. ADR-0025
+#    settles which catalog is authoritative: `projects.yaml` is, and
+#    `groups:` migrates into it carrying tier tags. Until that
+#    migration lands, `baseline_coverage.py` guards the gap — a rule
+#    added here that no seeding path can deliver fails a test.
+# 2. Tier 3 groups: opt-in via `dev10x permission doctor
+#    --enable-group=<name>`. Not added by default.
+# 3. Deprecations:
+#    - `action: remove` → drop the rule entirely.
+#    - `action: canonicalize` → normalize the rule string by collapsing
+#      duplicate slashes (`//` → `/`, GH-704). It NEVER rewrites a path
+#      into a `**` wildcard (GH-715). No shipped entry uses it today.
+#    - `action: rewrite` → substitute the matched span with the entry's
+#      `replacement` (regex sub), deduping the result against rules
+#      already present. Used to migrate Write(X) → Edit(X) (GH-862).
+# 4. Invariants: surfaced as warnings during `dev10x permission doctor`;
+#    not auto-applied (require user confirmation).

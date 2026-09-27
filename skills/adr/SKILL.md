@@ -89,7 +89,7 @@ Follow the base `Dev10x:scope` skill for context gathering:
 #### 2.1 Determine ADR Number
 
 ```bash
-ls doc/adr/*.md | grep -E '^doc/adr/[0-9]{4}-' | sort | tail -1
+ls docs/adr/*.md | grep -E '^docs/adr/[0-9]{4}-' | sort | tail -1
 ```
 
 If last is 0009, next is 0010.
@@ -112,7 +112,7 @@ requesting review before acceptance.
 #### 2.3 Create Diagrams Directory
 
 ```bash
-mkdir -p doc/adr/diagrams/{ADR_NUMBER}/
+mkdir -p docs/adr/diagrams/{ADR_NUMBER}/
 ```
 
 ### Phase 3: Diagram Creation
@@ -130,7 +130,7 @@ Shows flow of operations for key interactions.
 #### 3.3 Generate PNG Files
 
 ```bash
-cd doc/adr/diagrams/{ADR_NUMBER}/
+cd docs/adr/diagrams/{ADR_NUMBER}/
 for f in *.puml; do
   java -jar ~/.local/bin/plantuml.jar "$f"
 done
@@ -175,7 +175,7 @@ Use `Dev10x:ticket-branch` skill if a ticket exists, or
 #### 6.2 Commit ADR
 
 Use the `Dev10x:git-commit` skill to commit:
-- Stage `doc/adr/` directory
+- Stage `docs/adr/` directory
 - Gitmoji: 📝
 - Title: outcome-focused (e.g., "Document payment routing
   architecture")
@@ -234,8 +234,8 @@ Dev10x:adr
 - [adr-tools](https://github.com/npryce/adr-tools)
 
 ### Project ADR Location
-- ADRs: `doc/adr/NNNN-title.md`
-- Diagrams: `doc/adr/diagrams/NNNN/`
+- ADRs: `docs/adr/NNNN-title.md`
+- Diagrams: `docs/adr/diagrams/NNNN/`
 
 ### PlantUML
 - Generate: `java -jar ~/.local/bin/plantuml.jar diagram.puml`

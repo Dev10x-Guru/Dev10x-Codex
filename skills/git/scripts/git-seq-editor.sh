@@ -3,7 +3,7 @@
 # a caller-provided path via GROOM_SEQ_FILE env var.
 #
 # Usage:
-#   GROOM_SEQ_FILE=/tmp/claude/git/rebase-seq.abc123.txt \
+#   GROOM_SEQ_FILE=/tmp/Dev10x/git/rebase-seq.abc123.txt \
 #   GIT_SEQUENCE_EDITOR=.../git-seq-editor.sh git rebase -i ...
 
 set -euo pipefail

@@ -7,7 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from dev10x.domain.sql import is_read_only_sql
+from dev10x.domain.common.result import ErrorResult, SuccessResult
+from dev10x.domain.rules.sql import is_read_only_sql
 
 
 class TestIsReadOnlySql:
@@ -118,53 +119,49 @@ class TestIsReadOnlySql:
 class TestQueryFunctionValidation:
     """Test query function SQL validation blocking."""
 
-    @patch("dev10x.mcp.db.run_script")
+    @patch("dev10x.db.run_script")
     def test_blocks_insert_statement(self, mock_run_script: MagicMock) -> None:
-        from dev10x.mcp.db import query
+        from dev10x.db import query
 
         result = query(database="pp", sql="INSERT INTO users VALUES (1)")
-        assert isinstance(result, dict)
-        assert "error" in result
-        assert result.get("blocked") is True
+        assert isinstance(result, ErrorResult)
+        assert "blocked" in result.details
         mock_run_script.assert_not_called()
 
-    @patch("dev10x.mcp.db.run_script")
+    @patch("dev10x.db.run_script")
     def test_blocks_delete_statement(self, mock_run_script: MagicMock) -> None:
-        from dev10x.mcp.db import query
+        from dev10x.db import query
 
         result = query(database="pp", sql="DELETE FROM users")
-        assert isinstance(result, dict)
-        assert "error" in result
-        assert result.get("blocked") is True
+        assert isinstance(result, ErrorResult)
+        assert "blocked" in result.details
         mock_run_script.assert_not_called()
 
-    @patch("dev10x.mcp.db.run_script")
+    @patch("dev10x.db.run_script")
     def test_blocks_update_statement(self, mock_run_script: MagicMock) -> None:
-        from dev10x.mcp.db import query
+        from dev10x.db import query
 
         result = query(database="pp", sql="UPDATE users SET id=1")
-        assert isinstance(result, dict)
-        assert "error" in result
-        assert result.get("blocked") is True
+        assert isinstance(result, ErrorResult)
+        assert "blocked" in result.details
         mock_run_script.assert_not_called()
 
-    @patch("dev10x.mcp.db.run_script")
+    @patch("dev10x.db.run_script")
     def test_blocks_drop_statement(self, mock_run_script: MagicMock) -> None:
-        from dev10x.mcp.db import query
+        from dev10x.db import query
 
         result = query(database="pp", sql="DROP TABLE users")
-        assert isinstance(result, dict)
-        assert "error" in result
-        assert result.get("blocked") is True
+        assert isinstance(result, ErrorResult)
+        assert "blocked" in result.details
         mock_run_script.assert_not_called()
 
 
 class TestQueryFunctionSuccess:
     """Test successful query execution with script mocking."""
 
-    @patch("dev10x.mcp.db.run_script")
+    @patch("dev10x.db.run_script")
     def test_executes_valid_select_with_json_output(self, mock_run_script: MagicMock) -> None:
-        from dev10x.mcp.db import query
+        from dev10x.db import query
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -179,15 +176,14 @@ class TestQueryFunctionSuccess:
 
         result = query(database="pp", sql="SELECT * FROM users")
 
-        assert isinstance(result, dict)
-        assert "error" not in result
-        assert result.get("columns") == ["id", "name"]
-        assert result.get("row_count") == 2
+        assert isinstance(result, SuccessResult)
+        assert result.value.get("columns") == ["id", "name"]
+        assert result.value.get("row_count") == 2
         mock_run_script.assert_called_once()
 
-    @patch("dev10x.mcp.db.run_script")
+    @patch("dev10x.db.run_script")
     def test_handles_script_execution_error(self, mock_run_script: MagicMock) -> None:
-        from dev10x.mcp.db import query
+        from dev10x.db import query
 
         mock_result = MagicMock()
         mock_result.returncode = 1
@@ -196,13 +192,12 @@ class TestQueryFunctionSuccess:
 
         result = query(database="pp", sql="SELECT * FROM users")
 
-        assert isinstance(result, dict)
-        assert "error" in result
-        assert "Database connection error" in result["error"]
+        assert isinstance(result, ErrorResult)
+        assert "Database connection error" in result.error
 
-    @patch("dev10x.mcp.db.run_script")
+    @patch("dev10x.db.run_script")
     def test_handles_non_json_output(self, mock_run_script: MagicMock) -> None:
-        from dev10x.mcp.db import query
+        from dev10x.db import query
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -211,13 +206,12 @@ class TestQueryFunctionSuccess:
 
         result = query(database="pp", sql="SELECT * FROM users")
 
-        assert isinstance(result, dict)
-        assert "raw_output" in result
-        assert result["raw_output"] == "Plain text output"
+        assert isinstance(result, SuccessResult)
+        assert result.value["raw_output"] == "Plain text output"
 
-    @patch("dev10x.mcp.db.run_script")
+    @patch("dev10x.db.run_script")
     def test_passes_correct_arguments_to_script(self, mock_run_script: MagicMock) -> None:
-        from dev10x.mcp.db import query
+        from dev10x.db import query
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -230,9 +224,9 @@ class TestQueryFunctionSuccess:
             "skills/db-psql/scripts/db.sh", "backend", "SELECT 1"
         )
 
-    @patch("dev10x.mcp.db.run_script")
+    @patch("dev10x.db.run_script")
     def test_handles_empty_json_response(self, mock_run_script: MagicMock) -> None:
-        from dev10x.mcp.db import query
+        from dev10x.db import query
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -241,12 +235,12 @@ class TestQueryFunctionSuccess:
 
         result = query(database="pp", sql="SELECT * FROM users")
 
-        assert isinstance(result, dict)
-        assert result == {}
+        assert isinstance(result, SuccessResult)
+        assert result.value == {}
 
-    @patch("dev10x.mcp.db.run_script")
+    @patch("dev10x.db.run_script")
     def test_handles_cte_query(self, mock_run_script: MagicMock) -> None:
-        from dev10x.mcp.db import query
+        from dev10x.db import query
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -255,12 +249,12 @@ class TestQueryFunctionSuccess:
 
         result = query(database="pp", sql="WITH cte AS (SELECT 1) SELECT * FROM cte")
 
-        assert "error" not in result
-        assert result.get("row_count") == 1
+        assert isinstance(result, SuccessResult)
+        assert result.value.get("row_count") == 1
 
-    @patch("dev10x.mcp.db.run_script")
+    @patch("dev10x.db.run_script")
     def test_handles_explain_query(self, mock_run_script: MagicMock) -> None:
-        from dev10x.mcp.db import query
+        from dev10x.db import query
 
         mock_result = MagicMock()
         mock_result.returncode = 0
@@ -269,28 +263,31 @@ class TestQueryFunctionSuccess:
 
         result = query(database="pp", sql="EXPLAIN SELECT * FROM users")
 
-        assert "raw_output" in result
+        assert isinstance(result, SuccessResult)
+        assert "raw_output" in result.value
 
-    @patch("dev10x.mcp.db.run_script")
-    def test_different_database_aliases(self, mock_run_script: MagicMock) -> None:
-        from dev10x.mcp.db import query
+    @pytest.mark.parametrize("db_alias", ["pp", "ps", "bp", "bs"])
+    @patch("dev10x.db.run_script")
+    def test_database_alias_invokes_run_script(
+        self, mock_run_script: MagicMock, db_alias: str
+    ) -> None:
+        from dev10x.db import query
 
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = json.dumps({"rows": []})
         mock_run_script.return_value = mock_result
 
-        for db_alias in ["pp", "ps", "bp", "bs"]:
-            query(database=db_alias, sql="SELECT 1")
+        query(database=db_alias, sql="SELECT 1")
 
-        assert mock_run_script.call_count == 4
+        assert mock_run_script.call_count == 1
 
 
 class TestServerDbWrapper:
     """Test async query wrapper in server_db delegates to dev10x.mcp.db."""
 
     @pytest.mark.asyncio
-    @patch("dev10x.mcp.db.run_script")
+    @patch("dev10x.db.run_script")
     async def test_async_query_delegates_to_db_module(self, mock_run_script: MagicMock) -> None:
         from dev10x.mcp.server_db import query
 
@@ -305,7 +302,7 @@ class TestServerDbWrapper:
         mock_run_script.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("dev10x.mcp.db.run_script")
+    @patch("dev10x.db.run_script")
     async def test_async_query_blocks_write_statements(self, mock_run_script: MagicMock) -> None:
         from dev10x.mcp.server_db import query
 

@@ -13,6 +13,20 @@ allowed-tools:
   - Bash(${CLAUDE_PLUGIN_ROOT}/skills/db-psql/scripts/db.sh:*)
 ---
 
+<!--
+GH-127 #1 — `${CLAUDE_PLUGIN_ROOT}` is expanded by Claude Code at
+runtime to the resolved cache path. User settings that pin the
+absolute path (`/home/<user>/.claude/plugins/cache/.../db.sh:*`)
+or omit the tilde will not match this rule. Run
+`Dev10x:plugin-maintenance` (mode: full) or
+`Dev10x:upgrade-cleanup` to refresh pinned/absolute paths in
+`settings.local.json` to the current plugin version via
+`update-paths`, which runs on every upgrade. Paths are NOT
+rewritten to `**` wildcards (GH-715) — `**` matching is unreliable
+in the permission engine.
+-->
+
+
 # PostgreSQL Query Execution
 
 ## Orchestration
@@ -70,9 +84,11 @@ db.sh script searches for config files in this order:
 
 1. `$DB_CONFIG` environment variable (explicit path)
 2. Own skill directory (`skills/db-psql/databases.yaml`)
-3. `~/.claude/memory/databases.yaml` (global, user-level)
-4. Sibling plugin skill directories (`skills/*/databases.yaml`)
-5. User skill directories (`~/.claude/skills/*/databases.yaml`)
+3. `~/.config/Dev10x/databases.yaml` (XDG; preferred global location)
+4. `~/.claude/memory/Dev10x/databases.yaml` (deprecated fallback)
+5. Sibling plugin skill directories (`skills/*/databases.yaml`)
+6. User skill directories (`~/.claude/skills/*/databases.yaml`)
+7. Marketplace plugins (`~/.claude/plugins/marketplaces/*/skills/*/databases.yaml`)
 
 Example YAML with both backends:
 

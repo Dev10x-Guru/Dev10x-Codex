@@ -28,7 +28,7 @@ if [[ -z "$TITLE" ]]; then
     exit 1
 fi
 
-BODY_ONLY=$(/tmp/claude/bin/mktmp.sh gh-issue body-only .md)
+BODY_ONLY=$(/tmp/Dev10x/bin/mktmp.sh gh-issue body-only .md)
 tail -n +3 "$FILE" > "$BODY_ONLY"
 
 LABEL_ARGS=""

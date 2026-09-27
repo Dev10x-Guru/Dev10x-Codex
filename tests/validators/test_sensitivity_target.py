@@ -1,0 +1,608 @@
+"""Tests for SensitivityTargetValidator (DX014).
+
+Covers:
+- should_run() fast-skip predicate
+- validate() returning None for benign commands
+- validate() returning HookAsk for each sensitivity label (GH-604:
+  the sensitivity axis elevates to ``ask``, not hard ``deny``)
+- exception-catalog downgrade: HookAllow when blessed (GH-604)
+- deny-overrides semantics: multi-match accumulates all matches
+- Registry integration: DX014 appears in standard profile
+- Custom classifier injection via with_patterns()
+- Exception-catalog injection via with_exceptions()
+
+Fixtures are drawn from GH-271 evidence #267–#273 (same corpus as
+the SensitivityClassifier unit tests in tests/domain/test_sensitivity.py).
+"""
+
+from __future__ import annotations
+
+import re
+
+import pytest
+
+from dev10x.domain import HookAllow, HookAsk
+from dev10x.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.domain.profile_tier import ProfileTier
+from dev10x.domain.sensitivity import (
+    ExceptionEffect,
+    SensitivityClassifier,
+    SensitivityException,
+    SensitivityLabel,
+    SensitivityPattern,
+)
+from dev10x.validators import get_validators, reset_registry
+from dev10x.validators.sensitivity_target import SensitivityTargetValidator
+from tests.fakers import BashHookInputFaker
+
+
+def _inp(command: str) -> BashHookInputFaker:
+    return BashHookInputFaker.build(command=command)
+
+
+@pytest.fixture(autouse=True)
+def _empty_catalog(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the exception catalog to an empty config home (hermetic).
+
+    DX014 lazily loads ``~/.config/Dev10x/sensitivity-exceptions.yaml``
+    on the first sensitivity match. Point it at an empty tmp dir so the
+    default validator behaves as 'no exceptions' regardless of the
+    developer's real config (GH-604).
+    """
+    monkeypatch.setenv("DEV10X_CONFIG_HOME", str(tmp_path))
+    Dev10xConfigDir.reset_cache()
+    yield
+    Dev10xConfigDir.reset_cache()
+
+
+# ---------------------------------------------------------------------------
+# Fixture: default validator instance
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def validator() -> SensitivityTargetValidator:
+    return SensitivityTargetValidator()
+
+
+# ---------------------------------------------------------------------------
+# should_run
+# ---------------------------------------------------------------------------
+
+
+class TestShouldRun:
+    def test_empty_command_skips(self, validator: SensitivityTargetValidator) -> None:
+        assert validator.should_run(inp=_inp("")) is False
+
+    def test_whitespace_only_skips(self, validator: SensitivityTargetValidator) -> None:
+        assert validator.should_run(inp=_inp("   ")) is False
+
+    def test_non_empty_command_runs(self, validator: SensitivityTargetValidator) -> None:
+        assert validator.should_run(inp=_inp("git status")) is True
+
+    def test_sensitive_command_runs(self, validator: SensitivityTargetValidator) -> None:
+        assert validator.should_run(inp=_inp("gh secret list")) is True
+
+
+# ---------------------------------------------------------------------------
+# validate() — benign commands → None
+# ---------------------------------------------------------------------------
+
+
+class TestBenignCommands:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git status",
+            "git log --oneline -10",
+            "ls -la",
+            "uv run pytest tests/",
+            "ruff check src/",
+            "git diff origin/develop",
+            "gh pr view 42",
+            "find . -name '*.py'",
+        ],
+    )
+    def test_benign_commands_return_none(
+        self, validator: SensitivityTargetValidator, command: str
+    ) -> None:
+        result = validator.validate(inp=_inp(command))
+        assert result is None, f"Unexpected block for benign command: {command!r}"
+
+
+# ---------------------------------------------------------------------------
+# validate() — operand paths, whatever verb reached them (GH-1278)
+# ---------------------------------------------------------------------------
+
+_READERS = ("cat", "head", "tail", "less", "bat", "rg", "jq", "awk", "sed", "wc", "cut")
+
+
+class TestOperandPathIsVerbIndependent:
+    """A read is an effect; enumerating readers is not a closure (#1260)."""
+
+    @pytest.mark.parametrize("reader", _READERS)
+    def test_every_reader_of_a_credential_file_is_elevated(
+        self, validator: SensitivityTargetValidator, reader: str
+    ) -> None:
+        result = validator.validate(inp=_inp(f"{reader} ~/.aws/credentials"))
+        assert isinstance(result, HookAsk)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "~/.aws/credentials",
+            "~/.aws/config",
+            "/home/dev/.ssh/id_ed25519",
+            "id_rsa",
+            "certs/server.pem",
+            "~/.netrc",
+            "~/.pgpass",
+            "~/.npmrc",
+            "~/.git-credentials",
+            "~/.docker/config.json",
+            "~/.config/gh/hosts.yml",
+            "~/.kube/config",
+            "kubeconfig",
+            "deploy/service-account-prod.json",
+            "k8s/secrets.yaml",
+        ],
+    )
+    def test_each_sensitive_path_shape_is_elevated(
+        self, validator: SensitivityTargetValidator, path: str
+    ) -> None:
+        result = validator.validate(inp=_inp(f"rg token {path}"))
+        assert isinstance(result, HookAsk), f"Not elevated: {path!r}"
+
+    def test_the_prompt_names_the_file_at_stake(
+        self, validator: SensitivityTargetValidator
+    ) -> None:
+        # The matched span alone ('.ssh/') names nothing the supervisor
+        # can act on, so the whole operand is carried.
+        result = validator.validate(inp=_inp("awk '{print}' /home/dev/.ssh/id_ed25519"))
+        assert isinstance(result, HookAsk)
+        assert "/home/dev/.ssh/id_ed25519" in result.message
+
+    def test_a_quoted_operand_is_not_a_hiding_place(
+        self, validator: SensitivityTargetValidator
+    ) -> None:
+        result = validator.validate(inp=_inp('cat "$HOME/.aws/credentials"'))
+        assert isinstance(result, HookAsk)
+
+    def test_a_quoted_path_containing_a_space_is_not_a_hiding_place(
+        self, validator: SensitivityTargetValidator
+    ) -> None:
+        # A whitespace split shreds this into fragments matching nothing,
+        # which defeats the guarantee the test above only appears to make.
+        result = validator.validate(inp=_inp('cat "/home/dev/my keys/.aws/credentials"'))
+        assert isinstance(result, HookAsk)
+
+    def test_an_operator_glued_to_the_operand_is_not_a_hiding_place(
+        self, validator: SensitivityTargetValidator
+    ) -> None:
+        result = validator.validate(inp=_inp("cat ~/.netrc;ls"))
+        assert isinstance(result, HookAsk)
+
+    def test_a_flag_value_operand_is_classified(
+        self, validator: SensitivityTargetValidator
+    ) -> None:
+        result = validator.validate(inp=_inp("myprobe --secrets-file=/srv/app/.env.production"))
+        assert isinstance(result, HookAsk)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "rg pem src/",
+            "cat README.md",
+            "jq . package.json",
+            "ls ~/.ssh",
+            "git log --oneline",
+        ],
+    )
+    def test_near_misses_are_left_alone(
+        self, validator: SensitivityTargetValidator, command: str
+    ) -> None:
+        # Naming the word, or listing a directory, is not reading the
+        # material — over-firing here is what would make DX014 noise.
+        assert validator.validate(inp=_inp(command)) is None
+
+
+# ---------------------------------------------------------------------------
+# validate() — SECRET label
+# ---------------------------------------------------------------------------
+
+
+class TestSecretLabel:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # GH-271 #267: secret inventory
+            "gh secret list",
+            "gh secret list --repo my-org/my-repo",
+            "gh variable list",
+            "gh variable get MY_VAR",
+            # kubectl secret
+            "kubectl get secret db-credentials -o yaml",
+            "kubectl describe secret my-secret",
+            # .env reads
+            "cat .env",
+            "cat /app/.env",
+            "less .env",
+            "head -20 .env",
+        ],
+    )
+    def test_blocks_secret_commands(
+        self, validator: SensitivityTargetValidator, command: str
+    ) -> None:
+        result = validator.validate(inp=_inp(command))
+        assert result is not None, f"Expected block for: {command!r}"
+        assert "SECRET" in result.message
+
+    def test_message_contains_pattern_description(
+        self, validator: SensitivityTargetValidator
+    ) -> None:
+        result = validator.validate(inp=_inp("gh secret list"))
+        assert result is not None
+        assert "gh secret" in result.message
+
+    def test_message_contains_matched_text(self, validator: SensitivityTargetValidator) -> None:
+        result = validator.validate(inp=_inp("gh secret list"))
+        assert result is not None
+        assert "matched:" in result.message
+
+
+# ---------------------------------------------------------------------------
+# validate() — CREDENTIAL label
+# ---------------------------------------------------------------------------
+
+
+class TestCredentialLabel:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # GH-271 #269: searching for RW credentials
+            "rg PRODUCTION_RW .env",
+            "grep -r DB_PASSWORD src/",
+            "export DB_URL=postgres://...",
+            "env | grep API_TOKEN",
+            "echo $JWT_SECRET",
+            # general credential env-var patterns
+            "printenv | grep SSH_PRIVATE_KEY",
+        ],
+    )
+    def test_blocks_credential_commands(
+        self, validator: SensitivityTargetValidator, command: str
+    ) -> None:
+        result = validator.validate(inp=_inp(command))
+        assert result is not None, f"Expected block for: {command!r}"
+        assert "CREDENTIAL" in result.message
+
+    def test_rw_suffix_blocked(self, validator: SensitivityTargetValidator) -> None:
+        result = validator.validate(inp=_inp("echo $DATABASE_RW"))
+        assert result is not None
+        assert "CREDENTIAL" in result.message
+
+
+# ---------------------------------------------------------------------------
+# validate() — PII label
+# ---------------------------------------------------------------------------
+
+
+class TestPiiLabel:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # PII bulk-export patterns
+            "pg_dump --table customers mydb",
+            "mysqldump mydb patients",
+            "SELECT * FROM customers",
+            "SELECT * FROM subscribers",
+        ],
+    )
+    def test_blocks_pii_commands(
+        self, validator: SensitivityTargetValidator, command: str
+    ) -> None:
+        result = validator.validate(inp=_inp(command))
+        assert result is not None, f"Expected block for: {command!r}"
+        assert "PII" in result.message
+
+
+# ---------------------------------------------------------------------------
+# validate() — INFRA label
+# ---------------------------------------------------------------------------
+
+
+class TestInfraLabel:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # GH-271 #271: RDS endpoint resolution
+            "dig writer.mydb.us-east-1.rds.amazonaws.com",
+            # GH-271 #272–#273: nc port probes
+            "nc -zv 10.0.0.5 5432",
+            "nc -zvw5 prod-db.internal 3306",
+            # bastion/VPN
+            "ssh bastion.prod.internal",
+            "wg show wireguard0",
+            "tailscale status",
+        ],
+    )
+    def test_blocks_infra_commands(
+        self, validator: SensitivityTargetValidator, command: str
+    ) -> None:
+        result = validator.validate(inp=_inp(command))
+        assert result is not None, f"Expected block for: {command!r}"
+        assert "INFRA" in result.message
+
+    def test_rds_hostname_in_connection_string(
+        self, validator: SensitivityTargetValidator
+    ) -> None:
+        cmd = "psql postgres://user:pass@writer.cluster.us-east-1.rds.amazonaws.com/mydb"
+        result = validator.validate(inp=_inp(cmd))
+        assert result is not None
+        assert "INFRA" in result.message
+
+
+# ---------------------------------------------------------------------------
+# Deny-overrides: multi-label accumulation
+# ---------------------------------------------------------------------------
+
+
+class TestDenyOverrides:
+    def test_multi_label_match_reports_all(self, validator: SensitivityTargetValidator) -> None:
+        # Command that hits both CREDENTIAL and INFRA axes simultaneously.
+        cmd = "rg DB_PASSWORD 10.0.0.5"
+        result = validator.validate(inp=_inp(cmd))
+        assert result is not None
+        # Both labels must appear in the message.
+        assert "CREDENTIAL" in result.message
+        assert "INFRA" in result.message
+
+    def test_match_count_in_message(self, validator: SensitivityTargetValidator) -> None:
+        cmd = "cat .env && nc -zv 10.0.0.5 5432"
+        result = validator.validate(inp=_inp(cmd))
+        assert result is not None
+        # The count line must show > 1.
+
+        count_match = re.search(r"matched (\d+) sensitivity pattern", result.message)
+        assert count_match is not None
+        assert int(count_match.group(1)) > 1
+
+    def test_block_regardless_of_tier_reversibility(
+        self, validator: SensitivityTargetValidator
+    ) -> None:
+        # A read-only safe command that is nonetheless sensitive.
+        result = validator.validate(inp=_inp("gh secret list"))
+        assert result is not None, (
+            "Sensitivity axis must override tier/reversibility (deny-overrides)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Message format checks
+# ---------------------------------------------------------------------------
+
+
+class TestMessageFormat:
+    def test_message_mentions_review(self, validator: SensitivityTargetValidator) -> None:
+        result = validator.validate(inp=_inp("gh secret list"))
+        assert result is not None
+        assert "review" in result.message.lower()
+
+    def test_message_references_hook_patterns(self, validator: SensitivityTargetValidator) -> None:
+        result = validator.validate(inp=_inp("gh secret list"))
+        assert result is not None
+        assert "hook-patterns.md" in result.message
+
+    def test_message_references_rule_id(self, validator: SensitivityTargetValidator) -> None:
+        result = validator.validate(inp=_inp("gh secret list"))
+        assert result is not None
+        assert "DX014" in result.message
+
+
+# ---------------------------------------------------------------------------
+# Custom classifier injection
+# ---------------------------------------------------------------------------
+
+
+class TestAskElevation:
+    """GH-604: a sensitivity hit elevates to ``ask``, not hard ``deny``."""
+
+    def test_returns_hook_ask_for_sensitive_command(
+        self, validator: SensitivityTargetValidator
+    ) -> None:
+        result = validator.validate(inp=_inp("nc -zv 10.0.0.5 5432"))
+        assert isinstance(result, HookAsk)
+
+    def test_ask_reason_names_label(self, validator: SensitivityTargetValidator) -> None:
+        result = validator.validate(inp=_inp("nc -zv 10.0.0.5 5432"))
+        assert isinstance(result, HookAsk)
+        assert "INFRA" in result.reason
+        assert "DX014" in result.reason
+
+    def test_ask_message_retains_detail(self, validator: SensitivityTargetValidator) -> None:
+        result = validator.validate(inp=_inp("gh secret list"))
+        assert isinstance(result, HookAsk)
+        assert "SECRET" in result.message
+        assert "DX014" in result.message
+
+
+class TestExceptionCatalogDowngrade:
+    """GH-604: a blessed exception downgrades ``ask`` to ``allow`` / keeps ``ask``."""
+
+    def test_allow_exception_returns_hook_allow(self) -> None:
+        exc = SensitivityException(
+            effect=ExceptionEffect.ALLOW,
+            target=re.compile(r"bastion\.example\.internal"),
+        )
+        v = SensitivityTargetValidator(exceptions=[exc])
+        result = v.validate(inp=_inp("nc -zv bastion.example.internal 22"))
+        assert isinstance(result, HookAllow)
+
+    def test_allow_exception_silent_message(self) -> None:
+        exc = SensitivityException(effect=ExceptionEffect.ALLOW, shape=re.compile(r"\bnc\b"))
+        v = SensitivityTargetValidator(exceptions=[exc])
+        result = v.validate(inp=_inp("nc -zv host 5432"))
+        assert isinstance(result, HookAllow)
+        assert result.message == ""
+
+    def test_ask_exception_keeps_ask(self) -> None:
+        exc = SensitivityException(effect=ExceptionEffect.ASK, shape=re.compile(r"\bnc\b"))
+        v = SensitivityTargetValidator(exceptions=[exc])
+        result = v.validate(inp=_inp("nc -zv host 5432"))
+        assert isinstance(result, HookAsk)
+
+    def test_non_matching_exception_keeps_ask(self) -> None:
+        exc = SensitivityException(
+            effect=ExceptionEffect.ALLOW,
+            target=re.compile(r"bastion\.example\.internal"),
+        )
+        v = SensitivityTargetValidator(exceptions=[exc])
+        # Different target → exception does not apply → still ask.
+        result = v.validate(inp=_inp("nc -zv other.host 22"))
+        assert isinstance(result, HookAsk)
+
+    def test_label_scoped_allow_does_not_downgrade_multilabel(self) -> None:
+        # An INFRA-only allow must not bless a command that also trips
+        # CREDENTIAL (the all-matches-share-label guard).
+        exc = SensitivityException(effect=ExceptionEffect.ALLOW, label=SensitivityLabel.INFRA)
+        v = SensitivityTargetValidator(exceptions=[exc])
+        result = v.validate(inp=_inp("rg DB_PASSWORD 10.0.0.5"))
+        assert isinstance(result, HookAsk)
+
+    def test_benign_command_skips_catalog(self) -> None:
+        # No sensitivity match → None, exceptions never consulted.
+        exc = SensitivityException(effect=ExceptionEffect.ALLOW, shape=re.compile(r".*"))
+        v = SensitivityTargetValidator(exceptions=[exc])
+        assert v.validate(inp=_inp("git status")) is None
+
+    def test_with_exceptions_factory(self) -> None:
+        exc = SensitivityException(effect=ExceptionEffect.ALLOW, shape=re.compile(r"\bnc\b"))
+        base = SensitivityTargetValidator()
+        blessed = base.with_exceptions(exceptions=[exc])
+        # Base still elevates to ask; blessed instance allows.
+        assert isinstance(base.validate(inp=_inp("nc -zv host 5432")), HookAsk)
+        assert isinstance(blessed.validate(inp=_inp("nc -zv host 5432")), HookAllow)
+
+    def test_with_patterns_preserves_exceptions(self) -> None:
+        exc = SensitivityException(effect=ExceptionEffect.ALLOW, shape=re.compile(r"\bzzz\b"))
+        v = SensitivityTargetValidator(exceptions=[exc]).with_patterns(
+            patterns=[
+                SensitivityPattern(
+                    label=SensitivityLabel.SECRET,
+                    regex=re.compile(r"\bzzz\b"),
+                    description="zzz",
+                )
+            ]
+        )
+        # The injected exception survives with_patterns and downgrades.
+        assert isinstance(v.validate(inp=_inp("run zzz now")), HookAllow)
+
+
+class TestCustomClassifier:
+    def test_custom_wordlist_replaces_default(self) -> None:
+
+        custom_pattern = SensitivityPattern(
+            label=SensitivityLabel.SECRET,
+            regex=re.compile(r"\bcustom_secret_tool\b"),
+            description="custom secret tool",
+        )
+        custom_classifier = SensitivityClassifier(patterns=[custom_pattern])
+        v = SensitivityTargetValidator(classifier=custom_classifier)
+
+        # Default wordlist pattern should NOT fire.
+        assert v.validate(inp=_inp("gh secret list")) is None
+
+        # Custom pattern SHOULD fire.
+        result = v.validate(inp=_inp("custom_secret_tool --list"))
+        assert result is not None
+        assert "SECRET" in result.message
+
+    def test_with_patterns_factory(self) -> None:
+
+        base = SensitivityTargetValidator()
+        custom = base.with_patterns(
+            patterns=[
+                SensitivityPattern(
+                    label=SensitivityLabel.PII,
+                    regex=re.compile(r"\bmy_pii_table\b"),
+                    description="my_pii_table",
+                )
+            ]
+        )
+        # Original still uses default patterns.
+        assert base.validate(inp=_inp("gh secret list")) is not None
+        # Custom uses injected patterns only.
+        assert custom.validate(inp=_inp("gh secret list")) is None
+        result = custom.validate(inp=_inp("SELECT * FROM my_pii_table"))
+        assert result is not None
+        assert "PII" in result.message
+
+    def test_narrowing_the_operand_axis_is_possible(self) -> None:
+        # "Custom uses injected patterns only" above is checked with a
+        # command carrying no path operand, so it would hold even if the
+        # operand axis were unnarrowable. This pins the axis itself.
+        custom = SensitivityTargetValidator().with_patterns(patterns=[], operand_patterns=[])
+
+        assert custom.validate(inp=_inp("cat ~/.aws/credentials")) is None
+
+    def test_the_operand_axis_is_kept_when_only_the_wordlist_is_narrowed(self) -> None:
+        custom = SensitivityTargetValidator().with_patterns(patterns=[])
+
+        assert isinstance(custom.validate(inp=_inp("cat ~/.aws/credentials")), HookAsk)
+
+
+# ---------------------------------------------------------------------------
+# Registry integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def clean_registry() -> None:
+    reset_registry()
+    yield
+    reset_registry()
+
+
+class TestRegistryIntegration:
+    def test_dx014_registered_in_standard_profile(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DEV10X_HOOK_PROFILE", raising=False)
+        validators = get_validators()
+        rule_ids = {v.rule_id for v in validators}
+        assert "DX014" in rule_ids
+
+    def test_dx014_absent_in_minimal_profile(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DEV10X_HOOK_PROFILE", "minimal")
+        validators = get_validators()
+        rule_ids = {v.rule_id for v in validators}
+        assert "DX014" not in rule_ids
+
+    def test_dx014_present_in_strict_profile(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DEV10X_HOOK_PROFILE", "strict")
+        validators = get_validators()
+        rule_ids = {v.rule_id for v in validators}
+        assert "DX014" in rule_ids
+
+    def test_dx014_can_be_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DEV10X_HOOK_DISABLE", "DX014")
+        validators = get_validators()
+        rule_ids = {v.rule_id for v in validators}
+        assert "DX014" not in rule_ids
+
+    def test_validator_instance_is_sensitivity_target(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("DEV10X_HOOK_PROFILE", raising=False)
+        validators = get_validators()
+        sensitivity_validators = [v for v in validators if v.rule_id == "DX014"]
+        assert len(sensitivity_validators) == 1
+        assert isinstance(sensitivity_validators[0], SensitivityTargetValidator)
+
+    def test_validator_profile_is_standard(self) -> None:
+        v = SensitivityTargetValidator()
+        assert v.profile is ProfileTier.STANDARD
+
+    def test_rule_ids_remain_unique(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DEV10X_HOOK_PROFILE", "strict")
+        validators = get_validators()
+        rule_ids = [v.rule_id for v in validators]
+        assert len(rule_ids) == len(set(rule_ids)), f"Duplicate rule_ids: {rule_ids}"

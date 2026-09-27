@@ -1,0 +1,605 @@
+"""Enumerate MCP tool glob patterns in settings files.
+
+Claude Code's permission system does not expand `mcp__plugin_Dev10x_*`
+globs — the rule must name each tool explicitly. When a settings file
+contains a glob-shaped MCP allow rule, every MCP call still triggers a
+manual approval prompt because the glob silently matches nothing.
+
+This module discovers Dev10x MCP tools from the plugin's own MCP
+servers and replaces matching wildcards in settings files with
+enumerated tool names.
+
+**Runtime discovery (GH-371):** `discover_all_mcp_servers` extends
+`discover_mcp_tools` (plugin-only) with all MCP servers connected to
+the current Claude session, regardless of source type:
+
+- ``mcp__claude_ai_<Service>__*``  — claude.ai-hosted servers
+- ``mcp__<service>__*``            — user-installed via ``claude mcp add``
+- ``mcp__plugin_<plugin>_<srv>__*`` — plugin-distributed servers
+
+**capability_group annotation (GH-371):** When the same capability is
+offered by multiple prefixes (horizontal duplicates), an annotation
+links the policy entries so the doctor can surface consolidation
+opportunities without forcing them.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from dev10x.domain.claude_paths import ClaudeDir
+from dev10x.domain.common.mcp_tool_name import McpToolName
+from dev10x.domain.common.result import Result, SuccessResult, err, ok
+from dev10x.domain.plugin_root import resolve_plugin_root
+
+# MCP server registration file convention.
+# For the cli server, all handlers live in per-domain modules (GH-243/A6).
+# Each entry maps a plugin server key to a directory + filename glob, so a
+# newly added `*_tools.py` module is discovered without a second edit here.
+#
+# A hard-coded five-module list is what made the GH-1153 guard pass green
+# while blind to roughly four fifths of the registered surface (GH-1215):
+# `src/dev10x/mcp/` grew to twelve tool modules, and `gate_tools.py`
+# (`resolve_gate` — called by every skill gate), `task_index_tools.py`,
+# `monitor_tools.py`, `roots_tools.py`, `usage_tools.py`,
+# `sampling_tools.py` and `release_tools.py` were simply never scanned.
+#
+# Not the live FastMCP registry, which GH-1215 preferred: discovery takes
+# a `root` (`--plugin-root`), and `upgrade-cleanup` points it at a
+# checkout that is not the importable copy, often where `mcp` is not
+# installed. An import describes the importing process, not that root.
+#
+# The cost of staying textual: a decorator shaped like neither
+# `@x.tool(...)` nor `@..._tool` escapes `_is_server_tool_decorator` AND
+# the canary in `test_catalog_covers_mcp_tools.py`, which mirrors the same
+# two shapes — the blind spot `@github_tool` occupied. So `_tool` is a
+# convention with teeth: a new wrapper keeps the suffix, or widens both
+# matchers in the same commit.
+_SERVER_GLOBS: dict[str, tuple[str, str]] = {
+    "Dev10x_cli": ("src/dev10x/mcp", "*_tools.py"),
+    "Dev10x_db": ("src/dev10x/mcp", "server_db.py"),
+}
+
+
+@dataclass
+class McpServerEntry:
+    """Represents one discovered MCP server with its tool list.
+
+    Attributes:
+        prefix: The MCP prefix pattern, e.g. ``mcp__claude_ai_Sentry__``.
+        source_type: One of ``claude_ai``, ``user_installed``, ``plugin``.
+        service_name: Human-readable service label, e.g. ``Sentry``.
+        tools: Fully-qualified tool names under this prefix.
+    """
+
+    prefix: str
+    source_type: str
+    service_name: str
+    tools: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CapabilityGroupEntry:
+    """Links policy entries that share the same logical capability.
+
+    Used by the ``mcp-horizontal-duplicates`` doctor strategy to surface
+    cases where N servers each offer the same capability under different
+    prefixes. The annotation does not force consolidation; it surfaces
+    the duplication for user awareness.
+
+    Attributes:
+        capability_group: Stable slug for the capability, e.g.
+            ``sentry-search-issues``.
+        tool_name: Short tool name without the prefix, e.g.
+            ``search_issues``.
+        entries: (prefix, full_tool_name) pairs for each server that
+            offers this capability.
+    """
+
+    capability_group: str
+    tool_name: str
+    entries: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def server_count(self) -> int:
+        return len(self.entries)
+
+    def is_duplicate(self) -> bool:
+        return self.server_count > 1
+
+
+def plugin_root() -> Path:
+    """Return the checkout root containing `src/`, `servers/`, and `skills/`.
+
+    Walk-up only — correct when this module is imported from a repo
+    checkout or an editable install, and the historical behaviour tests
+    that scan the repo's own `skills/` depend on. Runtime callers that
+    must also work from an installed wheel use
+    :func:`resolve_plugin_root` (GH-919).
+    """
+    return Path(__file__).resolve().parents[4]
+
+
+def _parse_tool_names(server_file: Path) -> list[str]:
+    """Extract registered tool function names from a server module.
+
+    Uses ast so it works even when the file imports modules we don't have
+    at cleanup time (e.g., the mcp library on a machine without mcp
+    installed), and so an arbitrary ``--plugin-root`` checkout can be
+    scanned rather than only the importable installed copy.
+    """
+    if not server_file.is_file():
+        return []
+    source = server_file.read_text()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if _is_server_tool_decorator(decorator):
+                names.append(node.name)
+                break
+    return names
+
+
+def _is_server_tool_decorator(node: ast.expr) -> bool:
+    """Detect a tool registration decorator without importing mcp.
+
+    Two shapes register a tool in this codebase:
+
+    - ``@server.tool()`` — the direct FastMCP decorator.
+    - ``@github_tool`` — a module-level wrapper that binds cwd and calls
+      ``to_wire()`` before handing the function to ``server.tool()``
+      (`mcp/github_tools.py`). 48 of ~50 GitHub handlers use it.
+
+    Matching only the first shape hid every wrapped handler — ``pr_get``,
+    ``pr_labels``, ``merge_pr``, ``update_pr``, every ``milestone_*`` and
+    ``issues_bulk_*``, ``triage_roster`` — from the GH-1153 catalog guard
+    (GH-1215). A wrapper is recognised by a ``_tool`` name suffix, which is
+    the convention every such wrapper follows.
+
+    ``@server.resource(...)`` and ``@server.prompt(...)`` are deliberately
+    NOT matched: they register resources and prompts, which carry no
+    permission rule of their own.
+    """
+    if isinstance(node, ast.Call):
+        node = node.func
+    if isinstance(node, ast.Attribute):
+        return node.attr == "tool" and isinstance(node.value, ast.Name)
+    if isinstance(node, ast.Name):
+        return node.id.endswith("_tool")
+    return False
+
+
+def discover_mcp_tools(*, root: Path | None = None) -> dict[str, list[str]]:
+    """Return `{plugin_server: [fully-qualified tool names]}` for this plugin.
+
+    Example key/value::
+
+        {
+            "Dev10x_cli": [
+                "mcp__plugin_Dev10x_cli__detect_tracker",
+                "mcp__plugin_Dev10x_cli__pr_detect",
+                ...
+            ],
+        }
+    """
+    root = root or resolve_plugin_root() or plugin_root()
+    catalog: dict[str, list[str]] = {}
+    for server, (rel_dir, pattern) in _SERVER_GLOBS.items():
+        names: list[str] = []
+        for module in sorted((root / rel_dir).glob(pattern)):
+            names.extend(_parse_tool_names(module))
+        if not names:
+            continue
+        server_key = server.split("_", 1)[1] if "_" in server else server
+        prefix = f"mcp__plugin_Dev10x_{server_key}__"
+        catalog[server] = sorted(f"{prefix}{name}" for name in names)
+    return catalog
+
+
+def _server_prefix_from_tool(tool_name: str) -> str | None:
+    """Return the server prefix for a fully-qualified MCP tool name.
+
+    ``mcp__claude_ai_Sentry__search_issues``
+      → ``mcp__claude_ai_Sentry__``
+
+    ``mcp__sentry__search_issues``
+      → ``mcp__sentry__``
+    """
+    return McpToolName.prefix_of(tool_name)
+
+
+def _source_type_from_prefix(prefix: str) -> tuple[str, str]:
+    """Return (source_type, service_name) for a server prefix.
+
+    Examples::
+
+        mcp__claude_ai_Sentry__  → ("claude_ai", "Sentry")
+        mcp__sentry__            → ("user_installed", "sentry")
+        mcp__plugin_sentry_sentry__ → ("plugin", "sentry_sentry")
+    """
+    # Strip leading mcp__ and trailing __
+    inner = prefix.removeprefix("mcp__").removesuffix("__")
+    if inner.startswith("claude_ai_"):
+        return "claude_ai", inner.removeprefix("claude_ai_")
+    if inner.startswith("plugin_"):
+        return "plugin", inner.removeprefix("plugin_")
+    return "user_installed", inner
+
+
+def discover_all_mcp_servers(
+    *,
+    settings_paths: Iterable[Path] | None = None,
+) -> list[McpServerEntry]:
+    """Enumerate ALL MCP servers by scanning allow rules in settings files.
+
+    Unlike ``discover_mcp_tools`` (which only knows about this plugin's
+    servers), this function discovers every MCP server whose tools appear
+    in the user's allow rules — regardless of source type.
+
+    The three source types (GH-371):
+
+    - ``claude_ai``      — ``mcp__claude_ai_<Service>__*``
+    - ``user_installed`` — ``mcp__<service>__*``
+    - ``plugin``         — ``mcp__plugin_<plugin>_<server>__*``
+
+    Args:
+        settings_paths: Settings files to scan. Defaults to the standard
+            user and global settings locations when omitted.
+
+    Returns:
+        Deduplicated list of :class:`McpServerEntry` objects, one per
+        distinct server prefix found in any allow rule.
+    """
+    if settings_paths is None:
+        settings_paths = [
+            ClaudeDir.settings_json(),
+            ClaudeDir.settings_local_json(),
+        ]
+
+    prefix_to_entry: dict[str, McpServerEntry] = {}
+
+    for path in settings_paths:
+        if not Path(path).is_file():
+            continue
+        try:
+            data = json.loads(Path(path).read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        all_rules: list[str] = []
+        perms = data.get("permissions", {})
+        for bucket in ("allow", "deny", "ask"):
+            bucket_rules = perms.get(bucket, [])
+            if isinstance(bucket_rules, list):
+                all_rules.extend(r for r in bucket_rules if isinstance(r, str))
+
+        for rule in all_rules:
+            if not McpToolName.is_mcp(rule):
+                continue
+            prefix = _server_prefix_from_tool(rule)
+            if prefix is None:
+                continue
+            if prefix in prefix_to_entry:
+                if rule not in prefix_to_entry[prefix].tools:
+                    prefix_to_entry[prefix].tools.append(rule)
+                continue
+            source_type, service_name = _source_type_from_prefix(prefix)
+            entry = McpServerEntry(
+                prefix=prefix,
+                source_type=source_type,
+                service_name=service_name,
+                tools=[rule],
+            )
+            prefix_to_entry[prefix] = entry
+
+    return sorted(prefix_to_entry.values(), key=lambda e: e.prefix)
+
+
+def build_capability_groups(
+    servers: Iterable[McpServerEntry],
+) -> list[CapabilityGroupEntry]:
+    """Detect horizontal duplicates across MCP servers (GH-371).
+
+    Two tool entries share a ``capability_group`` when they have the
+    same short tool name (the part after the last ``__``) AND appear
+    under different server prefixes.
+
+    This function only groups tool names that actually appear in at
+    least two distinct server entries — single-server tools are
+    omitted.
+
+    Returns:
+        List of :class:`CapabilityGroupEntry` objects for each
+        capability that spans more than one server.
+    """
+    # tool_name → [(prefix, full_tool_name)]
+    by_short_name: dict[str, list[tuple[str, str]]] = {}
+
+    for server_entry in servers:
+        for full_name in server_entry.tools:
+            parts = full_name.split("__")
+            if len(parts) < 3:
+                continue
+            short_name = parts[-1]
+            by_short_name.setdefault(short_name, []).append((server_entry.prefix, full_name))
+
+    groups: list[CapabilityGroupEntry] = []
+    for short_name, pairs in sorted(by_short_name.items()):
+        # Deduplicate by prefix — keep only one entry per server
+        seen_prefixes: set[str] = set()
+        deduped: list[tuple[str, str]] = []
+        for prefix, full_name in pairs:
+            if prefix not in seen_prefixes:
+                seen_prefixes.add(prefix)
+                deduped.append((prefix, full_name))
+        if len(deduped) < 2:
+            continue
+        # Derive a stable capability_group slug from the short name
+        capability_group = short_name.replace("_", "-")
+        groups.append(
+            CapabilityGroupEntry(
+                capability_group=capability_group,
+                tool_name=short_name,
+                entries=deduped,
+            )
+        )
+    return groups
+
+
+def _matches_wildcard(rule: str, catalog: dict[str, list[str]]) -> list[str] | None:
+    """Return enumerated tools if `rule` is a Dev10x MCP wildcard, else None.
+
+    - `mcp__plugin_Dev10x_*` matches every server in the catalog
+    - `mcp__plugin_Dev10x_cli_*` matches only the cli server
+    """
+    if not McpToolName.is_wildcard(rule):
+        return None
+
+    matched: list[str] = []
+    for server, tools in catalog.items():
+        server_key = server.split("_", 1)[1] if "_" in server else server
+        server_specific = f"mcp__plugin_Dev10x_{server_key}_*"
+        if rule == server_specific:
+            return list(tools)
+        if rule.startswith("mcp__plugin_Dev10x_") and "_cli" not in rule and "_db" not in rule:
+            matched.extend(tools)
+    return matched or None
+
+
+def expand_rules(
+    allow: list[str],
+    catalog: dict[str, list[str]],
+) -> tuple[list[str], list[str], list[str]]:
+    """Expand wildcard MCP rules in `allow`.
+
+    Returns `(new_allow, removed_wildcards, added_tools)`.
+
+    - Preserves ordering: wildcards are replaced in place with their
+      enumerated tools, except tools already present elsewhere in
+      `allow` are deduplicated.
+    - If multiple wildcards in the same file expand to overlapping
+      tool sets, the later duplicates are dropped.
+    """
+    new_allow: list[str] = []
+    removed_wildcards: list[str] = []
+    added_tools: list[str] = []
+    seen: set[str] = set()
+
+    for rule in allow:
+        expanded = _matches_wildcard(rule, catalog)
+        if expanded is None:
+            if rule not in seen:
+                new_allow.append(rule)
+                seen.add(rule)
+            continue
+
+        removed_wildcards.append(rule)
+        for tool in expanded:
+            if tool not in seen:
+                new_allow.append(tool)
+                seen.add(tool)
+                added_tools.append(tool)
+
+    return new_allow, removed_wildcards, added_tools
+
+
+def expand_settings_file(
+    path: Path,
+    catalog: dict[str, list[str]],
+    *,
+    dry_run: bool = False,
+) -> tuple[int, list[str]]:
+    """Apply `expand_rules` to a settings.local.json file.
+
+    Returns `(changes, messages)` where `changes == removed + added`.
+    """
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        return 0, [f"  SKIP (unreadable): {e}"]
+
+    allow_list: list[str] = data.get("permissions", {}).get("allow", [])
+    new_allow, removed, added = expand_rules(allow_list, catalog)
+
+    if not removed and not added and new_allow == allow_list:
+        return 0, []
+
+    messages: list[str] = []
+    for wc in removed:
+        messages.append(f"  - {wc}  (wildcard removed — Claude Code does not expand MCP globs)")
+    for tool in added:
+        messages.append(f"  + {tool}")
+
+    if not dry_run:
+        from dev10x.skills.permission.backup import create_backup
+        from dev10x.skills.permission.file_lock import locked_json_update
+
+        create_backup(path)
+        with locked_json_update(path=path) as live:
+            permissions = live.setdefault("permissions", {})
+            live_allow = permissions.setdefault("allow", [])
+            live_new, _, _ = expand_rules(live_allow, catalog)
+            permissions["allow"] = live_new
+
+    return len(removed) + len(added), messages
+
+
+def build_catalog(*, plugin_root_override: Path | None = None) -> Result[dict[str, list[str]]]:
+    """Resolve the plugin root and parse its MCP tool catalog (GH-919).
+
+    A failure here is a hard error, never an empty catalog: the caller
+    must be able to tell "the plugin exposes no MCP tools" (impossible in
+    practice, hence an error) from "there were no wildcards to expand"
+    (a genuine no-op reported by :func:`enumerate_settings`).
+    """
+    root = resolve_plugin_root(override=plugin_root_override)
+    if root is None:
+        return err(
+            "Could not resolve the Dev10x plugin root. Set $CLAUDE_PLUGIN_ROOT, "
+            "install the plugin, or pass --plugin-root."
+        )
+    catalog = discover_mcp_tools(root=root)
+    if not catalog:
+        return err(
+            f"Could not enumerate Dev10x MCP tools from plugin root {root} — "
+            "no @server.tool() definitions found under src/dev10x/mcp/. "
+            "MCP wildcards were left in place; pass --plugin-root to point at "
+            "a complete plugin checkout.",
+            plugin_root=str(root),
+        )
+    return ok(catalog)
+
+
+#: Registered tools deliberately left out of the seeded permission
+#: surface because they mutate state — the prompt is the last line of
+#: defence before a write. Lives here rather than in the test so the
+#: runtime report and the CI guard cannot drift apart (GH-1153).
+#:
+#: Not every write belongs here. A write whose raw-CLI equivalent the
+#: skill-redirect hook BLOCKS (``gh pr edit`` → ``update_pr``, and the
+#: rest of the routed-CLI map in ``.claude/rules/mcp-tools.md``) is
+#: catalogued in ``base_permissions`` instead: refusing to seed the only
+#: remaining route just makes the sanctioned path prompt while the
+#: unsanctioned one is denied. What stays here are the writes a caller
+#: can reasonably be stopped on — the ones that change durable user
+#: policy, spend money, or land a merge (GH-1215).
+WRITE_TOOLS_NOT_SEEDED: frozenset[str] = frozenset(
+    {
+        # Writes the applied-version state that upgrade-cleanup reads back.
+        "mcp__plugin_Dev10x_cli__record_upgrade",
+        # Lands a merge — the least reversible action in the pipeline.
+        "mcp__plugin_Dev10x_cli__merge_pr",
+        # Rewrite durable project policy in ~/.config/Dev10x/friction.yaml;
+        # changing a repo's gate posture is a supervisor decision.
+        "mcp__plugin_Dev10x_cli__pin_gate_preset",
+        "mcp__plugin_Dev10x_cli__pin_tracker",
+        "mcp__plugin_Dev10x_cli__pin_supervisor_review",
+        "mcp__plugin_Dev10x_cli__pin_ide",
+        # Spends the client's tokens on an LLM completion.
+        "mcp__plugin_Dev10x_cli__request_sampling",
+        # Appends to the review-rule feedback store that
+        # rule_confidence_report ranks from.
+        "mcp__plugin_Dev10x_cli__record_rule_feedback",
+    }
+)
+
+
+def uncatalogued_tools(
+    *,
+    catalog: dict[str, list[str]],
+    config: dict | None,
+) -> list[str]:
+    """Registered read tools the permission catalog does not carry (GH-1153).
+
+    A tool absent from ``base_permissions`` can never be seeded by
+    ``ensure-base``, so every caller prompts forever — and nothing said
+    so out loud, because registering a tool and cataloguing it are
+    separate edits in separate files. Writes are excluded by name, not
+    by a verb heuristic, so a read tool whose name merely looks write-ish
+    is still reported.
+
+    An absent ``config`` yields no findings rather than reporting the
+    whole catalog as missing: "we could not check" must not look like
+    "everything is broken".
+    """
+    if not config:
+        return []
+    catalogued: set[str] = set(config.get("base_permissions") or [])
+    for tracker_rules in (config.get("tracker_permissions") or {}).values():
+        catalogued.update(tracker_rules or [])
+    registered = {tool for tools in catalog.values() for tool in tools}
+    return sorted(registered - catalogued - WRITE_TOOLS_NOT_SEEDED)
+
+
+def enumerate_settings(
+    settings_files: Iterable[Path],
+    *,
+    dry_run: bool = False,
+    quiet: bool = False,
+    plugin_root_override: Path | None = None,
+    config: dict | None = None,
+) -> Result[dict[str, Any]]:
+    """Expand MCP wildcards across a collection of settings files.
+
+    Returns ``ok({"changed": int, "files_changed": int, "messages":
+    list[str], "plugin_root": str})`` — ``changed == 0`` is a successful
+    no-op — or ``err(...)`` when the tool catalog could not be built, so
+    a discovery failure can never be read as "nothing to do" (GH-919).
+
+    ``config`` is the permission catalog. When supplied, registered tools
+    missing from it are reported (GH-1153); it is injected rather than
+    loaded here so this module stays independent of ``update_paths``,
+    which already imports it.
+    """
+    catalog_result = build_catalog(plugin_root_override=plugin_root_override)
+    if not isinstance(catalog_result, SuccessResult):
+        return catalog_result
+    catalog = catalog_result.value
+
+    messages: list[str] = []
+    missing_from_catalog = uncatalogued_tools(catalog=catalog, config=config)
+    if missing_from_catalog and not quiet:
+        messages.append(
+            f"WARNING: {len(missing_from_catalog)} registered MCP tool(s) are absent "
+            "from base_permissions. ensure-base cannot seed them, so every caller "
+            "prompts until they are catalogued:"
+        )
+        messages.extend(f"  ! {tool}" for tool in missing_from_catalog)
+
+    total = 0
+    changed_files = 0
+    for path in sorted(settings_files):
+        count, file_messages = expand_settings_file(path, catalog, dry_run=dry_run)
+        if count == 0:
+            continue
+        if not quiet:
+            messages.append(f"\n{path}")
+            messages.extend(file_messages)
+        total += count
+        changed_files += 1
+
+    if total == 0:
+        messages.append("No MCP wildcards found — all settings files already enumerated.")
+    else:
+        verb = "Would expand" if dry_run else "Expanded"
+        messages.append(f"{verb} {total} rules across {changed_files} files.")
+
+    return ok(
+        {
+            "changed": total,
+            "files_changed": changed_files,
+            "messages": messages,
+        }
+    )

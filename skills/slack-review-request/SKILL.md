@@ -10,7 +10,9 @@ description: >
 user-invocable: true
 invocation-name: Dev10x:slack-review-request
 allowed-tools:
-  - Bash(${CLAUDE_PLUGIN_ROOT}/skills/slack-review-request/scripts/:*)
+  - Skill(Dev10x:slack)
+  - Bash(uvx dev10x skill notify slack-review-prepare:*)
+  - Bash(gh pr view:*)
 ---
 
 # Slack Review Request
@@ -31,7 +33,7 @@ with appropriate team and user mentions.
 
 ## Config
 
-Configuration lives in `~/.claude/memory/slack-config-code-review-requests.yaml`:
+Configuration lives in `~/.config/Dev10x/slack-config-code-review-requests.yaml`:
 
 ```yaml
 default_action: ask  # "skip" or "ask" for unconfigured projects
@@ -47,7 +49,7 @@ projects:
     skip: true              # no Slack notification
 ```
 
-Mentions are resolved against `~/.claude/memory/slack-config.yaml`
+Mentions are resolved against `~/.config/Dev10x/slack-config.yaml`
 `user_groups` and `users` mappings.
 
 ### Per-Project Actions
@@ -62,13 +64,50 @@ Mentions are resolved against `~/.claude/memory/slack-config.yaml`
 
 ## Flow
 
+### Step 0: Approval state precheck (GH-993, GH-128)
+
+Before posting a Slack ping, verify the PR is not already approved
+on its current HEAD **by a human reviewer**. Re-pinging reviewers
+on a human-approved PR is noise — the supervisor's next action is
+merge, not another review pass. Bot approvals (`claude[bot]`,
+`github-actions[bot]`, etc.) MUST NOT short-circuit the Slack ping.
+
+1. Fetch review state (no MCP wrapper exists for review-decision
+   data — `gh pr view` is the supported call site):
+   ```bash
+   gh pr view {pr_number} --repo {repo} --json reviewDecision,reviews,headRefOid  # cli-friction: allow raw-gh-pr — review-state precheck
+   ```
+2. **Filter bot approvals first (GH-128).** Drop any review whose
+   `author.login` ends with `[bot]` or whose `author.type == "Bot"`
+   before matching against `headRefOid`. Bot approvals do not
+   satisfy the "human review" requirement.
+3. **If a HUMAN review with `state == "APPROVED"`** and matching
+   `commit.oid == headRefOid` exists: skip the Slack notification.
+   Report "Slack notification skipped — PR already approved on
+   current HEAD by {login}" and stop.
+4. **Otherwise** (only bot approvals, stale approvals, or no
+   approvals): proceed to Step 1. When only bot approvals exist on
+   the current HEAD, log "PR has only a bot approval — posting
+   human review ping" so the rationale is visible.
+
+Skip this precheck when invoked with `--force` flag or when the
+caller passes `bypass_approval_check: true` (e.g., re-review
+notifications composed by `Dev10x:gh-pr-monitor` Phase 2.7 after
+fixups, where the caller has already validated state).
+
 ### Step 1: Prepare
 
-Resolve project config and format the Slack message:
+**REQUIRED:** Run the `prepare` subcommand to resolve project config
+and format the Slack message. Do NOT inline `yq` reads of
+`slack-config.yaml`, manual mention resolution, or hand-built message
+strings — the script handles user-group → `<!subteam^ID>` resolution,
+user → `<@SLACK_ID>` resolution, JTBD extraction from the PR body,
+and channel lookup in one call. Inlining bypasses these and produces
+malformed mentions.
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/skills/slack-review-request/scripts/slack-review-request.py \
-  prepare --pr {pr_number} --repo {repo}
+uvx dev10x skill notify slack-review-prepare \
+  --pr {pr_number} --repo {repo}
 ```
 
 Output is JSON with keys:
@@ -113,9 +152,11 @@ a temporary file and pass it:
 
 `Skill(skill="Dev10x:slack", args="--channel {channel} --message-file {temp_file}")`
 
-**NEVER call `slack-review-request.py send` directly** — delegate to
-the slack skill to honor global Slack posting rules. The script is
-an internal fallback only.
+**NEVER call `slack-review-request.py send` or `slack-notify.py`
+directly** — delegate to the slack skill (which now invokes
+`uvx dev10x skill notify slack-send`) so global Slack posting
+rules are honored. The version-pinned scripts are an internal
+fallback only.
 
 Report success: channel ID, thread timestamp (if available).
 

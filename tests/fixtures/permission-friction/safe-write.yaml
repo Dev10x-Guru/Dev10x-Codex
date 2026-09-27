@@ -1,0 +1,114 @@
+# GH-271 permission-friction fixtures — command_class: safe-write
+#
+# Writes that are low-risk and trivially/assisted reversible. Local
+# writes default to `allow`; writes to shared/external state default to
+# `ask`. Classifications RE-DERIVED from the command + catalog +
+# reflections (not the heuristic extractor). See README.md.
+
+command_class: safe-write
+rows:
+  - id: "#122"
+    command: 'mkdir -p "<dir>"'
+    tool: Bash
+    friction: option-2-footgun
+    effect: allow
+    reversibility: trivial
+    rule: "Bash(mkdir:*)"
+    notes: >
+      Directory creation — idempotent with `-p`, trivially reversible
+      (rmdir). Re-derived from the extractor's `safe-read` (it is a
+      write). Catalog already lists `Bash(mkdir:*)`.
+
+  - id: "#126"
+    command: 'cp /tmp/<file> "<dest>"'
+    tool: Bash
+    friction: null
+    effect: ask
+    reversibility: trivial
+    rule: "Bash(cp:*)"
+    notes: >
+      Copy into a non-/tmp destination (here a synced KB vault). Catalog
+      allows only `Bash(cp /tmp:*)`; an arbitrary destination is `ask`.
+
+  - id: "#106"
+    command: 'mcp__claude_ai_Sentry__update_issue(status: "resolved")'
+    tool: mcp__claude_ai_Sentry__update_issue
+    friction: permission-prompt
+    effect: ask
+    reversibility: trivial
+    rule: "mcp__claude_ai_Sentry__update_issue"
+    notes: >
+      Mutates external (Sentry) state but trivially reversible (re-open).
+      External-state write → ask, not allow.
+
+  - id: "#223"
+    command: 'mcp__plugin_sentry_sentry__update_issue(...)'
+    tool: mcp__plugin_sentry_sentry__update_issue
+    friction: null
+    effect: ask
+    reversibility: trivial
+    rule: "mcp__plugin_sentry_sentry__update_issue"
+    notes: >
+      Plugin-distributed Sentry MCP write. Same shape as #106 — external
+      state, reversible → ask. (Its sibling `search_events` is safe-read.)
+
+  - id: "#173"
+    command: "google-chrome --headless --screenshot=<path> http://localhost:4321/"
+    tool: Bash
+    friction: option-2-footgun
+    effect: ask
+    reversibility: trivial
+    rule: "Bash(google-chrome --headless:*)"
+    notes: >
+      Headless screenshot writes one file locally. Browser automation is
+      broad enough to warrant ask rather than a blanket allow.
+
+  - id: "#70"
+    command: 'mcp__claude_ai_Google_Calendar__create_event(summary, startTime, ...)'
+    tool: mcp__claude_ai_Google_Calendar__create_event
+    friction: permission-prompt
+    effect: ask
+    reversibility: trivial
+    rule: "mcp__claude_ai_Google_Calendar__create_event"
+    notes: >
+      Writes an external calendar event, trivially reversible (delete).
+      External-state write → ask. Re-derived from extractor `destructive`.
+
+  - id: "#178"
+    command: "sed -i 's|<old>|<new>|g' .idea/workspace.xml"
+    tool: Bash
+    friction: permission-prompt
+    effect: ask
+    reversibility: trivial
+    rule: "Bash(sed -i:*)"
+    notes: >
+      `sed -i` edits a local file in place (reversible via git). Prefer
+      the Edit tool; the in-place mutation warrants ask. Re-derived from
+      extractor `destructive`+`allow` (incoherent).
+
+  - id: "#145"
+    command: "mktemp /tmp/gh-issue-body-XXXXXX.md"
+    tool: Bash
+    friction: null
+    effect: allow
+    reversibility: trivial
+    rule: "Bash(mktmp:*)"
+    notes: >
+      Creates a temp file under /tmp — local, trivially reversible. Prefer
+      the Dev10x `mktmp` MCP wrapper (scoped, audited); raw `mktmp` is the
+      friction signal, not a risk.
+
+  - id: "#43"
+    command: "git rebase --onto origin/develop <upstream> <branch>"
+    tool: Bash
+    friction: permission-prompt
+    effect: allow
+    reversibility: assisted
+    rule: "Bash(git rebase --onto origin/develop:*)"
+    notes: >
+      Rebasing a local feature branch onto a known-good remote base only
+      rewrites LOCAL branch history — no shared/remote state, no
+      force-push — and is reflog-recoverable. Routine, expected op → allow.
+      Distinct from the INTERACTIVE forms #30/#46 (`rebase -i` /
+      `--continue`), which keep `destructive`/`ask`. (Maintainer-directed
+      reclassification, GH-616; revises reflection #43.)

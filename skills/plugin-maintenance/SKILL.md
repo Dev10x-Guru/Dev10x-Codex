@@ -1,0 +1,986 @@
+---
+name: Dev10x:plugin-maintenance
+description: >
+  Maintain Dev10x plugin configuration — ensure base permissions,
+  migrate config files, generalize session-specific allow rules,
+  enumerate MCP tool globs, refresh script coverage, merge worktree
+  permissions, audit permissions for friction, and clean redundant
+  rules from project settings. Two modes: `bootstrap` (fast subset
+  for first-time setup) and `full` (complete cleanup, default).
+  TRIGGER when: bootstrapping a new install, after `claude plugin
+  update`, when permission prompts appear unexpectedly, or when
+  `Dev10x:onboarding` / `Dev10x:upgrade-cleanup` orchestrates
+  maintenance.
+  DO NOT TRIGGER when: permissions are already working and no
+  upgrade or bootstrap is in progress.
+user-invocable: true
+invocation-name: Dev10x:plugin-maintenance
+allowed-tools:
+  - Skill(Dev10x:onboarding)
+  # GH-269: Plugin maintenance now runs through the version-stable
+  # `uvx dev10x` CLI. Each subcommand is enumerated explicitly (no
+  # `Bash(uvx dev10x:*)` wildcard) for user trust and transparency —
+  # the maintainer can audit exactly which subcommands this skill is
+  # authorized to invoke.
+  - Bash(uvx dev10x permission update-paths:*)
+  - Bash(uvx dev10x permission merge-worktree:*)
+  - Bash(uvx dev10x permission ensure-ignored:*)
+  - Bash(uvx dev10x permission clean:*)
+  - Bash(uvx dev10x permission enumerate-mcp:*)
+  - Bash(uvx dev10x permission promote-plan:*)
+  - Bash(uvx dev10x permission ensure-base:*)
+  - Bash(uvx dev10x permission ensure-reads:*)
+  - Bash(uvx dev10x permission ensure-scripts:*)
+  - Bash(uvx dev10x permission ensure-workspace:*)
+  - Bash(uvx dev10x permission ensure-safety-keys:*)
+  - Bash(uvx dev10x permission generalize:*)
+  - Bash(uvx dev10x permission doctor:*)
+  - Bash(uvx dev10x permission doctor anchor-worktree-roots:*)
+  - Bash(uvx dev10x permission init:*)
+  - Bash(uvx dev10x permission investigate:*)
+  - Bash(uvx dev10x permission record-upgrade:*)
+  - Bash(uvx dev10x playbook diff:*)
+  # GH-307: version-check preflight
+  - Bash(claude plugin list:*)
+  - Bash(uv tool list:*)
+  - Read(~/.config/Dev10x/*)
+  - Edit(~/.config/Dev10x/*)
+  - Agent(Dev10x:permission-auditor)
+  - AskUserQuestion
+  - TaskCreate
+  - TaskUpdate
+---
+
+# Dev10x:plugin-maintenance
+
+Single source for Dev10x plugin maintenance. Used directly, or
+orchestrated by `Dev10x:onboarding` (bootstrap mode) and
+`Dev10x:upgrade-cleanup` (full mode).
+
+**Announce:** "Using plugin-maintenance to keep Dev10x permission
+settings and config files in shape."
+
+## Modes
+
+| Mode | Steps | When to use |
+|------|-------|-------------|
+| `bootstrap` | version-check, 2, 3, 4, 4b, 7, 8 | First-time setup; eliminate prompts on the demoed skill set without doing a full sweep |
+| `full` (default) | version-check, 1–4, 4b, 5–13 | Post-upgrade; suspected permission friction; long-term maintenance |
+
+`bootstrap` is intentionally fast and idempotent: ensure base
+permissions, migrate any leftover legacy config files, and confirm
+script coverage. It skips destructive cleanup (generalize, clean
+project files) and the heavier `permission-auditor` sweep.
+
+The **Steps** column names the numbered `##` headings below; the
+per-mode `TaskCreate` lists in § Orchestration are the executable
+contract. Keep the two in sync. GH-1127 traced its doubt about whether
+`upgrade-cleanup` reaches `ensure-base` to this table drifting out of
+step with them — it omitted step 4 from `bootstrap` (the `ensure-base`
+step, tagged `[bootstrap]` in its own heading) and stopped `full` at 8,
+dropping five steps each marked *(full only)*.
+
+## Argument Parsing
+
+Read the args string passed to the skill:
+
+- empty / unset → mode = `full`
+- starts with `bootstrap` → mode = `bootstrap`
+- starts with `full` → mode = `full`
+- anything else → mode = `full`, log a note that the arg was
+  unrecognized
+
+## Orchestration
+
+This skill follows `references/task-orchestration.md` patterns.
+**Auto-advance:** complete each step, immediately start the next — no checkpoints the resolver did not ask for.
+Run dry-run before applying — no pause between steps.
+
+**REQUIRED: Create tasks before ANY work.** The task list depends
+on the mode. Execute these `TaskCreate` calls at startup:
+
+**Bootstrap mode:**
+
+1. `TaskCreate(subject="Check for newer version (plugin + uv tool)", activeForm="Checking versions")`
+2. `TaskCreate(subject="Migrate config files", activeForm="Migrating configs")`
+3. `TaskCreate(subject="Ensure workspace directories", activeForm="Registering workspace dirs")`
+4. `TaskCreate(subject="Ensure base permissions", activeForm="Ensuring base perms")`
+5. `TaskCreate(subject="Ensure safety keys", activeForm="Ensuring safety keys")`
+6. `TaskCreate(subject="Ensure script coverage", activeForm="Verifying script rules")`
+7. `TaskCreate(subject="Ensure read coverage", activeForm="Verifying Read rules")`
+
+**Full mode:**
+
+1. `TaskCreate(subject="Check for newer version (plugin + uv tool)", activeForm="Checking versions")`
+2. `TaskCreate(subject="Update version paths", activeForm="Updating paths")`
+3. `TaskCreate(subject="Migrate config files", activeForm="Migrating configs")`
+4. `TaskCreate(subject="Ensure workspace directories", activeForm="Registering workspace dirs")`
+5. `TaskCreate(subject="Ensure base permissions", activeForm="Ensuring base perms")`
+6. `TaskCreate(subject="Ensure safety keys", activeForm="Ensuring safety keys")`
+7. `TaskCreate(subject="Generalize session-specific permissions", activeForm="Generalizing perms")`
+8. `TaskCreate(subject="Enumerate MCP tool globs", activeForm="Enumerating MCP globs")`
+9. `TaskCreate(subject="Ensure script coverage", activeForm="Verifying script rules")`
+10. `TaskCreate(subject="Ensure read coverage", activeForm="Verifying Read rules")`
+11. `TaskCreate(subject="Merge worktree permissions", activeForm="Merging worktree perms")`
+12. `TaskCreate(subject="Audit permissions for friction", activeForm="Auditing permissions")`
+13. `TaskCreate(subject="Clean project files", activeForm="Cleaning project files")`
+14. `TaskCreate(subject="Run permission doctor", activeForm="Running doctor sweep")`
+15. `TaskCreate(subject="Diff user playbooks against defaults", activeForm="Diffing playbooks")`
+
+> ⚠ **#47 default-safety.** Step 13 (Clean) runs the safe default
+> only — it does NOT pass `--aggressive`, so global-duplicate
+> stripping is skipped (global→project merge is not guaranteed); it
+> is opt-in — see §11 for the evidence gate and `clean --restore`
+> recovery. Step 14 (doctor) never rewrites paths into `**` wildcards
+> (GH-715) — `**` matching is unreliable; pinned paths are kept
+> current by `update-paths` instead.
+
+Set sequential dependencies. Mark each step `in_progress` when
+starting and `completed` when done. Steps that produce no
+changes (dry-run shows no diff) should still be marked
+`completed` with a note in the description.
+
+## Preflight: check for newer version (GH-307)
+
+Before any maintenance work, report installed vs latest for both
+the Claude Code plugin and the `dev10x` uv tool, and offer to
+update when either is behind.
+
+### Step 1: Read the preference file
+
+Try to load the saved update preference from
+`~/.config/Dev10x/plugin-maintenance-prefs.yaml`:
+
+```yaml
+# example
+update_preference: both   # both | plugin | uv | skip | ask
+```
+
+If the file exists and `update_preference` is set to anything
+other than `ask`, use that value to auto-skip the first
+`AskUserQuestion` gate (still show the version report, just
+apply the saved choice). If the file is absent or
+`update_preference: ask`, present the gate normally.
+
+### Step 2: Read latest advertised version
+
+Read the `version` field from the marketplace manifest:
+
+```
+~/.claude/plugins/marketplaces/<publisher>/<plugin>/.claude-plugin/plugin.json
+```
+
+Locate the manifest by globbing
+`~/.claude/plugins/marketplaces/*/*/.claude-plugin/plugin.json`
+and filtering for the Dev10x plugin (check the `name` field).
+Parse `version` as the "latest advertised" version.
+
+If the manifest is not found, skip the plugin version check and
+note "marketplace manifest not found".
+
+### Step 3: Read installed plugin version
+
+Run:
+
+```bash
+claude plugin list
+```
+
+Parse the output for the Dev10x plugin entry. Extract both the
+installed version **and the install scope** (`local` or `user` —
+the scope is required for the correct `claude plugin update`
+invocation). If the entry is absent, note "plugin not installed".
+
+### Step 4: Read uv tool version
+
+Run:
+
+```bash
+uv tool list
+```
+
+Parse the output for the `dev10x` entry and extract its version.
+If absent, note "uv tool not installed".
+
+### Step 5: Display version report
+
+Always display a concise version report before prompting:
+
+```
+Version check
+  Plugin (marketplace latest): 0.75.0
+  Plugin (installed):          0.74.0  ← behind
+  uv tool dev10x:              0.73.0  ← behind
+```
+
+If both are current, display the table with "✓ up to date" and
+skip to the next maintenance step — no prompt needed.
+
+### Step 6: Prompt to update (when behind)
+
+If either surface is behind, **REQUIRED: Call `AskUserQuestion`**
+(do NOT use plain text). Apply the saved preference from Step 1
+instead of prompting when `update_preference` is set.
+
+```
+AskUserQuestion(questions=[{
+  question: "One or more Dev10x surfaces are behind the latest version.\nHow would you like to proceed?",
+  header: "Version update",
+  options: [
+    {label: "Update both (Recommended)",
+     description: "claude plugin update + uv tool upgrade dev10x"},
+    {label: "Plugin only",
+     description: "claude plugin update <plugin>@<marketplace>"},
+    {label: "uv tool only",
+     description: "uv tool upgrade dev10x"},
+    {label: "Skip",
+     description: "Continue maintenance without updating"}
+  ],
+  multiSelect: false
+}])
+```
+
+**Execute the chosen update(s):**
+
+- **Plugin update:** Run `claude plugin update` using the scope
+  detected in Step 3 (e.g., `claude plugin update Dev10x@Dev10x-Guru`
+  for user-scoped installs, or with `--local` for local-scoped).
+  After a successful plugin update, surface this hint:
+  > **Restart required** — the running Claude session keeps the
+  > cached skill content until restart. Reload Claude Code to load
+  > the new plugin version.
+
+- **uv tool update:** Run `uv tool upgrade dev10x`.
+
+### Step 7: Remember the decision
+
+After the user makes a choice in Step 6, **REQUIRED: Call
+`AskUserQuestion`** (do NOT use plain text):
+
+```
+AskUserQuestion(questions=[{
+  question: "Remember this choice for future maintenance sessions?",
+  header: "Save preference",
+  options: [
+    {label: "Yes, remember for future sessions (Recommended)",
+     description: "Saves preference to ~/.config/Dev10x/plugin-maintenance-prefs.yaml"},
+    {label: "No, ask me each time",
+     description: "Preference is not saved"}
+  ],
+  multiSelect: false
+}])
+```
+
+If the user chooses to remember: write the chosen preference to
+`~/.config/Dev10x/plugin-maintenance-prefs.yaml`:
+
+```yaml
+# Written by Dev10x:plugin-maintenance (GH-307)
+# Valid values: both | plugin | uv | skip | ask
+update_preference: <choice>
+```
+
+The `ask` value means "always prompt, never auto-apply" and is
+the effective default when the file is absent.
+
+---
+
+## Preflight: ensure `uv` (and `uvx`) is installed (GH-269)
+
+Every command in this skill runs through `uvx dev10x …`, the
+version-stable CLI shipped with the plugin. If `uv` is missing,
+none of the maintenance commands can run. Before any step:
+
+```bash
+command -v uvx
+```
+
+If the command prints nothing (exit status non-zero), STOP and
+direct the user to install `uv` first:
+
+> `uv` (which provides `uvx`) is not installed. Run the
+> `Dev10x:onboarding` skill — it installs `uv` via the official
+> Astral installer and verifies the plugin can drive its CLI.
+> Direct install instructions: <https://docs.astral.sh/uv/getting-started/installation/>
+
+Delegate via `Skill(Dev10x:onboarding)` and re-run this skill once
+`uv` is on PATH.
+
+## First-Time Setup
+
+Initialize userspace config with your project roots:
+
+```bash
+uvx dev10x permission init
+```
+
+Then edit `~/.claude/skills/Dev10x:upgrade-cleanup/projects.yaml`
+to add your project roots. (The userspace config path keeps the
+`upgrade-cleanup` directory name for backward compatibility — the
+on-disk location does not change with the rename.)
+
+## Workflow
+
+The numbered headings below (1–13) match the **full** mode task
+list steps 2–14 (after the version-check preflight).
+In `bootstrap` mode, run only the steps marked **[bootstrap]**.
+
+### 1. Update version paths *(full only)*
+
+Bump versioned plugin paths in every settings file to the current
+plugin version.
+
+1. Dry run (REQUIRED — always show the user the planned changes
+   before applying):
+
+```bash
+uvx dev10x permission update-paths --dry-run
+```
+
+For large updates prefer `--summary`:
+
+```bash
+uvx dev10x permission update-paths --dry-run --summary
+```
+
+2. Apply (only after the dry-run output is shared with the user):
+
+```bash
+uvx dev10x permission update-paths
+```
+
+### 2. Migrate config files **[bootstrap]**
+
+Move config files from deprecated locations to canonical Dev10x
+paths. Files are moved (not copied) so old paths stop working
+immediately.
+
+| Old path | New path |
+|----------|----------|
+| `~/.claude/memory/slack-config.yaml` | `~/.config/Dev10x/slack-config.yaml` |
+| `~/.claude/memory/slack-config-code-review-requests.yaml` | `~/.config/Dev10x/slack-config-code-review-requests.yaml` |
+| `~/.claude/memory/github-reviewers-config.yaml` | `~/.config/Dev10x/github-reviewers-config.yaml` |
+| `~/.claude/memory/databases.yaml` | `~/.config/Dev10x/databases.yaml` |
+
+For each file:
+1. Check if source exists (skip if not — user may not use it)
+2. Check destination exists (skip + warn if both present)
+3. Ensure `~/.config/Dev10x/` exists
+4. `mv` source to destination
+5. Report what moved
+
+**Playbook overrides (GH-447) — full mode only:**
+
+Migrate global playbook overrides from the old
+`~/.claude/memory/Dev10x/playbooks/` path to the XDG-canonical
+`~/.config/Dev10x/playbooks/` path (established by GH-445).
+
+For each `*.yaml` in `~/.claude/memory/Dev10x/playbooks/`:
+
+| Entry type | Action |
+|------------|--------|
+| Regular file | Move to `~/.config/Dev10x/playbooks/<filename>`, refusing to overwrite an existing destination — surface the conflict instead |
+| Symlink pointing into `~/.config/Dev10x/playbooks/` | Delete (pre-migration artefact — the target already exists at the new location) |
+| Symlink pointing elsewhere | Leave in place and warn — manual inspection required |
+
+After processing all entries:
+- Report each migrated file (source → destination)
+- Report each skipped conflict (both paths exist)
+- If `~/.claude/memory/Dev10x/playbooks/` is now empty, remove it
+
+Playbook migration steps:
+1. Check if `~/.claude/memory/Dev10x/playbooks/` exists (skip entire
+   sub-step if not — users who never had overrides skip cleanly)
+2. Ensure `~/.config/Dev10x/playbooks/` exists (create if missing)
+3. For each entry: apply the action table above
+4. Remove the source directory when empty
+5. Report a summary of what moved, what was skipped, and why
+
+**databases.yaml from legacy/backup skill directories (GH-446) — full mode only:**
+
+Skill consolidation and upgrades may move user-installed skills into
+hidden backup directories (e.g.,
+`~/.claude/skills/.20260601-1100-backup/<skill>/`). The `glob *`
+used by `db.sh`'s discover_configs skips dotted directory names, so
+`databases.yaml` files in those backup dirs are silently not found —
+even though `~/.config/Dev10x/databases.yaml` (priority 3 since
+GH-448) is now the preferred global location.
+
+Scan for stray `databases.yaml` files using `find` (which reaches
+dotted dirs, unlike glob `*`):
+
+```
+find ~/.claude/skills -name databases.yaml
+```
+
+Also check the legacy `~/.claude/memory/Dev10x/databases.yaml`
+path explicitly (already covered by the table above, but include
+in this report).
+
+For each located `databases.yaml` whose resolved path differs from
+`~/.config/Dev10x/databases.yaml`:
+
+| Entry type | Action |
+|------------|--------|
+| Regular file, destination absent | Move to `~/.config/Dev10x/databases.yaml`, report migration |
+| Regular file, destination present | Leave in place — surface the conflict (show both paths); do NOT overwrite |
+| Symlink pointing to `~/.config/Dev10x/databases.yaml` | Delete (pre-migration artefact; target is already canonical) |
+| Symlink pointing elsewhere | Leave in place and warn — manual inspection required |
+
+databases.yaml migration steps:
+1. Run `find ~/.claude/skills -name databases.yaml` to locate all
+   candidates (including dotted backup dirs)
+2. Also check the legacy `~/.claude/memory/Dev10x/databases.yaml`
+   path explicitly
+3. Skip candidates that are already at, or are a symlink to,
+   `~/.config/Dev10x/databases.yaml` — migration not needed
+4. Ensure `~/.config/Dev10x/` exists before any write
+5. For each remaining candidate: apply the action table above
+6. Report a summary: files moved, conflicts surfaced, symlinks
+   cleaned, or "no stray databases.yaml found" when the scan
+   comes up empty
+
+### 3. Ensure workspace directories **[bootstrap]** (GH-40)
+
+Register paths outside the project root (e.g. `/tmp/Dev10x`) under
+`permissions.additionalDirectories` in every settings file. Allow-rules
+like `Edit(/tmp/Dev10x/**)` are NOT sufficient — Claude Code requires
+the directory to be registered as an additional working directory
+or it prompts on every Write/Edit/Read until the user runs
+`/permissions add /tmp/Dev10x` interactively.
+
+Directories registered come from `workspace_directories:` in
+`${CLAUDE_PLUGIN_ROOT}/skills/upgrade-cleanup/projects.yaml`.
+
+1. Dry run (REQUIRED — show the user before applying):
+
+```bash
+uvx dev10x permission ensure-workspace --dry-run
+```
+
+2. Apply:
+
+```bash
+uvx dev10x permission ensure-workspace
+```
+
+### 4. Ensure base permissions **[bootstrap]**
+
+Add missing base permissions (gh CLI, /tmp/Dev10x paths, git ops,
+MCP tools, Dev10x config file RWE access) to all settings files.
+The base set is defined in
+`${CLAUDE_PLUGIN_ROOT}/skills/upgrade-cleanup/projects.yaml`
+under `base_permissions:`.
+
+**Enumeration requirement:** All script paths and MCP tool names
+MUST be listed individually in `base_permissions`. Glob wildcards
+(e.g., `Bash(~/.claude/plugins/cache/**:*)` or
+`mcp__plugin_Dev10x_*`) cause permission friction — Claude Code
+cannot pre-approve glob patterns for Bash or MCP tools, so each
+invocation triggers a manual approval prompt. When adding new
+scripts or MCP tools to the plugin, enumerate them explicitly in
+`projects.yaml` following the existing per-script and per-tool
+entries.
+
+1. Dry run:
+
+```bash
+uvx dev10x permission ensure-base --dry-run
+```
+
+2. Apply:
+
+```bash
+uvx dev10x permission ensure-base
+```
+
+The run prints **per-file added counts** and exits **non-zero when any
+settings file still lacks catalog rules afterwards** (GH-1136). Read a
+zero count per file as "already carried the catalog", never as "nothing
+needed writing" — before GH-1136 the command deduped the catalog against
+`~/.claude/settings.json` and reported "All base permissions already
+covered by global settings" while 137 of 285 rules were absent from every
+project file. Global coverage is not project coverage: the engine reads
+the project file when one exists (GH-47).
+
+`--dedupe-global` restores the old skip-if-in-global behaviour. It is
+opt-in for the same reason `clean --aggressive` is, and should only be
+used when inheritance has actually been verified for that machine.
+
+A git-tracked `.claude/settings.json` is skipped — the run writes only
+`settings.local.json`, so a maintenance pass never dirties a working tree.
+
+3. Verify:
+
+```bash
+uvx dev10x permission catalog-gap
+```
+
+Read-only. Reports missing allow/deny counts per file grouped by rule
+family (`git`, `mcp`, `skill`, …) and exits non-zero on any gap. This is
+the deterministic answer to "does this checkout carry the catalog?" —
+run it after an upgrade and in any freshly created worktree.
+
+4. Verify the catalog itself, not just its reach:
+
+```bash
+uvx dev10x permission catalog-diff --strict
+```
+
+Read-only. `catalog-gap` answers "did the catalog reach every settings
+file?"; this answers the prior question, "is the catalog itself
+current?". The two fail differently and neither substitutes for the
+other — a userspace catalog missing a whole shipped **section** reaches
+every settings file perfectly and is still wrong.
+
+GH-1249 is the worked example: a catalog predating GH-768 and GH-1149
+carried no `tracker_permissions` and no `base_asks`, so zero `ask` rules
+reached any settings file and a repo pinned `tracker: github` was seeded
+with no github tracker rules — while `catalog-gap` reported `0 missing`
+throughout, because a section the user's catalog never declares is a
+section nothing compares against. Those sections merge now; this step
+surfaces the drift so an upgrade cannot pass clean over it.
+
+A `shipped keys neither merged nor user-owned` block in the output is a
+plugin defect, not a user problem — report it upstream.
+
+### 4b. Ensure safety keys **[bootstrap]** (GH-1320)
+
+Seed `disableAutoMode` and `disableBypassPermissionsMode` as the
+literal string `"disable"` in every settings file that is missing
+either key. Both take ONLY that literal string — a JSON boolean
+`true` is silently ignored by Claude Code, so a settings file can
+look protected while enforcing nothing. Additive only: an existing
+value (even an invalid one) is left untouched, since overwriting it
+is a human decision, not a maintenance-pass default.
+
+1. Dry run:
+
+```bash
+uvx dev10x permission ensure-safety-keys --dry-run
+```
+
+2. Apply:
+
+```bash
+uvx dev10x permission ensure-safety-keys
+```
+
+Verify with `uvx dev10x permission doctor safety-keys` — it exits
+non-zero on any settings file where either key is absent or holds
+anything other than `"disable"`. This is a restriction, not a grant,
+so it is a different judgement from the allow-rule catalog's
+shrink-only backlog (see
+`skills/upgrade-cleanup/references/post-upgrade-verification.md` § 3).
+
+### 5. Generalize session-specific permissions *(full only)*
+
+Replace permission rules containing session-specific arguments
+(ticket IDs, PR numbers, temp file hashes) with generalized
+wildcard patterns that work across future sessions.
+
+1. Dry run:
+
+```bash
+uvx dev10x permission generalize --dry-run
+```
+
+2. Apply:
+
+```bash
+uvx dev10x permission generalize
+```
+
+**What gets generalized:**
+- `detect-tracker.sh PAY-123` → `detect-tracker.sh *`
+- `gh-pr-detect.sh 42` → `gh-pr-detect.sh *`
+- `gh-issue-get.sh 15` → `gh-issue-get.sh *`
+- `generate-commit-list.sh 42` → `generate-commit-list.sh *`
+- `/tmp/Dev10x/git/msg.AbCdEf.txt` → `/tmp/Dev10x/git/**`
+
+### 6. Enumerate MCP tool globs *(full only)*
+
+Claude Code does not expand `mcp__plugin_Dev10x_*` globs in allow
+rules — glob-shaped MCP rules match nothing. This step discovers
+Dev10x MCP tools and replaces any matching wildcard with the
+enumerated tool list.
+
+> **Note:** With `ensure_base` already auto-expanding stale MCP
+> wildcards in step 3 (since v0.66.0), this step is usually a
+> no-op. Run it to catch wildcards introduced by external edits.
+
+1. Dry run (REQUIRED — show the user before applying):
+
+```bash
+uvx dev10x permission enumerate-mcp --dry-run
+```
+
+2. Apply:
+
+```bash
+uvx dev10x permission enumerate-mcp
+```
+
+**Exit codes (GH-919):** exit 0 with "No MCP wildcards found" is a
+genuine no-op. A non-zero exit means the tool catalog could not be
+built — the wildcards, if any, were left in place. Re-run with an
+explicit root rather than treating the failure as "nothing to do":
+
+```bash
+uvx dev10x permission enumerate-mcp --dry-run --plugin-root ~/.claude/plugins/cache/Dev10x-Guru/dev10x-claude/<version>
+```
+
+### 6b. Promotion plan — read-only MCP tools + research domains *(full only, GH-470)*
+
+MCP approvals are scoped per tool-name × per project-directory, so a
+read-only tool (claude.ai-hosted Slack/Linear/etc.) re-prompts in every
+project. This step reports which read-only MCP tools and project-local
+research `WebFetch(domain:*)` rules **would** be promoted to global
+settings, so they stop re-prompting per project.
+
+Tools are classified read-vs-write by a name-token heuristic
+(write-precedence: any write token excludes the tool). Writes are never
+promoted; sensitivity-flagged reads (private/DM/secret access) are reported
+separately as opt-in. Plugin tools are excluded — they go through step 6
+(enumerate-mcp) instead. Grant verbs (`access`/`grant`/`authorize`) count
+as writes, so a `get_access_to_*` grant is correctly excluded despite its
+`get` prefix (GH-480).
+
+1. Dry run (REQUIRED — review the plan before applying):
+
+```bash
+uvx dev10x permission promote-plan
+```
+
+2. Apply the plan (Increment 2, GH-480) — writes the read-only set +
+   research domains into global `~/.claude/settings.json`, backup-guarded
+   and idempotent:
+
+```bash
+uvx dev10x permission promote-plan --apply
+```
+
+**Apply is opt-in, not automatic.** Run it only after reviewing the
+dry-run plan above — auto-writing permission grants into *global* settings
+is hard to reverse and the heuristic carries false-positive risk.
+Sensitivity-flagged reads need a second opt-in (`--apply
+--include-sensitive`); writes are never promoted. Preview the exact write
+with `--apply --dry-run`. Recover a bad run from the timestamped backup the
+command prints.
+
+### 7. Ensure script coverage **[bootstrap]**
+
+Verify that all callable scripts in the current plugin version
+have individual allow rules in each settings file. New plugin
+versions may add scripts that are not yet enumerated.
+
+1. Dry run:
+
+```bash
+uvx dev10x permission ensure-scripts --dry-run
+```
+
+2. Add missing rules:
+
+```bash
+uvx dev10x permission ensure-scripts
+```
+
+**What gets scanned:**
+- `bin/*.sh` — helper scripts
+- `hooks/scripts/*.py`, `hooks/scripts/*.sh` — hook implementations
+- `skills/*/scripts/*.py`, `skills/*/scripts/*.sh` — skill scripts
+
+### 8. Ensure read coverage **[bootstrap]**
+
+Verify that every skill folder and recognized top-level plugin
+directory has a per-folder `Read(...)` allow rule. Empirical
+evidence shows the engine matches rule strings literally against
+the prompt-displayed path, so each rule ships in two variants —
+`Read(~/...)` and `Read(/home/<user>/...)` — and uses a single
+`*` wildcard rather than `*/**` (GH-47).
+
+> **Why both variants:** The permission engine does not normalize
+> `~/` and `/home/<user>/`, so emitting both shapes is the
+> belt-and-suspenders fix until the engine learns to.
+
+1. Dry run:
+
+```bash
+uvx dev10x permission ensure-reads --dry-run
+```
+
+2. Apply:
+
+```bash
+uvx dev10x permission ensure-reads
+```
+
+**What gets emitted (per skill, per top-level dir):**
+- `Read(~/.claude/plugins/cache/<pub>/<plugin>/<version>/skills/<name>/*)`
+- `Read(/home/<user>/.claude/plugins/cache/<pub>/<plugin>/<version>/skills/<name>/*)`
+
+The version segment is shared with `update-paths`, so both
+variants update in lockstep on plugin upgrade.
+
+### 9. Merge worktree permissions *(full only)*
+
+Worktrees accumulate allow rules during sessions that the main
+project never sees. This script collects stable permissions from
+all worktrees and merges them back.
+
+1. Dry run (REQUIRED — show the user before applying):
+
+```bash
+uvx dev10x permission merge-worktree --dry-run
+```
+
+2. Apply:
+
+```bash
+uvx dev10x permission merge-worktree
+```
+
+Session-specific noise is filtered out automatically; only
+stable, reusable permissions are merged.
+
+3. Keep Dev10x's own session state out of `git status` (GH-1275):
+
+```bash
+uvx dev10x permission ensure-ignored --dry-run
+```
+
+```bash
+uvx dev10x permission ensure-ignored
+```
+
+Dev10x writes per-session state to `.claude/Dev10x/` in whichever
+checkout it runs in, and projects that track `.claude/` — the common
+case — ignore nothing under it, so every worktree accumulates an
+untracked directory and reads as dirty the moment a session runs.
+
+The rule goes in `.git/info/exclude`, which lives in the git **common**
+dir: one write per repo covers every present and future worktree, so
+this step does not need to enumerate them. It never writes git-tracked
+content (`references/post-upgrade-verification.md`), and where it wrote
+a rule it prints the tracked spelling for a human to commit
+deliberately if they want teammates and fresh clones covered.
+
+### 10. Audit permissions for friction *(full only)*
+
+Dispatch the `permission-auditor` agent to perform a comprehensive
+7-phase security and friction audit. The agent analyzes:
+
+- Overly broad allow rules that should be narrowed
+- Script-call permissions that should use skills instead
+- Missing deny rules for destructive operations
+- Dead rules blocked by hooks
+- Hardcoded paths in instruction files
+
+**Invoke:**
+
+```
+Agent(subagent_type="Dev10x:permission-auditor",
+    description="Audit permission settings",
+    prompt="Audit all Claude Code permission settings for security
+    gaps, overly broad rules, and friction-causing patterns.
+    Pay special attention to allow rules that permit direct script
+    calls when equivalent skills exist — these cause friction and
+    should be replaced with Skill() invocations or blocked.")
+```
+
+The agent produces a severity-categorized report with specific
+fix proposals. Review and apply selectively.
+
+### 11. Clean project files *(full only)*
+
+Strip redundant rules from project `settings.local.json` files.
+Also flags rules containing leaked secrets.
+
+> ⚠ **#47 — global→project merge is NOT guaranteed.** Empirical
+> evidence (#47, closed by #50) shows a project with its own
+> `settings.local.json` does **not** reliably inherit global
+> `~/.claude/settings.json` rules — the local file appears to win.
+> Removing a project rule *solely because it duplicates a global
+> rule* can therefore reintroduce per-invocation permission
+> prompts. For this reason **global-dedup is OFF by default**;
+> the default `clean` only removes rules that are safe regardless
+> of merge behavior (old version paths, shell fragments, env
+> noise, double-slash typos).
+
+1. Dry run (REQUIRED — show the user before applying):
+
+```bash
+uvx dev10x permission clean --dry-run
+```
+
+For large cleanups prefer `--summary`:
+
+```bash
+uvx dev10x permission clean --dry-run --summary
+```
+
+2. Apply the safe default (no global-dedup):
+
+```bash
+uvx dev10x permission clean
+```
+
+**What the default removes:**
+- Old plugin version paths (any version older than current)
+- Env-prefixed session noise (`GIT_SEQUENCE_EDITOR=*`, …)
+- Shell control flow fragments (`do`, `done`, `fi`, …)
+- Double-slash path typos (`Read(//work/...)`)
+
+**Opt-in global-dedup (`--aggressive`):** Removing exact
+duplicates of global rules and rules covered by global wildcards
+requires `--aggressive`, and only after
+`uvx dev10x permission investigate` confirms global→project
+inheritance holds for this environment (#47):
+
+```bash
+uvx dev10x permission clean --aggressive --dry-run
+uvx dev10x permission clean --aggressive
+```
+
+**Recovery (REQUIRED to document):** If an `--aggressive` run
+strips rules that were actually needed and prompts reappear,
+restore the pre-clean backup:
+
+```bash
+uvx dev10x permission clean --restore
+```
+
+**Leaked secret detection:** Rules containing plaintext
+credentials are flagged with warnings so users can rotate them.
+
+### 12. Run permission doctor *(full only)* (GH-99)
+
+Apply the baseline-permissions catalog and detect cross-project /
+worktree↔source-repo contamination. The doctor handles three classes
+of friction not covered by the other steps:
+
+- **Duplicate-slash path typos** — `${CLAUDE_PLUGIN_ROOT}` expands with a
+  trailing slash, so an expanded rule can bake a literal `//` into settings
+  (e.g. `.../<ver>//skills/...`) that the verbatim matcher never matches
+  (GH-704). The doctor collapses `//` → `/`. Version-pinned plugin paths
+  are NOT rewritten to `**` wildcards (GH-715) — `**` matching is
+  unreliable; `update-paths` (step 1) keeps pinned paths current instead.
+- **Catalog deprecations** — `action: remove` entries from
+  `src/dev10x/skills/permission/baseline-permissions.yaml` (e.g., legacy
+  `/tmp/claude/bin/mktmp.sh:*`) are dropped. No shipped entry rewrites a
+  path to a `**` wildcard (GH-715).
+- **Cross-contamination** — rules whose absolute paths point outside
+  the current project, or into the source repo when CWD is a worktree,
+  are flagged so the user can remove them.
+
+1. Collapse duplicate-slash typos (`//` → `/`):
+
+> **Note (GH-715):** This command only collapses `//` → `/` (GH-704). It
+> does NOT rewrite version-pinned plugin paths into `**` wildcards —
+> `**` matching is unreliable in the permission engine. To survive
+> `claude plugin update`, rely on `update-paths` (step 1 of this skill),
+> which refreshes pinned paths in place on every upgrade.
+
+```bash
+uvx dev10x permission doctor canonicalize --dry-run
+uvx dev10x permission doctor canonicalize
+```
+
+2. Apply catalog deprecations:
+
+```bash
+uvx dev10x permission doctor apply-deprecations --dry-run
+uvx dev10x permission doctor apply-deprecations
+```
+
+3. Scan for cross-contamination (no auto-fix — surfaces findings only):
+
+```bash
+uvx dev10x permission doctor cross-contamination
+```
+
+4. Anchor `.worktrees` parent roots (GH-376) — ensures project-level
+   `.worktrees` parents are registered in `additionalDirectories` and
+   flags bare-relative skill-script allow rules:
+
+```bash
+uvx dev10x permission doctor anchor-worktree-roots --dry-run
+uvx dev10x permission doctor anchor-worktree-roots
+```
+
+5. Enable an opt-in Tier 3 group when needed (e.g., `kubernetes-readonly`,
+   `network-diagnostics`, `obsidian-cli`):
+
+```bash
+uvx dev10x permission doctor enable-group kubernetes-readonly --dry-run
+uvx dev10x permission doctor enable-group kubernetes-readonly
+```
+
+### 13. Diff user playbooks against plugin defaults *(full only)* (GH-192)
+
+User playbook overrides under `.claude/Dev10x/playbooks/` and
+`~/.config/Dev10x/playbooks/` drift from the plugin defaults as
+new versions ship new steps, fragments, or field changes. This step
+surfaces those upstream changes without overwriting user customizations.
+
+```bash
+uvx dev10x playbook diff
+```
+
+The report distinguishes:
+
+- **New** steps present in the plugin default but missing from the user
+  override — typically upstream additions worth pulling in
+- **Removed** steps or plays the user overrides that no longer exist in
+  the default — either intentional pruning or upstream removal
+- **Changed** steps where the user has not overridden a field whose
+  default value moved upstream
+- **Customized** fields the user has explicitly set — flagged as
+  preserved; the diff never proposes overwriting them
+
+To pull in upstream changes interactively, run:
+
+```bash
+/Dev10x:playbook edit <skill> <play>
+```
+
+To target one skill (skip the rest):
+
+```bash
+uvx dev10x playbook diff --skill work-on
+```
+
+## Configuration
+
+The script looks for `projects.yaml` in two locations (first wins):
+1. `~/.claude/skills/Dev10x:upgrade-cleanup/projects.yaml` (userspace)
+2. `${CLAUDE_PLUGIN_ROOT}/skills/upgrade-cleanup/projects.yaml` (plugin default)
+
+The userspace location is preserved across the rename so existing
+users do not need to migrate config files.
+
+## Options
+
+All maintenance commands are subcommands of `uvx dev10x permission …`.
+Run `uvx dev10x permission <subcommand> --help` for the authoritative
+flag list.
+
+### Common flags (most subcommands)
+
+| Flag | Purpose |
+|------|---------|
+| `--dry-run` | Preview what would change without writing |
+| `--summary` | One line per changed file (where supported) |
+| `--quiet` | Suppress per-file details and headers |
+
+### `update-paths` extras
+
+| Flag | Purpose |
+|------|---------|
+| `--version VER` | Target a specific version instead of latest |
+| `--restore` | Restore settings from most recent backups |
+
+> First-time userspace config seeding is a separate subcommand,
+> `uvx dev10x permission init` (formerly the `update-paths --init`
+> flag) — see [First-Time Setup](#first-time-setup).

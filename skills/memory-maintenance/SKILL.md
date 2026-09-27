@@ -46,13 +46,8 @@ misbehave — particularly patterns that lead to skill bypass.
 Scan all memory locations:
 
 1. Global memory: `~/.claude/memory/*.md`
-2. Dev10x global config: `~/.claude/memory/Dev10x/**`
-3. Project memory (all projects):
-   `~/.claude/projects/*/memory/*.md`
-   `~/.claude/projects/*/memory/**/*.yaml`
-4. MEMORY.md index files:
-   `~/.claude/memory/MEMORY.md`
-   `~/.claude/projects/*/memory/MEMORY.md`
+2. Dev10x global config: `~/.config/Dev10x/**`
+3. MEMORY.md index file: `~/.claude/memory/MEMORY.md`
 
 Count files per scope and report.
 

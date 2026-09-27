@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "0.55.0"
+current_version = "0.105.0"
 commit = true
 tag = false
 tag_name = "v{new_version}"
@@ -25,6 +25,11 @@ search = "\"v{current_version} —"
 replace = "\"v{new_version} —"
 
 [[tool.bumpversion.files]]
+filename = ".claude-plugin/marketplace.json"
+search = "\"version\": \"{current_version}\""
+replace = "\"version\": \"{new_version}\""
+
+[[tool.bumpversion.files]]
 filename = "pyproject.toml"
 search = "version = \"{current_version}\""
 replace = "version = \"{new_version}\""
@@ -33,3 +38,8 @@ replace = "version = \"{new_version}\""
 filename = "uv.lock"
 search = "version = \"{current_version}\""
 replace = "version = \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "skills/playbook/references/playbook.yaml"
+search = "version: \"{current_version}\""
+replace = "version: \"{new_version}\""

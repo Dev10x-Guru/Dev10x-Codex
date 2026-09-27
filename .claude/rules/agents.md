@@ -47,6 +47,15 @@ include full phase logic and examples, as opposed to internal review agents
 Use the feature name as-is: `agents/permission-auditor.md`, `agents/audit-deps.md`.
 Do NOT add a `Dev10x-` prefix to the filename.
 
+## Body Extraction
+
+When an `agents/<name>.md` spec approaches or exceeds the 200-line
+budget, extract stable phase tables and reference matrices into
+`references/agents/<name>/` and replace the section body with a
+one-paragraph summary plus a pointer. See
+[`agent-body-extraction.md`](agent-body-extraction.md) for the
+full pattern, mechanics, and reviewer checklist.
+
 ## Linking from Skills
 
 Reference distributed agents in skill definitions via `SKILL.md`:

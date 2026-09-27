@@ -1,48 +1,57 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.12"
-# dependencies = ["pyyaml"]
-# ///
 """Clean redundant permission rules from project settings.local.json files.
 
-Compares project-level allow rules against global ~/.codex/settings.json
+Compares project-level allow rules against global ~/.claude/settings.json
 and strips rules that are:
-  - Exact duplicates of global rules
-  - Covered by global wildcard patterns (MCP families, plugin path wildcards)
+  - Exact string duplicates of global rules (see WARNING below)
   - Old plugin version paths (any version older than current)
   - Env-prefixed session noise (GIT_SEQUENCE_EDITOR=*, DATABASE_URL=*, etc.)
   - Shell control flow fragments (do, done, fi, for, while, etc.)
   - Double-slash path typos (Read(//...), Write(//...))
 
-Also flags rules containing leaked secrets (env vars with plaintext values).
+Also flags rules containing leaked secrets: env-var key/value pairs, known
+token prefixes (GitHub, GitLab, AWS), Bearer headers, and URL query-string
+tokens. Findings name the matched rule (with the credential VALUE redacted),
+the matched pattern, and the redacted span — never the raw secret (GH-1312).
 
-Config lookup order:
-  1. ~/.codex/skills/Dev10x:permission-maintenance/projects.yaml (userspace)
-  2. ${CLAUDE_PLUGIN_ROOT}/skills/permission-maintenance/projects.yaml (plugin default)
+WARNING — global-dedup assumption (#47):
+  The exact-duplicate removal assumes global ~/.claude/settings.json rules
+  are reliably inherited into every project that has its own
+  settings.local.json.  Empirical evidence (#47, closed by #50) shows this
+  is NOT always true: when a project has its own settings.local.json, the
+  local file appears to win and global rules are not always inherited.
+  Removing a project rule solely because it duplicates a global rule can
+  therefore reintroduce per-invocation permission prompts for that project.
+  Use ``--skip-global-dedup`` (or ``skip_global_dedup=True`` in code) to
+  preserve project-local copies of global rules when you need certainty.
+
+CLI entry point: ``dev10x permission clean``.
 """
 
-import argparse
 import json
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
+from dev10x.domain.claude_paths import ClaudeDir
+from dev10x.domain.common.allow_rule import AllowRule
+from dev10x.domain.common.plugin_version import SEMVER_PATTERN, PluginVersion
+from dev10x.domain.common.result import Result
+from dev10x.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.domain.plugin_identity import PLUGIN_NAMES
+from dev10x.skills.permission.catalog_paths import shipped_projects_catalog
+from dev10x.skills.permission.config import parse_config, resolve_config
 
-USERSPACE_CONFIG = (
-    Path.home() / ".codex" / "skills" / "Dev10x:permission-maintenance" / "projects.yaml"
+MEMORY_CONFIG = Dev10xConfigDir.projects_yaml()
+USERSPACE_CONFIG = Dev10xConfigDir.upgrade_cleanup_projects_yaml()
+PLUGIN_CONFIG = shipped_projects_catalog()
+GLOBAL_SETTINGS = ClaudeDir.settings_json()
+
+VERSION_PATTERN = re.compile(
+    rf"plugins/cache/[^/]+/{PLUGIN_NAMES}/({SEMVER_PATTERN})", re.IGNORECASE
 )
-PLUGIN_CONFIG = (
-    Path(__file__).resolve().parents[4] / "skills" / "permission-maintenance" / "projects.yaml"
-)
-GLOBAL_SETTINGS = Path.home() / ".codex" / "settings.json"
+PUBLISHER_PATTERN = re.compile(rf"plugins/cache/([^/]+)/{PLUGIN_NAMES}/", re.IGNORECASE)
 
-PLUGIN_NAMES = r"(?:Dev10x|dev10x-claude)"
-VERSION_PATTERN = re.compile(rf"plugins/cache/[^/]+/{PLUGIN_NAMES}/(\d+\.\d+\.\d+)")
-PUBLISHER_PATTERN = re.compile(rf"plugins/cache/([^/]+)/{PLUGIN_NAMES}/")
-
-ENV_PREFIX_PATTERN = re.compile(r"^Bash\([A-Z_]+=")
+_ENV_PREFIX_INNER_RE = re.compile(r"^[A-Z_]+=")
 
 SHELL_FRAGMENTS = frozenset(
     {
@@ -64,66 +73,143 @@ SHELL_FRAGMENTS = frozenset(
 
 DOUBLE_SLASH_PATTERN = re.compile(r"\(//")
 
-HOOK_ENABLED_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"^Bash\(gh pr create"),
-    re.compile(r"^Bash\(git push"),
-    re.compile(r"^Bash\(git rebase -i"),
-    re.compile(r"^Bash\(git commit -m"),
-    re.compile(r"^Bash\(gh pr checks"),
-]
+# Patterns superseded by ensure-reads per-skill enumeration (GH-48).
+# The `Read(...Dev10x/*/**)` glob does not reliably match in Claude
+# Code's permission engine — keep the deprecated rule list narrow and
+# explicit so future deprecations stay searchable.
+DEPRECATED_READ_GLOBS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"^Read\((?:~|/home/[^/]+)/\.claude/plugins/cache/[^/]+/"
+        rf"{PLUGIN_NAMES}/\*/\*\*\)$",
+        re.IGNORECASE,
+    ),
+)
 
-SECRET_INDICATORS = [
-    re.compile(r"LINEAR_KEY=lin_api_"),
-    re.compile(r"DATABASE_URL=postgres"),
-    re.compile(r"SECRET_KEY=\S"),
-    re.compile(r"API_KEY=\S"),
-    re.compile(r"TOKEN=\S{10,}"),
-    re.compile(r"PASSWORD=\S"),
-    re.compile(r"PRIVATE_KEY=\S"),
-]
+
+def is_deprecated_read_glob(rule: str) -> bool:
+    return any(p.match(rule) for p in DEPRECATED_READ_GLOBS)
+
+
+HOOK_ENABLED_INNER_PREFIXES: tuple[str, ...] = (
+    "gh pr create",
+    "git push",
+    "git rebase -i",
+    "git commit -m",
+    "gh pr checks",
+)
+
+
+@dataclass(frozen=True)
+class SecretPattern:
+    """A named credential-shape detector (GH-1312).
+
+    ``pattern`` MUST define a ``secret`` capture group spanning only the
+    credential *value* — the part redacted before any user-facing output —
+    so a matched rule such as ``API_KEY=...`` keeps the ``API_KEY=`` prefix
+    visible while the value itself never reaches a message, log, or commit.
+    """
+
+    rule_id: str
+    pattern: re.Pattern[str]
+
+
+@dataclass(frozen=True)
+class LeakedSecretFinding:
+    """One matched credential shape, safe to print (GH-1312).
+
+    ``redacted_rule`` is the original rule string with only the matched
+    ``secret`` span replaced by a placeholder — never the raw value.
+    ``span`` names the character offsets of the redacted value within the
+    ORIGINAL rule string, so a maintainer can locate the finding in the
+    settings file without the payload ever being echoed.
+    """
+
+    rule_id: str
+    redacted_rule: str
+    span: tuple[int, int]
+
+
+# Credential *shapes*, not bare word matches — a filename like
+# `html-token-validator.py` or an env var name with no value attached must
+# never match (GH-1312). Each pattern's `secret` group is the minimal span
+# that identifies the actual credential value so redaction can mask only
+# that portion, leaving the rest of the rule (and any `<KEY>=` prefix)
+# visible for triage.
+SECRET_PATTERNS: tuple[SecretPattern, ...] = (
+    SecretPattern("linear-api-key", re.compile(r"LINEAR_KEY=(?P<secret>lin_api_\S+)")),
+    SecretPattern("database-url", re.compile(r"DATABASE_URL=(?P<secret>postgres\S+)")),
+    SecretPattern("secret-key-env", re.compile(r"SECRET_KEY=(?P<secret>\S+)")),
+    SecretPattern("api-key-env", re.compile(r"API_KEY=(?P<secret>\S+)")),
+    SecretPattern("token-env", re.compile(r"TOKEN=(?P<secret>\S{10,})")),
+    SecretPattern("password-env", re.compile(r"PASSWORD=(?P<secret>\S+)")),
+    SecretPattern("private-key-env", re.compile(r"PRIVATE_KEY=(?P<secret>\S+)")),
+    # GitHub token prefixes: ghp_ (PAT), gho_ (OAuth), ghu_ (user-to-server),
+    # ghs_ (server-to-server), ghr_ (refresh).
+    SecretPattern("github-token", re.compile(r"(?P<secret>gh[oprsu]_[A-Za-z0-9]{20,})")),
+    SecretPattern("gitlab-token", re.compile(r"(?P<secret>glpat-[A-Za-z0-9_-]{20,})")),
+    SecretPattern("aws-access-key-id", re.compile(r"(?P<secret>AKIA[0-9A-Z]{16})")),
+    SecretPattern(
+        "bearer-header",
+        re.compile(r"Bearer\s+(?P<secret>[A-Za-z0-9\-._~+/]{16,}=*)"),
+    ),
+    # A capability token embedded in a URL query string, e.g. an invoice
+    # link of the form `...?token=<uuid>` (GH-1312 repro) — the false
+    # negative that let a real credential slip past `generalize` unflagged.
+    SecretPattern(
+        "url-token-param",
+        re.compile(r"[?&]token=(?P<secret>[A-Za-z0-9\-_]{8,})", re.IGNORECASE),
+    ),
+)
+
+_REDACTED = "<redacted>"
+
+
+_WILDCARD_BYPASS_TOOLS: dict[str, frozenset[str]] = {
+    "Bash": frozenset({"*", ".*"}),
+    "Read": frozenset({"*"}),
+    "Write": frozenset({"*"}),
+    "Edit": frozenset({"*"}),
+}
 
 
 @dataclass
 class RemovalResult:
     exact_duplicates: list[str] = field(default_factory=list)
-    wildcard_covered: list[tuple[str, str]] = field(default_factory=list)
     old_versions: list[str] = field(default_factory=list)
     stale_publisher: list[str] = field(default_factory=list)
     env_noise: list[str] = field(default_factory=list)
     shell_fragments: list[str] = field(default_factory=list)
     double_slash: list[str] = field(default_factory=list)
-    leaked_secrets: list[str] = field(default_factory=list)
+    leaked_secrets: list[LeakedSecretFinding] = field(default_factory=list)
     hook_enabled: list[str] = field(default_factory=list)
+    wildcard_bypasses: list[str] = field(default_factory=list)
+    allow_deny_contradictions: list[tuple[str, str]] = field(default_factory=list)
+    ask_shadowed_by_allow: list[tuple[str, str]] = field(default_factory=list)
+    deprecated_globs: list[str] = field(default_factory=list)
     kept: list[str] = field(default_factory=list)
 
     @property
     def total_removed(self) -> int:
         return (
             len(self.exact_duplicates)
-            + len(self.wildcard_covered)
             + len(self.old_versions)
             + len(self.stale_publisher)
             + len(self.env_noise)
             + len(self.shell_fragments)
             + len(self.double_slash)
+            + len(self.deprecated_globs)
         )
 
 
-def find_config() -> Path:
-    if USERSPACE_CONFIG.is_file():
-        return USERSPACE_CONFIG
-    if PLUGIN_CONFIG.is_file():
-        return PLUGIN_CONFIG
-    print(
-        f"ERROR: No config found. Create {USERSPACE_CONFIG}\nor ensure {PLUGIN_CONFIG} exists.",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+def find_config() -> Result[Path]:
+    candidates = [MEMORY_CONFIG, USERSPACE_CONFIG]
+    if PLUGIN_CONFIG is not None:
+        candidates.append(PLUGIN_CONFIG)
+    return resolve_config(candidates=candidates, create_path=MEMORY_CONFIG)
 
 
 def load_config(config_path: Path) -> dict:
-    with open(config_path) as f:
-        return yaml.safe_load(f)
+    return parse_config(config_path)
 
 
 def load_global_settings(path: Path) -> dict:
@@ -142,31 +228,9 @@ def detect_current_version(cache_dir: Path) -> str | None:
         return None
     versions = sorted(
         cache_dir.iterdir(),
-        key=lambda p: _version_tuple(p.name),
+        key=lambda p: PluginVersion.sort_key(p.name),
     )
     return versions[-1].name if versions else None
-
-
-def _version_tuple(version: str) -> tuple[int, ...]:
-    try:
-        return tuple(int(x) for x in version.split("."))
-    except ValueError:
-        return (0,)
-
-
-def is_covered_by_wildcard(
-    rule: str,
-    global_rules: set[str],
-) -> str | None:
-    for global_rule in global_rules:
-        if "*" not in global_rule:
-            continue
-        if rule == global_rule:
-            continue
-        pattern = re.escape(global_rule).replace(r"\*", ".*")
-        if re.fullmatch(pattern, rule):
-            return global_rule
-    return None
 
 
 def is_shell_fragment(rule: str) -> bool:
@@ -174,6 +238,11 @@ def is_shell_fragment(rule: str) -> bool:
     if match:
         return match.group(1) in SHELL_FRAGMENTS
     return False
+
+
+def is_env_noise(rule: str) -> bool:
+    parsed = AllowRule.parse(rule)
+    return parsed.tool == "Bash" and _ENV_PREFIX_INNER_RE.match(parsed.inner) is not None
 
 
 def is_stale_publisher(
@@ -199,16 +268,77 @@ def is_old_version(
     match = VERSION_PATTERN.search(rule)
     if not match:
         return False
-    rule_version = match.group(1)
-    return _version_tuple(rule_version) < _version_tuple(current_version)
+    rule_version = PluginVersion.try_parse(match.group(1))
+    current = PluginVersion.try_parse(current_version)
+    if rule_version is None or current is None:
+        return False
+    return rule_version < current
 
 
 def is_hook_enabled(rule: str) -> bool:
-    return any(p.search(rule) for p in HOOK_ENABLED_PATTERNS)
+    parsed = AllowRule.parse(rule)
+    return parsed.tool == "Bash" and any(
+        parsed.inner.startswith(prefix) for prefix in HOOK_ENABLED_INNER_PREFIXES
+    )
+
+
+def find_leaked_secret(rule: str) -> LeakedSecretFinding | None:
+    """Return the first matched credential shape in ``rule``, or ``None``.
+
+    The returned finding carries a redacted rule string — the secret VALUE
+    itself is never retained or returned (GH-1312).
+    """
+    for secret_pattern in SECRET_PATTERNS:
+        match = secret_pattern.pattern.search(rule)
+        if match is None:
+            continue
+        start, end = match.span("secret")
+        redacted_rule = f"{rule[:start]}{_REDACTED}{rule[end:]}"
+        return LeakedSecretFinding(
+            rule_id=secret_pattern.rule_id,
+            redacted_rule=redacted_rule,
+            span=(start, end),
+        )
+    return None
 
 
 def has_leaked_secret(rule: str) -> bool:
-    return any(p.search(rule) for p in SECRET_INDICATORS)
+    return find_leaked_secret(rule) is not None
+
+
+def is_wildcard_bypass(rule: str) -> bool:
+    parsed = AllowRule.parse(rule)
+    return parsed.inner in _WILDCARD_BYPASS_TOOLS.get(parsed.tool, frozenset())
+
+
+def find_allow_deny_contradictions(
+    allow_rules: list[str],
+    deny_rules: list[str],
+) -> list[tuple[str, str]]:
+    contradictions: list[tuple[str, str]] = []
+    for allow in allow_rules:
+        for deny in deny_rules:
+            if allow == deny:
+                contradictions.append((allow, deny))
+    return contradictions
+
+
+def find_ask_shadowed_by_allow(
+    allow_rules: list[str],
+    ask_rules: list[str],
+) -> list[tuple[str, str]]:
+    shadowed: list[tuple[str, str]] = []
+    for ask in ask_rules:
+        for allow in allow_rules:
+            if allow == ask:
+                shadowed.append((ask, allow))
+                break
+            if "*" in allow:
+                pattern = re.escape(allow).replace(r"\*", ".*")
+                if re.fullmatch(pattern, ask):
+                    shadowed.append((ask, allow))
+                    break
+    return shadowed
 
 
 def classify_rules(
@@ -218,13 +348,32 @@ def classify_rules(
     current_version: str | None,
     base_permissions: set[str] | None = None,
     cache_root: Path | None = None,
+    deny_rules: list[str] | None = None,
+    ask_rules: list[str] | None = None,
+    skip_global_dedup: bool = False,
 ) -> RemovalResult:
     result = RemovalResult()
     _base = base_permissions or set()
 
+    if deny_rules:
+        result.allow_deny_contradictions = find_allow_deny_contradictions(
+            allow_rules=project_rules,
+            deny_rules=deny_rules,
+        )
+
+    if ask_rules:
+        result.ask_shadowed_by_allow = find_ask_shadowed_by_allow(
+            allow_rules=project_rules,
+            ask_rules=ask_rules,
+        )
+
     for rule in project_rules:
-        if has_leaked_secret(rule):
-            result.leaked_secrets.append(rule)
+        finding = find_leaked_secret(rule)
+        if finding is not None:
+            result.leaked_secrets.append(finding)
+
+        if is_wildcard_bypass(rule):
+            result.wildcard_bypasses.append(rule)
 
         if rule in _base:
             result.kept.append(rule)
@@ -235,13 +384,8 @@ def classify_rules(
             result.kept.append(rule)
             continue
 
-        if rule in global_rules:
+        if not skip_global_dedup and rule in global_rules:
             result.exact_duplicates.append(rule)
-            continue
-
-        covering = is_covered_by_wildcard(rule, global_rules)
-        if covering is not None:
-            result.wildcard_covered.append((rule, covering))
             continue
 
         if is_stale_publisher(rule, cache_root=cache_root):
@@ -252,7 +396,7 @@ def classify_rules(
             result.old_versions.append(rule)
             continue
 
-        if ENV_PREFIX_PATTERN.search(rule):
+        if is_env_noise(rule):
             result.env_noise.append(rule)
             continue
 
@@ -262,6 +406,10 @@ def classify_rules(
 
         if DOUBLE_SLASH_PATTERN.search(rule):
             result.double_slash.append(rule)
+            continue
+
+        if is_deprecated_read_glob(rule):
+            result.deprecated_globs.append(rule)
             continue
 
         result.kept.append(rule)
@@ -277,6 +425,8 @@ def clean_file(
     base_permissions: set[str] | None = None,
     cache_root: Path | None = None,
     dry_run: bool = False,
+    verbose: bool = False,
+    skip_global_dedup: bool = False,
 ) -> tuple[RemovalResult | None, list[str]]:
     content = path.read_text()
     try:
@@ -284,7 +434,11 @@ def clean_file(
     except json.JSONDecodeError as e:
         return None, [f"  SKIP (invalid JSON): {e}"]
 
-    allow_list: list[str] = data.get("permissions", {}).get("allow", [])
+    perms = data.get("permissions", {})
+    allow_list: list[str] = perms.get("allow", [])
+    deny_list: list[str] = perms.get("deny", [])
+    ask_list: list[str] = perms.get("ask", [])
+
     if not allow_list:
         return RemovalResult(), []
 
@@ -294,50 +448,116 @@ def clean_file(
         current_version=current_version,
         base_permissions=base_permissions,
         cache_root=cache_root,
+        deny_rules=deny_list if deny_list else None,
+        ask_rules=ask_list if ask_list else None,
+        skip_global_dedup=skip_global_dedup,
     )
 
-    if result.total_removed == 0:
+    has_findings = (
+        result.total_removed > 0
+        or result.wildcard_bypasses
+        or result.allow_deny_contradictions
+        or result.ask_shadowed_by_allow
+    )
+    if not has_findings:
         return result, []
 
-    if not dry_run:
-        data["permissions"]["allow"] = result.kept
-        path.write_text(json.dumps(data, indent=2) + "\n")
+    if not dry_run and result.total_removed > 0:
+        from dev10x.skills.permission.backup import create_backup
+        from dev10x.skills.permission.file_lock import locked_json_update
 
-    messages = _format_messages(result)
+        create_backup(path)
+        with locked_json_update(path=path) as live_data:
+            live_data["permissions"]["allow"] = result.kept
+
+    messages = _format_messages(result, verbose=verbose)
     return result, messages
 
 
-def _format_messages(result: RemovalResult) -> list[str]:
+def _format_messages(
+    result: RemovalResult,
+    *,
+    verbose: bool = False,
+) -> list[str]:
     messages: list[str] = []
 
     if result.leaked_secrets:
         messages.append(f"  ⚠ LEAKED SECRETS ({len(result.leaked_secrets)}):")
-        for rule in result.leaked_secrets:
+        for finding in result.leaked_secrets:
+            start, end = finding.span
+            messages.append(
+                f"    ⚠ [{finding.rule_id}] {finding.redacted_rule} (redacted chars {start}-{end})"
+            )
+
+    if result.wildcard_bypasses:
+        messages.append(f"  ⚠ WILDCARD BYPASSES ({len(result.wildcard_bypasses)}):")
+        for rule in result.wildcard_bypasses:
             messages.append(f"    ⚠ {rule}")
+
+    if result.allow_deny_contradictions:
+        messages.append(
+            f"  ⚠ ALLOW/DENY CONTRADICTIONS ({len(result.allow_deny_contradictions)}):"
+        )
+        for allow, deny in result.allow_deny_contradictions:
+            messages.append(f"    allow: {allow}")
+            messages.append(f"    deny:  {deny}")
+
+    if result.ask_shadowed_by_allow:
+        messages.append(f"  ⚠ ASK SHADOWED BY ALLOW ({len(result.ask_shadowed_by_allow)}):")
+        for ask, allow in result.ask_shadowed_by_allow:
+            messages.append(f"    ask:   {ask}")
+            messages.append(f"    allow: {allow}")
 
     if result.exact_duplicates:
         messages.append(f"  - {len(result.exact_duplicates)} exact duplicates of global rules")
-
-    if result.wildcard_covered:
-        messages.append(f"  - {len(result.wildcard_covered)} covered by global wildcards")
+        if verbose:
+            for rule in result.exact_duplicates:
+                messages.append(f"    {rule}")
 
     if result.old_versions:
         messages.append(f"  - {len(result.old_versions)} old plugin versions")
+        if verbose:
+            for rule in result.old_versions:
+                messages.append(f"    {rule}")
 
     if result.stale_publisher:
         messages.append(f"  - {len(result.stale_publisher)} stale publisher paths")
+        if verbose:
+            for rule in result.stale_publisher:
+                messages.append(f"    {rule}")
 
     if result.env_noise:
         messages.append(f"  - {len(result.env_noise)} env-prefixed session noise")
+        if verbose:
+            for rule in result.env_noise:
+                messages.append(f"    {rule}")
 
     if result.shell_fragments:
         messages.append(f"  - {len(result.shell_fragments)} shell control flow fragments")
+        if verbose:
+            for rule in result.shell_fragments:
+                messages.append(f"    {rule}")
 
     if result.double_slash:
         messages.append(f"  - {len(result.double_slash)} double-slash paths")
+        if verbose:
+            for rule in result.double_slash:
+                messages.append(f"    {rule}")
+
+    if result.deprecated_globs:
+        messages.append(
+            f"  - {len(result.deprecated_globs)} deprecated Read globs"
+            " (superseded by ensure-reads)"
+        )
+        if verbose:
+            for rule in result.deprecated_globs:
+                messages.append(f"    {rule}")
 
     if result.hook_enabled:
         messages.append(f"  - {len(result.hook_enabled)} hook-enabled rules (kept)")
+        if verbose:
+            for rule in result.hook_enabled:
+                messages.append(f"    {rule}")
 
     messages.append(f"  Removed: {result.total_removed} | Kept: {len(result.kept)}")
     return messages
@@ -346,7 +566,7 @@ def _format_messages(result: RemovalResult) -> list[str]:
 def find_settings_files(roots: list[str]) -> list[Path]:
     files: list[Path] = []
 
-    project_settings_dir = Path.home() / ".codex" / "projects"
+    project_settings_dir = ClaudeDir.projects_dir()
     if project_settings_dir.is_dir():
         for settings_file in project_settings_dir.rglob("settings.local.json"):
             files.append(settings_file)
@@ -355,7 +575,7 @@ def find_settings_files(roots: list[str]) -> list[Path]:
         root_path = Path(root).expanduser()
         if not root_path.is_dir():
             continue
-        for settings_file in root_path.rglob(".codex/settings.local.json"):
+        for settings_file in root_path.rglob(".claude/settings.local.json"):
             files.append(settings_file)
 
     seen: set[Path] = set()
@@ -368,93 +588,11 @@ def find_settings_files(roots: list[str]) -> list[Path]:
     return unique
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Clean redundant permissions from project settings files",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be cleaned without modifying files",
-    )
-    args = parser.parse_args()
+def _restore(*, config_path: Path) -> int:
+    from dev10x.skills.permission.backup import restore_report
 
-    config_path = find_config()
-    print(f"Config: {config_path}")
     config = load_config(config_path)
-
-    global_data = load_global_settings(GLOBAL_SETTINGS)
-    global_rules = extract_allow_rules(global_data)
-    print(f"Global rules: {len(global_rules)}")
-
-    cache_dir = Path(config.get("plugin_cache", "")).expanduser()
-    cache_root = cache_dir.parent.parent if cache_dir.parts else None
-    current_version = detect_current_version(cache_dir)
-    if current_version:
-        print(f"Current plugin version: {current_version}")
-
-    base_permissions = set(config.get("base_permissions", []))
-
     settings_files = find_settings_files(roots=config.get("roots", []))
-
-    if not settings_files:
-        print("No project settings files found.")
-        return 0
-
-    print(f"Scanning {len(settings_files)} files")
-    if args.dry_run:
-        print("(dry run — no files will be modified)\n")
-    else:
-        print()
-
-    total_removed = 0
-    total_kept = 0
-    files_changed = 0
-    total_secrets = 0
-
-    for path in sorted(settings_files):
-        result, messages = clean_file(
-            path,
-            global_rules=global_rules,
-            current_version=current_version,
-            base_permissions=base_permissions,
-            cache_root=cache_root,
-            dry_run=args.dry_run,
-        )
-        if result is None:
-            print(f"\n{path}")
-            for msg in messages:
-                print(msg)
-            continue
-
-        if result.total_removed > 0 or result.leaked_secrets:
-            print(f"\n{path}")
-            for msg in messages:
-                print(msg)
-            total_removed += result.total_removed
-            total_kept += len(result.kept)
-            total_secrets += len(result.leaked_secrets)
-            if result.total_removed > 0:
-                files_changed += 1
-        else:
-            total_kept += len(result.kept)
-
-    print()
-    if total_removed == 0:
-        print("All project files are clean.")
-    else:
-        verb = "Would remove" if args.dry_run else "Removed"
-        print(f"{verb} {total_removed} rules across {files_changed} files.")
-        print(f"Kept {total_kept} rules total.")
-
-    if total_secrets > 0:
-        print(
-            f"\n⚠ Found {total_secrets} rules containing leaked secrets."
-            " Review and rotate affected credentials."
-        )
-
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    code, report = restore_report(paths=settings_files)
+    print(report)
+    return code

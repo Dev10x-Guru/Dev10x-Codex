@@ -1,0 +1,12 @@
+{
+  "name": "Dev10x-Codex",
+  "plugins": [
+    {
+      "name": "Dev10x",
+      "source": {
+        "source": "local",
+        "path": "./"
+      }
+    }
+  ]
+}

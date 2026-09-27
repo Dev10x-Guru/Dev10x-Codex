@@ -1,0 +1,267 @@
+"""Tests for the importable gchat_review_request module."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from dev10x.skills.notifications import gchat_review_request as mod
+
+
+class TestLoadYaml:
+    def test_missing_file_returns_empty_dict(self, tmp_path: Path) -> None:
+        assert mod.load_yaml(tmp_path / "nope.yaml") == {}
+
+    def test_present_file_returns_parsed_dict(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "default_action: ask\nprojects:\n  my-app:\n    space: tt-reviews\n"
+        )
+        assert mod.load_yaml(config_path) == {
+            "default_action": "ask",
+            "projects": {"my-app": {"space": "tt-reviews"}},
+        }
+
+
+class TestResolveProjectConfig:
+    def test_configured_repo_returns_space_and_mentions(self) -> None:
+        config = {"projects": {"my-app": {"space": "tt-reviews", "mentions": ["@team"]}}}
+        assert mod.resolve_project_config(config=config, repo_name="my-app") == {
+            "skip": False,
+            "ask": False,
+            "space": "tt-reviews",
+            "mentions": ["@team"],
+            "card": True,
+            "preview": False,
+            "preview_environment": None,
+        }
+
+    def test_card_mode_is_on_when_config_is_silent(self) -> None:
+        # GH-1115: a repo that says nothing about cards gets a panel.
+        config = {"projects": {"my-app": {"space": "s"}}}
+        assert mod.resolve_project_config(config=config, repo_name="my-app")["card"] is True
+
+    def test_repo_can_opt_out_of_cards(self) -> None:
+        config = {"projects": {"my-app": {"space": "s", "card": False}}}
+        assert mod.resolve_project_config(config=config, repo_name="my-app")["card"] is False
+
+    def test_global_default_card_false_opts_the_whole_config_out(self) -> None:
+        config = {"default_card": False, "projects": {"my-app": {"space": "s"}}}
+        assert mod.resolve_project_config(config=config, repo_name="my-app")["card"] is False
+
+    def test_repo_card_true_beats_a_global_opt_out(self) -> None:
+        config = {"default_card": False, "projects": {"my-app": {"space": "s", "card": True}}}
+        assert mod.resolve_project_config(config=config, repo_name="my-app")["card"] is True
+
+    def test_skip_repo(self) -> None:
+        config = {"projects": {"my-app": {"skip": True}}}
+        result = mod.resolve_project_config(config=config, repo_name="my-app")
+        assert result["skip"] is True
+
+    def test_unconfigured_defaults_to_ask(self) -> None:
+        result = mod.resolve_project_config(config={"default_action": "ask"}, repo_name="x")
+        assert result["ask"] is True
+
+    def test_unconfigured_default_skip(self) -> None:
+        result = mod.resolve_project_config(config={"default_action": "skip"}, repo_name="x")
+        assert result["skip"] is True
+
+
+class TestResolveMention:
+    def test_group_alias_uses_native_token(self) -> None:
+        cfg = {"user_groups": {"@team": "<GROUP_TOKEN>"}}
+        assert mod.resolve_mention(mention="@team", gchat_config=cfg) == "<GROUP_TOKEN>"
+
+    def test_user_alias_expands_to_user_id(self) -> None:
+        cfg = {"users": {"alice": {"chat_user_id": "123"}}}
+        assert mod.resolve_mention(mention="@alice", gchat_config=cfg) == "<users/123>"
+
+    def test_unknown_mention_passthrough(self) -> None:
+        assert mod.resolve_mention(mention="@ghost", gchat_config={}) == "@ghost"
+
+
+class TestFormatReviewMessage:
+    def test_includes_link_title_and_jtbd(self) -> None:
+        msg = mod.format_review_message(
+            pr_number=42,
+            repo="org/my-app",
+            pr_url="https://github.com/org/my-app/pull/42",
+            pr_title="Fix payment routing",
+            jtbd="When a customer pays, I want speed, so I can checkout.",
+            resolved_mentions=["<GROUP_TOKEN>"],
+        )
+        assert "<https://github.com/org/my-app/pull/42|my-app#42>" in msg
+        assert "*Fix payment routing*" in msg
+        assert msg.startswith("<GROUP_TOKEN> Please review")
+        assert "> When a customer pays" in msg
+
+
+class TestFormatReviewCard:
+    def _card(self, *, jtbd: str | None) -> dict:
+        return mod.format_review_card(
+            pr_number=42,
+            repo="org/my-app",
+            pr_url="https://github.com/org/my-app/pull/42",
+            pr_title="Fix payment routing",
+            jtbd=jtbd,
+        )
+
+    def test_header_carries_title_and_repo_reference(self) -> None:
+        header = self._card(jtbd=None)["card"]["header"]
+        assert header["title"] == "Fix payment routing"
+        assert header["subtitle"] == "my-app#42"
+
+    def test_card_id_is_stable_per_pr(self) -> None:
+        assert self._card(jtbd=None)["cardId"] == "review-my-app-42"
+
+    def test_renders_jtbd_as_formatted_paragraph(self) -> None:
+        widgets = self._card(jtbd="**When** x, **they want to** y.")["card"]["sections"][0][
+            "widgets"
+        ]
+        assert widgets[0]["textParagraph"]["text"] == "<b>When</b> x, <b>they want to</b> y."
+
+    def test_omits_paragraph_when_no_jtbd(self) -> None:
+        widgets = self._card(jtbd=None)["card"]["sections"][0]["widgets"]
+        assert len(widgets) == 1
+        assert "buttonList" in widgets[0]
+
+    def test_always_offers_an_open_pr_button(self) -> None:
+        widgets = self._card(jtbd=None)["card"]["sections"][0]["widgets"]
+        assert widgets[-1]["buttonList"]["buttons"] == [
+            {
+                "text": "Open PR",
+                "onClick": {"openLink": {"url": "https://github.com/org/my-app/pull/42"}},
+            }
+        ]
+
+    def test_card_carries_no_mentions(self) -> None:
+        # Mentions only notify from a message's text field, never from a card.
+        assert "GROUP" not in str(self._card(jtbd=None))
+
+
+class TestFormatCardNotice:
+    def test_prefixes_resolved_mentions(self) -> None:
+        assert mod.format_card_notice(resolved_mentions=["<GROUP>"]) == "<GROUP> Please review"
+
+    def test_omits_prefix_when_no_mentions(self) -> None:
+        assert mod.format_card_notice(resolved_mentions=[]) == "Please review"
+
+
+class TestCmdPrepare:
+    def test_skip_emits_skip_json(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(
+            mod, "load_yaml", lambda path: {"projects": {"my-app": {"skip": True}}}
+        )
+        mod.cmd_prepare(SimpleNamespace(pr=42, repo="org/my-app"))
+        import json
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["skip"] is True
+
+    def test_configured_emits_message(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        def fake_load(path):  # noqa: ANN001, ANN202
+            if path == mod.Dev10xConfigDir.gchat_review_config_yaml():
+                return {"projects": {"my-app": {"space": "tt-reviews", "mentions": ["@team"]}}}
+            return {"user_groups": {"@team": "<GROUP>"}}
+
+        monkeypatch.setattr(mod, "load_yaml", fake_load)
+        monkeypatch.setattr(
+            mod,
+            "gh_json",
+            lambda args: {
+                "number": 42,
+                "title": "Fix routing",
+                "body": "When x, I want y, so I can z.",
+                "url": "https://github.com/org/my-app/pull/42",
+            },
+        )
+        mod.cmd_prepare(SimpleNamespace(pr=42, repo="org/my-app"))
+        import json
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["space"] == "tt-reviews"
+        assert "<GROUP> Please review" in out["message"]
+        assert out["resolved_mentions"] == ["<GROUP>"]
+
+    def test_text_mode_emits_no_card(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self._wire_configured(monkeypatch, card=False)
+        mod.cmd_prepare(SimpleNamespace(pr=42, repo="org/my-app"))
+        import json
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["card"] is None
+        assert out["fallback_text"] is None
+
+    def test_card_mode_emits_card_and_moves_body_out_of_message(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self._wire_configured(monkeypatch, card=True)
+        mod.cmd_prepare(SimpleNamespace(pr=42, repo="org/my-app"))
+        import json
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["card"]["card"]["header"]["title"] == "Fix routing"
+        assert out["message"] == "<GROUP> Please review"
+        assert "Fix routing" in out["fallback_text"]
+
+    def _wire_configured(self, monkeypatch: pytest.MonkeyPatch, *, card: bool) -> None:
+        def fake_load(path):  # noqa: ANN001, ANN202
+            if path == mod.Dev10xConfigDir.gchat_review_config_yaml():
+                return {
+                    "projects": {
+                        "my-app": {"space": "tt-reviews", "mentions": ["@team"], "card": card}
+                    }
+                }
+            return {"user_groups": {"@team": "<GROUP>"}}
+
+        monkeypatch.setattr(mod, "load_yaml", fake_load)
+        monkeypatch.setattr(
+            mod,
+            "gh_json",
+            lambda args: {
+                "number": 42,
+                "title": "Fix routing",
+                "body": "When x, I want y, so I can z.",
+                "url": "https://github.com/org/my-app/pull/42",
+            },
+        )
+
+    def test_unconfigured_emits_ask_json(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The ask path now renders the same envelope the success path does.
+
+        It used to assert ``message is None`` against a hand-written
+        six-key dict — and because that dict was built without touching
+        the PR, this test never needed a ``gh`` stub. Both facts were
+        the bug (GH-1307): the envelope dropped the cardsV2 default, so
+        an unconfigured repo posted plain text.
+        """
+        monkeypatch.setattr(mod, "load_yaml", lambda path: {"default_action": "ask"})
+        monkeypatch.setattr(
+            mod,
+            "gh_json",
+            lambda args, **kwargs: {
+                "number": 42,
+                "title": "Fix routing",
+                "body": "When x, I want y, so I can z.",
+                "url": "https://github.com/org/my-app/pull/42",
+            },
+        )
+        mod.cmd_prepare(SimpleNamespace(pr=42, repo="org/my-app"))
+        import json
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["ask"] is True
+        assert out["skip"] is False
+        assert out["space"] is None
+        assert out["card"] is not None
+        assert out["pr_url"] == "https://github.com/org/my-app/pull/42"

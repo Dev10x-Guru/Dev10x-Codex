@@ -11,6 +11,7 @@ description: >
 user-invocable: true
 invocation-name: Dev10x:py-test
 allowed-tools:
+  - mcp__plugin_Dev10x_cli__run_tests
   - Bash(pytest:*)
   - Bash(uv:*)
 ---
@@ -34,15 +35,63 @@ failures.
 
 ### Step 1: Run Tests
 
+**Preferred — MCP tool** (works in every session, including
+worktrees where `pytest` is not on PATH and the Bash hook blocks
+every direct invocation form, GH-238):
+
+```
+mcp__plugin_Dev10x_cli__run_tests()
+```
+
+Pass extra pytest args via the `args` parameter, e.g.
+`args=["src/dev10x/runner/"]` or `args=["-k", "name"]`. The tool
+returns a structured payload: `returncode`, `summary`, `passed`,
+`failed`, `skipped`, `coverage_percent`, `failed_tests`,
+`missing_coverage`, `extras`, `retried_with_extras`, `stdout`,
+`stderr`. The subprocess is launched from the MCP server so the
+PreToolUse hook does not apply.
+
+**The tool resolves the project's dependency extra itself
+(GH-1198).** It reads `[project.optional-dependencies]` from
+`pyproject.toml` and adds the group that declares pytest, so a suite
+whose test dependencies live under a `dev` extra runs green without
+anyone typing `--extra dev`. `extras` reports what it applied. When
+resolution finds nothing and the run dies at collection on a
+`ModuleNotFoundError`, it retries once with `--extra dev` and sets
+`retried_with_extras` — read that as a signal the project's extras
+are named unusually, not as a normal outcome.
+
+Before this, the sanctioned wrapper could not run such a suite at
+all, so the agent fell back to the raw command the routing table
+forbids — and kept using it for every iteration of the fix-test
+loop. **If you find yourself reaching for a raw `pytest` because
+the wrapper failed on a missing import — or timed out — that is a
+bug in the wrapper: file it rather than working around it.**
+
+**The default timeout is the transport ceiling (GH-1331).**
+`run_tests()` defaults `timeout` to `MAX_TOOL_CALL_SECONDS` (1080s)
+— the largest value the MCP transport is clamped to anyway
+(GH-1288) — so omitting the parameter already asks for the most
+the wrapper can serve. A run that still times out at that ceiling
+means the full suite genuinely needs longer than one tool call can
+give it: narrow with `args=["-k", "name"]` / a path, or split the
+suite across calls. On timeout the payload carries `verdict`,
+`elapsed`, `timeout_clamped`, and whatever `stdout`/`stderr` pytest
+produced before the cut-off, so a slow-but-green run is
+distinguishable from a hang.
+
+**Fallback — Bash** (only when the MCP server is unavailable):
+
 ```bash
 pytest --cov --cov-report=term-missing
 ```
 
-**Worktree sessions:** When the session CWD is inside a worktree
-(`.git` is a file, not a directory), prefix with `uv run`:
+Inside a worktree (`.git` is a file, not a directory), prefix
+with `uv run`, and add the extra that carries the test
+dependencies if the project declares one:
 
 ```bash
-uv run pytest --cov --cov-report=term-missing
+uv run --extra dev pytest --cov --cov-report=term-missing
 ```
 
 ### Step 2: Parse Results

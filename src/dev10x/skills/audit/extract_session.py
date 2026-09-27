@@ -11,12 +11,43 @@ Usage:
 If output.md is omitted, writes to stdout.
 """
 
+import io
 import json
+import os
 import re
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import TextIO
+
+
+def _atomic_write_text(output_path: str, content: str) -> None:
+    """Crash-safe write via mkstemp + fsync + os.replace (GH-562).
+
+    This standalone uv-script cannot import
+    ``dev10x.domain.file_locks.atomic_write_text``, so the same
+    temp-then-rename pattern is inlined here.
+    """
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
+    try:
+        os.write(fd, content.encode("utf-8"))
+        os.fsync(fd)
+        os.close(fd)
+        os.replace(tmp, str(target))
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
 
 SKIP_TYPES = {"file-history-snapshot", "progress", "system"}
 
@@ -116,7 +147,7 @@ def check_correction(text: str) -> bool:
 
 def format_timestamp(ts: str) -> str:
     try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(ts)
         return dt.strftime("%H:%M:%S")
     except (ValueError, AttributeError):
         return ts or "?"
@@ -188,9 +219,8 @@ def process_jsonl(jsonl_path: str, out: TextIO) -> None:
 
             if tool_results:
                 for tr in tool_results:
-                    out.write(
-                        f"<details><summary>Tool result ({tr['tool_use_id'][:12]}...)</summary>\n\n"
-                    )
+                    summary_id = tr["tool_use_id"][:12]
+                    out.write(f"<details><summary>Tool result ({summary_id}...)</summary>\n\n")
                     out.write(f"```\n{tr['content']}\n```\n")
                     out.write("</details>\n\n")
 
@@ -226,8 +256,9 @@ def main() -> None:
     jsonl_path = sys.argv[1]
     if len(sys.argv) >= 3:
         output_path = sys.argv[2]
-        with open(output_path, "w") as f:
-            process_jsonl(jsonl_path=jsonl_path, out=f)
+        buf = io.StringIO()
+        process_jsonl(jsonl_path=jsonl_path, out=buf)
+        _atomic_write_text(output_path, buf.getvalue())
         print(f"Extracted to {output_path}", file=sys.stderr)
     else:
         process_jsonl(jsonl_path=jsonl_path, out=sys.stdout)

@@ -1,0 +1,429 @@
+"""Canonical Dev10x config paths, independent of ``~/.claude``.
+
+GH-215: Dev10x's userspace config moves out of ``~/.claude/`` so the
+plugin no longer depends on Claude Code's home directory layout.
+
+Default root resolution (in order):
+1. ``DEV10X_CONFIG_HOME`` env var (test/CI override)
+2. ``$XDG_CONFIG_HOME/Dev10x`` if ``XDG_CONFIG_HOME`` is set
+3. ``%APPDATA%/Dev10x`` on Windows
+4. ``~/.config/Dev10x`` everywhere else (Linux, macOS, BSDs)
+
+Lazy migration: every accessor checks the legacy ``~/.claude/...``
+location on first call. If the legacy file/dir exists and the new
+path does not, the legacy content is copied across. The legacy
+entry is left in place so a downgrade can still read it; eager
+cleanup invoked from ``Dev10x:upgrade-cleanup`` and ``Dev10x:plugin-doctor``
+removes the legacy entries once parity is confirmed.
+"""
+
+from __future__ import annotations
+
+import functools
+import logging
+import os
+import re
+import shutil
+import sys
+from collections.abc import Callable
+from pathlib import Path
+
+from dev10x.domain.claude_paths import ClaudeDir
+from dev10x.domain.file_locks import atomic_write_text, file_lock
+
+CONFIG_HOME_ENV_VAR = "DEV10X_CONFIG_HOME"
+XDG_CONFIG_HOME_ENV_VAR = "XDG_CONFIG_HOME"
+
+log = logging.getLogger(__name__)
+
+
+def _platform_default_root() -> Path:
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "Dev10x"
+    xdg = os.environ.get(XDG_CONFIG_HOME_ENV_VAR)
+    if xdg:
+        return Path(xdg) / "Dev10x"
+    return Path.home() / ".config" / "Dev10x"
+
+
+@functools.cache
+def _resolve_path(*, override: str | None, segments: tuple[str, ...]) -> Path:
+    base = Path(override).expanduser() if override else _platform_default_root()
+    return base.joinpath(*segments) if segments else base
+
+
+def _copy(*, source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        shutil.copytree(source, destination, dirs_exist_ok=True)
+    else:
+        shutil.copy2(source, destination)
+
+
+def migrate_path(*, legacy: Path, current: Path) -> bool:
+    """Copy ``legacy`` to ``current`` when only the legacy path exists.
+
+    Returns True when a copy happened. Leaves the legacy path in
+    place so a downgrade can still read it; eager cleanup deletes
+    the legacy entry once parity is confirmed.
+
+    The check-then-copy runs under an exclusive lock on ``current``
+    with a re-check inside the lock (double-checked locking) so two
+    worktrees/agents racing first-call migration cannot both copy and
+    clobber each other — GH-587.
+    """
+    if current.exists() or not legacy.exists():
+        return False
+    with file_lock(current):
+        if current.exists() or not legacy.exists():
+            return False
+        log.info("Migrating Dev10x config: %s -> %s", legacy, current)
+        _copy(source=legacy, destination=current)
+    return True
+
+
+class Dev10xConfigDir:
+    """Cached accessors for canonical Dev10x config paths.
+
+    ``DEV10X_CONFIG_HOME`` overrides the root. Each accessor runs
+    lazy migration from the legacy ``~/.claude/`` location on first
+    call — see :func:`migrate_path`.
+    """
+
+    @classmethod
+    def _resolve(cls, *segments: str) -> Path:
+        return _resolve_path(
+            override=os.environ.get(CONFIG_HOME_ENV_VAR),
+            segments=segments,
+        )
+
+    @classmethod
+    def reset_cache(cls) -> None:
+        """Clear the path resolution cache. Call in test teardown."""
+        _resolve_path.cache_clear()
+
+    @classmethod
+    def home(cls) -> Path:
+        return cls._resolve()
+
+    @classmethod
+    def version_yaml(cls) -> Path:
+        return _with_lazy_migration(cls._resolve("version.yml"), _legacy_version_yaml)
+
+    @classmethod
+    def projects_yaml(cls) -> Path:
+        return _with_lazy_migration(cls._resolve("projects.yaml"), _legacy_projects_yaml)
+
+    @classmethod
+    def platforms_yaml(cls) -> Path:
+        return _with_lazy_migration(cls._resolve("platforms.yaml"), _legacy_platforms_yaml)
+
+    @classmethod
+    def slack_config_yaml(cls) -> Path:
+        return _with_lazy_migration(
+            cls._resolve("slack-config.yaml"),
+            _legacy_slack_config_yaml,
+        )
+
+    @classmethod
+    def slack_review_config_yaml(cls) -> Path:
+        return _with_lazy_migration(
+            cls._resolve("slack-config-code-review-requests.yaml"),
+            _legacy_slack_review_config_yaml,
+        )
+
+    @classmethod
+    def upgrade_cleanup_projects_yaml(cls) -> Path:
+        return _with_lazy_migration(
+            cls._resolve("upgrade-cleanup-projects.yaml"),
+            _legacy_upgrade_cleanup_projects_yaml,
+        )
+
+    @classmethod
+    def friction_yaml(cls) -> Path:
+        """Global durable session preferences keyed by project (GH-812, ADR-0018).
+
+        Holds ``friction_level`` / ``active_modes`` / ``allowed_overlays`` and
+        the ADR-0016 gate keys under a ``defaults:`` block plus a per-project
+        ``projects: [{match, ...prefs}]`` list. No lazy single-file migration:
+        the retired per-repo ``.claude/Dev10x/config.yaml`` is folded in by
+        ``upgrade-cleanup`` / ``plugin-doctor``, not copied here.
+        """
+        return cls._resolve("friction.yaml")
+
+    @classmethod
+    def task_index_yaml(cls, *, repo_name: str) -> Path:
+        """Per-repo ephemeral task index for the park family (GH-1009).
+
+        ADR-0018 D5 rehomed this store out of ``.claude/Dev10x/session.yaml``:
+        every writer reached it with the Write/Edit tool, which trips Claude
+        Code's self-settings gate on each session regardless of allow rules
+        (RC-A). Here it is outside every repo, so the gate cannot fire, and
+        the MCP tools over :mod:`dev10x.session.task_index` are the only
+        writers.
+
+        Keyed by the repo stem from the git **common dir**, so every worktree
+        of a repo shares one index — matching the park family's "resurfaces
+        next session in the same project" contract. No lazy migration: the
+        retired per-repo file is a read-only fallback for one release, folded
+        forward on first write rather than copied on path resolution.
+        """
+        return cls._resolve("task-index", f"{repo_name}.yaml")
+
+    @classmethod
+    def playbooks_dir(cls) -> Path:
+        """User playbook overrides, one ``<skill>.yaml`` per skill (GH-1045).
+
+        Tier 2 of the 3-tier playbook resolution. The bulk migration list
+        below already moves the retired ``~/.claude/memory/Dev10x/playbooks``
+        here, but ``migrate_path`` only copies when the destination is absent
+        — so a user with files in both keeps both, and discovery must read the
+        legacy directory as an explicit fallback rather than assume the move
+        happened.
+        """
+        return _with_lazy_migration(cls._resolve("playbooks"), _legacy_playbooks_dir)
+
+    @classmethod
+    def sensitivity_exceptions_yaml(cls) -> Path:
+        """User-owned sensitivity-exception catalog (GH-604).
+
+        No legacy migration: introduced after the ``~/.config/Dev10x``
+        move, so it only ever lives at the canonical path.
+        """
+        return cls._resolve("sensitivity-exceptions.yaml")
+
+    @classmethod
+    def accepted_findings_yaml(cls) -> Path:
+        """User-owned accepted-by-design auditor findings (GH-1053).
+
+        The counterpart to ``sensitivity-exceptions.yaml`` for the
+        permission auditor: it records answers the maintainer has already
+        given, so a rejected recommendation stays rejected across upgrades
+        instead of being re-litigated on every maintenance run. Introduced
+        after the ``~/.config/Dev10x`` move, so there is no legacy path.
+        """
+        return cls._resolve("accepted-findings.yaml")
+
+    @classmethod
+    def doctor_accepted_findings_yaml(cls) -> Path:
+        """User-owned accepted-by-design plugin-doctor findings (GH-1321).
+
+        Separate from ``accepted-findings.yaml`` because the two catalogs
+        key on different things — the auditor's on (rule, classification),
+        the doctor's on (strategy, location) — and folding them into one
+        file would need a discriminator that means nothing to either
+        reader. Introduced after the ``~/.config/Dev10x`` move, so there
+        is no legacy path.
+        """
+        return cls._resolve("doctor-accepted-findings.yaml")
+
+    @classmethod
+    def github_bot_dir(cls) -> Path:
+        return _with_lazy_migration(cls._resolve("github-bot"), _legacy_github_bot_dir)
+
+    @classmethod
+    def github_app_yaml(cls) -> Path:
+        return _with_lazy_migration(
+            cls._resolve("github-bot", "github-app.yaml"),
+            _legacy_github_app_yaml,
+        )
+
+    @classmethod
+    def gitmoji_yaml(cls) -> Path:
+        return _with_lazy_migration(cls._resolve("gitmoji.yaml"), _legacy_gitmoji_yaml)
+
+    @classmethod
+    def github_reviewers_config_yaml(cls) -> Path:
+        return _with_lazy_migration(
+            cls._resolve("github-reviewers-config.yaml"),
+            _legacy_github_reviewers_config_yaml,
+        )
+
+    @classmethod
+    def settings_pr_merge_yaml(cls) -> Path:
+        return _with_lazy_migration(
+            cls._resolve("settings-pr-merge.yaml"),
+            _legacy_settings_pr_merge_yaml,
+        )
+
+    @classmethod
+    def gchat_config_yaml(cls) -> Path:
+        """Google Chat transport config (spaces, user_groups, users).
+
+        No legacy migration: introduced after the ~/.config/Dev10x move,
+        so it only ever lives at the canonical path (mirrors friction_yaml).
+        """
+        return cls._resolve("gchat-config.yaml")
+
+    @classmethod
+    def gchat_review_config_yaml(cls) -> Path:
+        """Per-repo Google Chat review-request config (space + mentions)."""
+        return cls._resolve("gchat-config-code-review-requests.yaml")
+
+
+def _with_lazy_migration(current: Path, legacy_provider: Callable[[], Path]) -> Path:
+    migrate_path(legacy=legacy_provider(), current=current)
+    return current
+
+
+def _legacy_bot_dir_spellings() -> list[str]:
+    """Every way the legacy bot directory can appear inside the yaml.
+
+    The resolved form covers an expanded path (and honours
+    ``CLAUDE_CONFIG_HOME``); the tilde form covers a config written by
+    hand, which is what the setup doc used to instruct.
+    """
+    return [str(_legacy_github_bot_dir()), "~/.claude/Dev10x/github-bot"]
+
+
+def reconcile_github_app_key_path() -> bool:
+    """Point ``private_key_path`` at the relocated key (GH-1271).
+
+    ``migrate_path`` moves the yaml and the ``.pem`` beside it, but the
+    ``private_key_path`` *inside* the yaml keeps naming the old
+    directory — so the key read fails after a migration that otherwise
+    looks clean.
+
+    The replacement is derived from the **resolved** config directory,
+    never a hardcoded ``~/.config``: the root honours
+    ``DEV10X_CONFIG_HOME`` / ``XDG_CONFIG_HOME`` / ``%APPDATA%``, and
+    writing the default over a configured root would swap a
+    stale-but-obvious path for a stale-and-plausible one that no later
+    pass could correct.
+
+    Refuses to rewrite unless the relocated key is actually present —
+    leaving a visibly broken path beats inventing a different broken
+    one. Returns True when the file was changed.
+
+    This is called explicitly rather than from the path accessor: a
+    getter with a disk-write side effect is the same structural smell
+    the repo bans module-scope ``GitContext()`` for, and it put a
+    read-modify-write on the hot path of every ``AppConfig.load()``.
+    """
+    config = Dev10xConfigDir._resolve("github-bot", "github-app.yaml")
+    relocated_dir = config.parent
+    spellings = _legacy_bot_dir_spellings()
+
+    try:
+        if not any(spelling in config.read_text() for spelling in spellings):
+            return False
+    except OSError:
+        return False
+
+    with file_lock(config):
+        try:
+            current = config.read_text()
+        except OSError:
+            return False
+        rewritten = current
+        for spelling in spellings:
+            rewritten = rewritten.replace(spelling, str(relocated_dir))
+        if rewritten == current:
+            return False
+
+        key_name = Path(_key_path_in(rewritten) or "").name
+        if key_name and not (relocated_dir / key_name).is_file():
+            log.warning(
+                "Leaving github-app.yaml private_key_path alone: %s was never "
+                "relocated, so rewriting the path would only hide the failure.",
+                key_name,
+            )
+            return False
+        atomic_write_text(path=config, content=rewritten)
+    return True
+
+
+def _key_path_in(text: str) -> str | None:
+    match = re.search(r"private_key_path\s*:\s*[\"']?([^\"'\n]+)", text)
+    return match.group(1).strip() if match else None
+
+
+# Legacy path providers — wrapped in callables so test overrides of
+# ClaudeDir env vars propagate on every call.
+_legacy_version_yaml = ClaudeDir.dev10x_version_yaml
+_legacy_projects_yaml = ClaudeDir.memory_projects_yaml
+_legacy_platforms_yaml = ClaudeDir.platforms_yaml
+_legacy_slack_config_yaml = ClaudeDir.slack_config_yaml
+_legacy_slack_review_config_yaml = ClaudeDir.slack_review_config_yaml
+_legacy_upgrade_cleanup_projects_yaml = ClaudeDir.upgrade_cleanup_projects_yaml
+_legacy_github_bot_dir = ClaudeDir.github_bot_dir
+_legacy_github_app_yaml = ClaudeDir.github_app_yaml
+_legacy_gitmoji_yaml = ClaudeDir.gitmoji_yaml
+_legacy_github_reviewers_config_yaml = ClaudeDir.github_reviewers_config_yaml
+_legacy_settings_pr_merge_yaml = ClaudeDir.settings_pr_merge_yaml
+
+
+def _legacy_plugin_maintenance_prefs_yaml() -> Path:
+    return ClaudeDir.memory_dev10x_dir() / "plugin-maintenance-prefs.yaml"
+
+
+def _legacy_playbooks_dir() -> Path:
+    return ClaudeDir.memory_dev10x_dir() / "playbooks"
+
+
+def _migration_pairs() -> list[tuple[Path, Path]]:
+    """Build (legacy, current) pairs without triggering lazy migration."""
+    return [
+        (_legacy_version_yaml(), Dev10xConfigDir._resolve("version.yml")),
+        (_legacy_projects_yaml(), Dev10xConfigDir._resolve("projects.yaml")),
+        (_legacy_platforms_yaml(), Dev10xConfigDir._resolve("platforms.yaml")),
+        (_legacy_slack_config_yaml(), Dev10xConfigDir._resolve("slack-config.yaml")),
+        (
+            _legacy_slack_review_config_yaml(),
+            Dev10xConfigDir._resolve("slack-config-code-review-requests.yaml"),
+        ),
+        (
+            _legacy_upgrade_cleanup_projects_yaml(),
+            Dev10xConfigDir._resolve("upgrade-cleanup-projects.yaml"),
+        ),
+        (_legacy_github_bot_dir(), Dev10xConfigDir._resolve("github-bot")),
+        (
+            _legacy_github_app_yaml(),
+            Dev10xConfigDir._resolve("github-bot", "github-app.yaml"),
+        ),
+        (_legacy_playbooks_dir(), Dev10xConfigDir._resolve("playbooks")),
+        (_legacy_gitmoji_yaml(), Dev10xConfigDir._resolve("gitmoji.yaml")),
+        (
+            _legacy_github_reviewers_config_yaml(),
+            Dev10xConfigDir._resolve("github-reviewers-config.yaml"),
+        ),
+        (
+            _legacy_settings_pr_merge_yaml(),
+            Dev10xConfigDir._resolve("settings-pr-merge.yaml"),
+        ),
+        (
+            _legacy_plugin_maintenance_prefs_yaml(),
+            Dev10xConfigDir._resolve("plugin-maintenance-prefs.yaml"),
+        ),
+    ]
+
+
+def migrate_all() -> list[Path]:
+    """Eagerly migrate every known legacy file. Returns paths copied."""
+    migrated: list[Path] = []
+    for legacy, current in _migration_pairs():
+        if migrate_path(legacy=legacy, current=current):
+            migrated.append(current)
+    # Relocating github-app.yaml is not enough on its own — the key path
+    # it carries names the old directory (GH-1271). Run unconditionally:
+    # the engineers this repairs migrated long ago, so gating on a copy
+    # happening in *this* call would skip exactly them.
+    reconcile_github_app_key_path()
+    return migrated
+
+
+def stale_legacy_paths() -> list[Path]:
+    """Return legacy paths that still exist (doctor uses this to nudge)."""
+    return [legacy for legacy, _ in _migration_pairs() if legacy.exists()]
+
+
+__all__ = [
+    "CONFIG_HOME_ENV_VAR",
+    "Dev10xConfigDir",
+    "migrate_all",
+    "migrate_path",
+    "reconcile_github_app_key_path",
+    "stale_legacy_paths",
+]

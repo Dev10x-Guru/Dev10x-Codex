@@ -1,0 +1,378 @@
+"""Session event dispatch — thin SessionStart / SessionStop / PreCompact handlers.
+
+Event-routing module. Owns the entry points referenced by
+``hooks/scripts/session-*.py`` and ``commands/hook.py``. Rendering and
+data assembly live elsewhere:
+
+* Session orchestration / context builders — :mod:`dev10x.session.service`.
+* Document I/O — :mod:`dev10x.domain.session_document`.
+* Named policies (friction parsing, permission migration, decision
+  guidance) — :mod:`dev10x.hooks.session_policy`.
+* Place provisioning (``/tmp`` setup, git alias inventory) —
+  :mod:`dev10x.hooks.session_place`.
+* Aggregated query + formatters — :mod:`dev10x.domain.documents.session_context`.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+from dev10x.domain.claude_paths import ClaudeDir
+from dev10x.domain.documents.session_state import SessionState
+from dev10x.domain.git_context import GitContext
+from dev10x.domain.session_document import (
+    plan_path_for_toplevel,
+    read_plan_summary,
+    state_path_for_toplevel,
+    write_state,
+)
+from dev10x.hooks.audit_emit import set_decision_attribution
+from dev10x.hooks.session_policy import MigratePluginPermissionsRule
+from dev10x.hooks.stop_verdict import (
+    StopVerdict,
+    decide,
+    read_harness_version,
+    record_block,
+)
+from dev10x.session.service import SessionService
+
+
+def _get_toplevel() -> str | None:
+    # GH-979 (H11): fresh GitContext per call — no module-level singleton,
+    # which would pin the first-call CWD across MCP invocations.
+    return GitContext().toplevel
+
+
+def _escape_for_json(*, s: str) -> str:
+    return (
+        s.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+
+
+def _emit_context(content: str) -> None:
+    """Emit content as a SessionStart additionalContext JSON envelope.
+
+    Exits silently (sys.exit(0)) when content is empty. This is the
+    single shared emit path for all standalone SessionStart hook
+    sub-commands — previously duplicated across session_reload,
+    session_install_check, and session_guidance.
+    """
+    if not content:
+        sys.exit(0)
+    escaped = _escape_for_json(s=content)
+    print(
+        '{"hookSpecificOutput":{"hookEventName":"SessionStart",'
+        f'"additionalContext":"{escaped}"}}}}'
+    )
+
+
+def _run_git_safe(git: GitContext, *args: str) -> str:
+    try:
+        return git.run(*args)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+
+
+def _plugin_root() -> Path:
+    return Path(__file__).parents[3]
+
+
+def drain_stdin() -> None:
+    """Discard the hook payload Claude Code writes to stdin (GH-249 H5).
+
+    Hooks that never read stdin can leave the writer's pipe full; draining
+    it avoids a ``BrokenPipeError`` on the Claude Code side. Best-effort —
+    any read failure (already closed, empty) is swallowed.
+    """
+    try:
+        sys.stdin.read()
+    except Exception:
+        pass
+
+
+def build_reload_context() -> str:
+    """Build the session-reload additionalContext string. Empty when no state."""
+    return SessionService().build_reload_context(toplevel=_get_toplevel())
+
+
+def session_reload() -> None:
+    _emit_context(build_reload_context())
+
+
+def context_compact() -> None:
+    drain_stdin()
+    service = SessionService()
+    summary = service.build_compaction_context(toplevel=_get_toplevel())
+    if not summary:
+        sys.exit(0)
+    escaped = _escape_for_json(s=summary)
+    print(f'{{"hookSpecificOutput":{{"systemMessage":"{escaped}"}}}}')
+
+
+def build_guidance_context() -> str:
+    """Return the session-guidance.md contents, or empty string if missing."""
+    return SessionService().build_guidance_context()
+
+
+def build_autonomy_reassurance_context() -> str:
+    """Reassurance block for adaptive + solo-maintainer sessions (GH-261).
+
+    Returns an empty string outside the autonomous-shipping profile; the
+    orchestrator drops empty segments so non-solo sessions see no change.
+    """
+    return SessionService().build_autonomy_reassurance_context(toplevel=_get_toplevel())
+
+
+def build_auto_plan_guidance_context() -> str:
+    """Briefing for ``auto-plan`` sessions: plan gate auto-resolves (GH-678).
+
+    Returns an empty string outside ``auto-plan`` mode; the orchestrator
+    drops empty segments, so non-``auto-plan`` sessions see no change.
+    """
+    return SessionService().build_auto_plan_guidance_context(toplevel=_get_toplevel())
+
+
+def build_mode_guard_context() -> str:
+    """Warn when a durable high-autonomy overlay is forbidden by repo policy (GH-805).
+
+    Returns an empty string when the repo declares no ``allowed_overlays``
+    allow-list or nothing would be dropped; the orchestrator drops empty
+    segments, so repos that have not opted into the guard see no change.
+    """
+    return SessionService().build_mode_guard_context(toplevel=_get_toplevel())
+
+
+def build_friction_setup_context() -> str:
+    """Nudge unconfigured repos to run ``Dev10x:friction-setup`` (GH-886).
+
+    Seeds a ``strict`` baseline ``friction.yaml`` on first sight and nudges;
+    nudges (no write) when the file exists but this repo is unmatched; empty
+    string when a project entry matches. The orchestrator drops empty
+    segments, so configured repos see no change.
+    """
+    return SessionService().build_friction_setup_context(toplevel=_get_toplevel())
+
+
+def build_skills_index_context() -> str:
+    """Return ``~/.claude/SKILLS.md`` contents for SessionStart display (GH-1315).
+
+    Returns an empty string when the index is absent or unreadable; the
+    orchestrator drops empty segments, so a fresh install with no
+    generated index sees no change.
+    """
+    return SessionService().build_skills_index_context()
+
+
+def build_install_check_context() -> str:
+    """Warn the user when the Dev10x install needs bootstrap or upgrade.
+
+    Returns an empty string when the install is current — the orchestrator
+    drops empty segments, so a no-op leaves no trace in additionalContext.
+    """
+    return SessionService().build_install_check_context()
+
+
+def build_hook_version_drift_context() -> str:
+    """Warn when the running-hook version lags the latest installed version.
+
+    Claude Code loads hooks once at session start from ``$CLAUDE_PLUGIN_ROOT``.
+    An on-disk ``claude plugin update`` installs a newer version but does NOT
+    swap the running hooks — the session continues executing the pre-upgrade
+    hooks until it restarts. This means shipped friction fixes, new validators,
+    and catalog improvements are dormant in long-running sessions.
+
+    This check is **distinct** from :func:`build_install_check_context`, which
+    compares the installed version against the last-applied upgrade-cleanup
+    version. That check detects settings staleness; this one detects
+    running-hook staleness — they can diverge when settings were refreshed
+    but the session was not restarted.
+
+    Returns an empty string when no drift is detected or when either version
+    cannot be determined (``--plugin-dir`` dev installs, new users, etc.).
+    """
+    return SessionService().build_hook_version_drift_context()
+
+
+def session_install_check() -> None:
+    """Emit install-state guidance as additionalContext (SessionStart hook)."""
+    _emit_context(build_install_check_context())
+
+
+def session_guidance() -> None:
+    """Output session-guidance.md as additionalContext (SessionStart hook)."""
+    _emit_context(build_guidance_context())
+
+
+def session_migrate_permissions() -> None:
+    """Migrate stale plugin permission rules to current version (SessionStart hook).
+
+    Delegates to :class:`MigratePluginPermissionsRule`. Only runs when
+    installed via the plugin cache (not ``--plugin-dir``).
+    """
+    rule = MigratePluginPermissionsRule(plugin_root=_plugin_root(), home_path=Path.home())
+    if not rule.applicable():
+        sys.exit(0)
+    total_migrated, files_changed = rule.apply()
+    if total_migrated > 0:
+        files_str = ", ".join(files_changed)
+        print(
+            f"Migrated {total_migrated} stale permission rule(s) "
+            f"to current plugin version in {files_str}"
+        )
+
+
+def session_persist(data: dict | None = None) -> None:
+    """Persist session state to disk for next-session reload (SessionStop hook)."""
+    if data is None:
+        try:
+            data = json.load(sys.stdin)
+        except (json.JSONDecodeError, EOFError):
+            sys.exit(0)
+    session_id = data.get("session_id") or ""
+    if not session_id:
+        return
+    toplevel = _get_toplevel()
+    if not toplevel:
+        return
+
+    state_dir = ClaudeDir.session_state_dir()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    state_dir.chmod(0o700)
+
+    git = GitContext(cwd=toplevel)
+    state = SessionState.capture(
+        session_id=session_id,
+        toplevel=toplevel,
+        run_git=lambda *args: _run_git_safe(git, *args),
+        timestamp=datetime.now(UTC).isoformat(),
+    ).to_dict()
+    state["working_directory"] = toplevel
+    state["has_plan"] = plan_path_for_toplevel(toplevel=toplevel).exists()
+    write_state(path=state_path_for_toplevel(toplevel=toplevel), state=state)
+
+
+def _uncommitted_paths() -> tuple[str, ...] | None:
+    """The working tree's uncommitted paths, or ``None`` if unreadable.
+
+    Kept out of :func:`decide` so the rule stays a pure function of its
+    arguments (GH-1365). ``None`` and ``()`` are deliberately different:
+    ``()`` is a clean tree, ``None`` is "could not tell", and only the
+    first is evidence. A git read that failed must never manufacture a
+    block — every degradation in this path points toward letting the
+    turn end.
+
+    One ``git status`` per Stop event, which fires once per turn rather
+    than once per tool call, so this is not on the hook-startup budget
+    that `.claude/rules/performance.md` gates.
+    """
+    git = GitContext()
+    status = _run_git_safe(git, "status", "--porcelain")
+    if not status.strip():
+        # Indistinguishable here from a failed read, and both mean the
+        # same thing to the caller: no evidence of uncommitted work.
+        return ()
+    return tuple(line[3:].strip() for line in status.splitlines() if len(line) > 3)
+
+
+def build_stop_verdict(data: dict | None = None) -> StopVerdict | None:
+    """Decide whether this Stop should be blocked and steered (GH-1251).
+
+    Returns ``None`` when the turn may end — the common case. A
+    :class:`StopVerdict` with ``block=True`` carries the steer text the
+    orchestrator hands back as the continued turn's instruction.
+
+    The decision itself lives in :mod:`dev10x.hooks.stop_verdict` so it
+    is testable without a subprocess; this function is only the wiring
+    that finds the persisted plan and reads the working tree.
+    """
+    if data is None:
+        try:
+            data = json.load(sys.stdin)
+        except (json.JSONDecodeError, EOFError):
+            return None
+
+    toplevel = _get_toplevel()
+    plan: dict | None = None
+    if toplevel:
+        summary = read_plan_summary(toplevel=toplevel)
+        # The whole summary, not summary["plan"] (GH-1339). `Plan.to_dict`
+        # returns {"plan": <metadata>, "tasks": [...]}, so reaching for
+        # the "plan" key handed `task_signal` the metadata — which never
+        # carries tasks. The signal was therefore always empty in the
+        # field. That was survivable while the gate blocked on other
+        # grounds; now that the task list is the only thing deciding, it
+        # would make the stand-down gate unreachable.
+        plan = summary if isinstance(summary, dict) else None
+
+    verdict = decide(data=data, plan=plan, dirty=_uncommitted_paths())
+    # Attribute every outcome, not only a block (GH-1257). Retiring the
+    # cooldown marker is safe only once `stop_hook_active` is known to
+    # arrive set on a continuation, and the audit log carried nothing
+    # but wrap-phase timing — so the question could not be answered from
+    # the field at all. Recording the signal makes it answerable.
+    #
+    # Under the name the documentation gives it (GH-1390). `reason` is
+    # kept alongside for the readers of the records already written;
+    # `harness_version` is what makes the "across a few harness
+    # versions" half of the condition checkable.
+    set_decision_attribution(
+        rule_id="stop-verdict",
+        reason=verdict.signal,
+        extra={
+            "signal": verdict.signal,
+            "harness_version": read_harness_version(
+                transcript_path=str(data.get("transcript_path") or "")
+            ),
+        },
+    )
+    if not verdict.block:
+        return None
+    record_block(session_id=str(data.get("session_id") or ""))
+    return verdict
+
+
+def session_goodbye(data: dict | None = None) -> None:
+    """Output goodbye message with community link and resume hint (SessionStop hook)."""
+    if data is None:
+        try:
+            data = json.load(sys.stdin)
+        except (json.JSONDecodeError, EOFError):
+            data = {}
+    session_id = data.get("session_id") or ""
+    url = "https://www.skool.com/Dev10x-1892"
+    print()
+    print("Thank you for using Dev10x. Join the community to get the most out of the plugin:")
+    print(f"\033]8;;{url}\033\\{url}\033]8;;\033\\")
+    if session_id:
+        print()
+        print("Resume this session with:")
+        print(f"  claude --resume {session_id}")
+
+
+__all__ = [
+    "build_stop_verdict",
+    "build_friction_setup_context",
+    "build_hook_version_drift_context",
+    "build_install_check_context",
+    "build_mode_guard_context",
+    "build_reload_context",
+    "build_autonomy_reassurance_context",
+    "build_auto_plan_guidance_context",
+    "build_guidance_context",
+    "build_skills_index_context",
+    "session_reload",
+    "context_compact",
+    "session_guidance",
+    "session_install_check",
+    "session_migrate_permissions",
+    "session_persist",
+    "session_goodbye",
+]

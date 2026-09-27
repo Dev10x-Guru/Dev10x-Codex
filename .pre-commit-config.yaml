@@ -1,0 +1,68 @@
+# Pre-commit linting for the Dev10x plugin (GH-619).
+#
+# Setup:
+#   pre-commit install                              # install the git hook
+#   pre-commit run --all-files                      # lint the whole tree
+#
+# ruff and mypy settings live in pyproject.toml and mypy.ini — these hooks
+# defer to that config rather than duplicating it.
+
+default_language_version:
+  python: python3.12
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-json
+      - id: check-toml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Pinned to the ruff version in the `dev` extra to avoid format drift.
+    rev: v0.15.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    # shellcheck-py installs the shellcheck binary via pip — no Docker
+    # dependency, unlike koalaman/shellcheck-precommit.
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        # Warning severity: the tree's shellcheck warnings/errors were
+        # fixed in source (GH-619), so the suite is now warning-clean.
+        args: [--severity=warning]
+
+  # mypy runs at the default stage: the previously-latent type errors
+  # (click + slack-sdk typing) were fixed in source (GH-619), so `src/`
+  # is type-clean.
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.14.1
+    hooks:
+      - id: mypy
+        files: ^src/
+        args: [--config-file=mypy.ini]
+        additional_dependencies: [types-PyYAML]
+
+  # Local hooks (no external repo — plain scripts run in-tree).
+  - repo: local
+    hooks:
+      # GH-916: every PEP 723 uv-script and pyproject.toml dependency
+      # array must declare an upper bound, so a new major release can't
+      # silently break a hook/skill/server the way `mcp` 2.0 did (GH-914).
+      - id: dependency-pins
+        name: uv-script and pyproject.toml dependencies are upper-bounded
+        entry: bin/check-dependency-pins.py
+        language: script
+        pass_filenames: false
+        always_run: true

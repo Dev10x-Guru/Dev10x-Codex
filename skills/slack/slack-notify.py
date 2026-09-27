@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["slack_sdk", "pyyaml"]
+# dependencies = ["slack_sdk>=3.21,<4", "pyyaml>=6.0,<7"]
 # ///
 """
 Slack notification tool for posting messages and uploading files to channels.
@@ -14,11 +14,15 @@ Usage:
     slack-notify.py --delete-file F0ALXGBAAUC
 
 Token resolution order:
-    1. System keyring (Linux: secret-tool, macOS: Keychain)
+    1. --workspace <name> flag → keyring at service=slack-<name>
     2. SLACK_TOKEN environment variable
+    3. Default keyring at service=slack
 
 Configuration:
-    ~/.claude/memory/slack-config.yaml — user groups, self_user_id, bot_username
+    ~/.config/Dev10x/slack-config.yaml — user groups, self_user_id,
+    bot_username, and optional `workspaces:` map for multi-workspace setups.
+    Honors DEV10X_CONFIG_HOME / XDG_CONFIG_HOME; the retired
+    ~/.claude/memory/slack-config.yaml is read as a fallback.
 """
 
 from __future__ import annotations
@@ -33,26 +37,95 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from slack_sdk import WebClient
 
-CONFIG_PATH = pathlib.Path.home() / ".claude" / "memory" / "slack-config.yaml"
+
+def _config_home() -> pathlib.Path:
+    """Mirror ``Dev10x.domain.dev10x_paths`` root resolution (GH-1045).
+
+    A standalone uv-script cannot import ``dev10x``, so the precedence is
+    restated here and must stay faithful to it: DEV10X_CONFIG_HOME, else
+    %APPDATA%/Dev10x on Windows, else XDG_CONFIG_HOME/Dev10x, else
+    ~/.config/Dev10x. Dropping a branch would give the same
+    ``slack-config.yaml`` two homes — the exact defect GH-1045 removes.
+    """
+    override = os.environ.get("DEV10X_CONFIG_HOME")
+    if override:
+        return pathlib.Path(override).expanduser()
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return pathlib.Path(appdata) / "Dev10x"
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        return pathlib.Path(xdg) / "Dev10x"
+    return pathlib.Path.home() / ".config" / "Dev10x"
+
+
+CONFIG_PATH = _config_home() / "slack-config.yaml"
+
+# GH-941 rehomed this file; the reader kept pointing at ~/.claude/memory and
+# had even lost the Dev10x/ segment, so it read a path nothing ever wrote.
+LEGACY_CONFIG_PATH = pathlib.Path.home() / ".claude" / "memory" / "slack-config.yaml"
+
+_active_workspace: str | None = None
+
+
+def _config_path() -> pathlib.Path:
+    """Canonical config path, falling back to the retired location."""
+    if CONFIG_PATH.exists():
+        return CONFIG_PATH
+    return LEGACY_CONFIG_PATH
 
 
 def _load_config() -> dict:
-    if CONFIG_PATH.exists():
+    config_path = _config_path()
+    if config_path.exists():
         import yaml
 
-        return yaml.safe_load(CONFIG_PATH.read_text()) or {}
+        return yaml.safe_load(config_path.read_text()) or {}
     return {}
 
 
 _config = _load_config()
 
-SELF_USER_ID = os.environ.get("SLACK_SELF_USER_ID", _config.get("self_user_id", ""))
-BOT_USERNAME = _config.get("bot_username", "Claude AI")
-USER_GROUPS: dict[str, str] = _config.get("user_groups", {})
+
+def _workspace_config() -> dict:
+    if _active_workspace is None:
+        return {}
+    workspaces = _config.get("workspaces", {}) or {}
+    return workspaces.get(_active_workspace, {}) or {}
+
+
+def set_workspace(name: str | None) -> None:
+    """Select an active workspace. Affects keyring service and per-workspace config."""
+    global _active_workspace
+    _active_workspace = name
+
+
+def _resolve(key: str, default: str = "") -> str:
+    """Read a config key, preferring the active workspace's override."""
+    ws = _workspace_config()
+    if key in ws:
+        return ws[key] or default
+    return _config.get(key, default) or default
+
+
+def _self_user_id() -> str:
+    return os.environ.get("SLACK_SELF_USER_ID") or _resolve("self_user_id", "")
+
+
+def _bot_username() -> str:
+    return _resolve("bot_username", "Claude AI")
+
+
+def _user_groups() -> dict[str, str]:
+    ws = _workspace_config()
+    if "user_groups" in ws:
+        return ws.get("user_groups") or {}
+    return _config.get("user_groups", {}) or {}
 
 
 def resolve_mentions(message: str) -> str:
-    for mention, group_id in USER_GROUPS.items():
+    for mention, group_id in _user_groups().items():
         message = message.replace(mention, group_id)
     return message
 
@@ -69,14 +142,49 @@ def _keyring_lookup(*, service: str, key: str) -> str | None:
         return None
 
 
+def _keyring_service() -> str:
+    """Resolve keyring service name for the active workspace.
+
+    Honors `keyring_service:` override in the workspace config; otherwise
+    falls back to `slack-<workspace>`.
+    """
+    if _active_workspace is None:
+        return "slack"
+    ws = _workspace_config()
+    override = ws.get("keyring_service")
+    if override:
+        return override
+    return f"slack-{_active_workspace}"
+
+
 def get_token() -> str:
-    token = _keyring_lookup(service="slack", key="bot_token")
-    if token:
-        return token
+    """Resolve the Slack bot token.
+
+    Resolution order:
+      1. If --workspace was set: keyring at the workspace's service name.
+         Raise if missing — workspace was explicitly requested.
+      2. SLACK_TOKEN environment variable.
+      3. Default keyring at service=slack.
+    """
+    if _active_workspace is not None:
+        service = _keyring_service()
+        token = _keyring_lookup(service=service, key="bot_token")
+        if token:
+            return token
+        raise RuntimeError(
+            f"No Slack token found in keyring for workspace "
+            f"'{_active_workspace}' (service={service})"
+        )
     env_token = os.environ.get("SLACK_TOKEN")
     if env_token:
         return env_token
-    raise RuntimeError("No Slack token found in system keyring or SLACK_TOKEN env")
+    token = _keyring_lookup(service="slack", key="bot_token")
+    if token:
+        return token
+    raise RuntimeError(
+        "No Slack token found. Set SLACK_TOKEN env, configure the default "
+        "keyring (service=slack, key=bot_token), or pass --workspace NAME."
+    )
 
 
 def send_slack_message(
@@ -97,7 +205,7 @@ def send_slack_message(
         result = client.chat_postMessage(
             channel=channel,
             text=resolved_message,
-            username=None if is_user_token else BOT_USERNAME,
+            username=None if is_user_token else _bot_username(),
             thread_ts=thread_ts,
             reply_broadcast=broadcast if thread_ts else None,
             unfurl_links=unfurl,
@@ -190,7 +298,8 @@ def _files_upload_v2(
 
 
 def send_reminder(message: str) -> str | None:
-    if not SELF_USER_ID:
+    self_user_id = _self_user_id()
+    if not self_user_id:
         print(
             "❌ self_user_id not configured. Set it in "
             f"{CONFIG_PATH} or SLACK_SELF_USER_ID env var.",
@@ -202,7 +311,7 @@ def send_reminder(message: str) -> str | None:
 
         token = get_token()
         client = WebClient(token=token)
-        dm = client.conversations_open(users=SELF_USER_ID)
+        dm = client.conversations_open(users=self_user_id)
         channel = dm["channel"]["id"]
         return send_slack_message(channel=channel, message=message)
     except Exception as ex:
@@ -313,12 +422,26 @@ def main() -> None:
         help="Send a DM reminder to yourself (requires self_user_id in config)",
     )
     parser.add_argument(
+        "--workspace",
+        metavar="NAME",
+        help=(
+            "Select a Slack workspace by name. Reads the bot token from "
+            "keyring service=slack-<name> (override via "
+            "workspaces.<name>.keyring_service in config) and applies "
+            "per-workspace overrides for bot_username / self_user_id / "
+            "user_groups."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Show verbose output",
     )
 
     args = parser.parse_args()
+
+    if args.workspace:
+        set_workspace(args.workspace)
 
     if args.remind:
         ts = send_reminder(message=args.remind)
@@ -365,13 +488,13 @@ def main() -> None:
             sys.exit(1)
 
     if args.files:
-        upload_slack_files(
+        file_id = upload_slack_files(
             channel=args.channel,
             file_paths=args.files,
             message=message,
             thread_ts=args.thread_ts,
         )
-        sys.exit(0)
+        sys.exit(0 if file_id else 1)
 
     if not message:
         print("❌ --message or --message-file required", file=sys.stderr)

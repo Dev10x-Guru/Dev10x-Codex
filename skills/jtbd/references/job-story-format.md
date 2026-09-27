@@ -7,7 +7,9 @@ Source: https://jtbd.info/replacing-the-user-story-with-the-job-story-af7cdee10c
 **When** [situation], **[actor] wants to** [motivation], **so [beneficiary] can** [expected outcome].
 
 The actor and beneficiary may be the same or different roles. Always name them
-explicitly — never use "I", "we", or "they".
+explicitly with a concrete domain role — never first-person ("I", "we") and
+never a faceless "the user". Once the actor is named, an anaphoric
+back-reference in the outcome clause ("so they can …") is fine.
 
 ## Language
 
@@ -54,13 +56,39 @@ Bad:  "so the system supports ACH"
 
 ### 5. Name Actors Explicitly
 
-Use role names instead of "I", "we", or "they" — a named persona ("the
-merchant", "the billing admin") adds context at a glance.
-When the actor who triggers the action differs from the beneficiary
-who gains the value, name both:
+Always name a concrete domain role ("the merchant", "the billing admin") —
+never first-person "I"/"we" and never a faceless "the user". A named role
+adds context at a glance. When the actor who triggers the action differs
+from the beneficiary who gains the value, name both:
 
 Good: "the billing admin wants to send the customer an SMS, so the customer can pay"
 Bad:  "I want to send them an SMS, so they can pay"
+
+### 6. Less Work, Not More Features
+
+The strongest motivations describe an outcome the actor gets with
+*less* effort — ideally none. "wants to see / view / check / manage X"
+usually describes operating the feature, not the job: seeing is effort
+spent on the way to the real outcome. Rewrite toward the end state
+("wants X to be obvious at a glance", "wants to be told when…",
+"wants the system to handle it").
+
+Exception: in analytics and reporting, insight itself is the
+deliverable — "see revenue broken down by channel" is legitimate there,
+paired with the decision it enables ("adjust budget allocation").
+
+The same trap hides in **transactional effort verbs** — "wants to
+pay / submit / enter / upload X". Nobody wants to *pay* or *submit*;
+those name work the actor performs, not the outcome they want. When the
+desire reads as an action the actor would gladly skip, name the end
+state instead — and re-check whether the role who actually benefits is a
+*different* one. A customer paying an invoice is the mechanism; the jobs
+are the dealer collecting payment without manual card entry (time saved)
+and the vendor capturing the revenue.
+
+Length is a leak detector: one clause each for situation, desire, and
+outcome. If the story cannot be read aloud in one breath to a
+non-technical stakeholder, it is carrying implementation detail.
 
 ## Anti-Patterns
 
@@ -68,9 +96,14 @@ Bad:  "I want to send them an SMS, so they can pay"
 |---|---|---|
 | Technical language | Not understandable by stakeholders | Use business/domain language |
 | Solution-focused "When" | Prescribes implementation | Describe the real-world trigger |
+| Invented dramatic "When" | A vivid crisis the sources never describe misstates the job | Use the mundane trigger the ticket actually names |
+| UI-verb motivation ("wants to see/view/manage") | Describes operating the feature, not the outcome | Name the end state: "wants X to be obvious", "wants to be told" (see Principle 6) |
+| Transactional-verb motivation ("wants to pay/submit/enter") | Names work the actor performs, not the outcome — nobody wants to pay; paying is the mechanism | Name the outcome and re-check the actor/beneficiary: "so the dealer can collect payment without manual card entry" (see Principle 6) |
+| Capability enumeration (fields, statuses, IDs) | The UI spec wearing a story costume — reader could reconstruct the screen | Collapse the list into the single outcome it buys |
+| Naming the replaced artifact ("instead of the old list/panel") | Contrasts with the previous implementation, not the user's pain | Contrast with the pain; prior broken *behavior* is fine, prior *component* is not |
 | Vague outcome | Not testable | Be specific about what improves |
-| No contrast with current state | Unclear why it matters | Show what's wrong today |
-| Using "I"/"they" instead of an actor | Hides who is impacted | Name the actor in third person: "the cashier", "the customer" |
+| No contrast with current state | Unclear why it matters | Show what's wrong today (an outcome like "keep support calls short" carries it implicitly) |
+| First-person "I"/"we", or a faceless "the user" | Hides who is impacted | Name a concrete role: "the cashier", "the customer" (see § Choosing the Actor in `references/git-jtbd.md`) |
 | Same actor when roles differ | Hides multi-stakeholder flow | Name both actor and beneficiary when they differ |
 
 ## Examples

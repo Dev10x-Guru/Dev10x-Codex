@@ -15,6 +15,7 @@ shift
 
 BODY=""
 REPO=""
+MILESTONE=""
 LABELS=()
 
 while [[ $# -gt 0 ]]; do
@@ -25,6 +26,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --label)
             LABELS+=("$2")
+            shift 2
+            ;;
+        --milestone)
+            MILESTONE="$2"
             shift 2
             ;;
         --repo)
@@ -50,6 +55,10 @@ fi
 for label in "${LABELS[@]}"; do
     ARGS+=(--label "$label")
 done
+
+if [[ -n "$MILESTONE" ]]; then
+    ARGS+=(--milestone "$MILESTONE")
+fi
 
 URL=$("${ARGS[@]}")
 NUMBER=$(echo "$URL" | grep -oP '/issues/\K[0-9]+$')

@@ -1,0 +1,191 @@
+---
+name: Dev10x:upgrade-cleanup
+description: >
+  Post-upgrade cleanup entry point — delegates to
+  `Dev10x:plugin-maintenance` in `full` mode. Updates plugin
+  version paths, ensures base permissions, migrates config files
+  (including global playbook overrides from
+  ~/.claude/memory/Dev10x/playbooks/ to ~/.config/Dev10x/playbooks/,
+  and databases.yaml from legacy/backup skill directories to
+  ~/.config/Dev10x/databases.yaml),
+  generalizes session-specific args, enumerates MCP tool globs,
+  refreshes script coverage, merges worktree rules, audits for
+  friction-causing patterns, and cleans redundant rules from
+  project settings files.
+  TRIGGER when: plugin version changes, permission prompts keep
+  appearing, config files are at old locations, or user asks to
+  fix permission friction.
+  DO NOT TRIGGER when: permissions are working correctly, or
+  you only need a fast bootstrap subset (use
+  `Dev10x:plugin-maintenance bootstrap` instead).
+user-invocable: true
+invocation-name: Dev10x:upgrade-cleanup
+allowed-tools:
+  - Skill
+  - mcp__plugin_Dev10x_cli__record_upgrade
+  - Bash(dev10x config migrate:*)
+  - Bash(dev10x config migrate-schema:*)
+---
+
+# Dev10x:upgrade-cleanup
+
+Top-level entry point for post-upgrade maintenance. The
+implementation lives in `Dev10x:plugin-maintenance`; this skill
+is a thin orchestrator that runs the **full** maintenance pass.
+
+## Why a separate skill
+
+`Dev10x:upgrade-cleanup` and `Dev10x:onboarding` share the same
+underlying maintenance logic but call it with different intent:
+
+| Caller | Mode | Focus |
+|--------|------|-------|
+| `Dev10x:onboarding` | `bootstrap` | Eliminate friction on the demoed skill set out of the box |
+| `Dev10x:upgrade-cleanup` (this skill) | `full` | Comprehensive post-upgrade hygiene |
+| Direct invocation of `Dev10x:plugin-maintenance` | either | Manual control |
+
+Keeping `upgrade-cleanup` as a named entry point preserves the
+discoverability users expect after running `claude plugin update`,
+without forcing them to remember the underlying skill name.
+
+## Execution
+
+Step 1 — migrate legacy Dev10x config out of `~/.claude/` to the
+XDG location (`~/.config/Dev10x/` on Linux/macOS, `%APPDATA%/Dev10x/`
+on Windows). Idempotent — skips paths already migrated. See GH-215.
+
+```
+Bash("dev10x config migrate")
+```
+
+Step 1b — convert durable prefs from schema v1 to v2 (GH-1166,
+ADR-0022). Independent of Step 1: a config already at the XDG path
+can still name a retired preset (`strict` / `guided`) or the
+retired `human_review` / `walk_away` keys, which the gate resolver
+stops honouring once the legacy translation seam is retired.
+Idempotent — a machine already on v2 writes nothing. Every
+ambiguous value converts to `supervisor_review: required`, so the
+run can only ever add oversight, never remove it.
+
+```
+Bash("dev10x config migrate-schema --dry-run")
+Bash("dev10x config migrate-schema")
+```
+
+Show the dry-run report first — it names each entry's resulting
+`supervisor_review`, dropped preset, and added overlays — then
+apply.
+
+Step 2 — delegate to the maintenance skill in `full` mode:
+
+```
+Skill(skill="Dev10x:plugin-maintenance", args="full")
+```
+
+The maintenance skill creates its own task list and runs
+steps 1–14 sequentially (update paths → migrate configs
+including playbook overrides → ensure base perms → generalize →
+enumerate MCP → script coverage → worktree merge → permission
+audit → clean project files → diff playbooks).
+
+The "Migrate config files" step (step 3) includes two sub-migrations:
+
+1. **Playbook overrides (GH-447):** global playbook overrides from
+   `~/.claude/memory/Dev10x/playbooks/` to
+   `~/.config/Dev10x/playbooks/`. Regular files are moved; symlinks
+   pointing into the new location are deleted; conflicts (destination
+   already exists) are surfaced rather than overwritten. The old
+   directory is removed once empty.
+
+2. **databases.yaml (GH-446):** stray `databases.yaml` files found in
+   legacy or hidden backup skill directories (e.g.,
+   `~/.claude/skills/.20260601-1100-backup/*/`) are migrated to
+   `~/.config/Dev10x/databases.yaml` — the preferred global location
+   since GH-448. The scan uses `find` (not glob `*`) to reach dotted
+   directories. Conflicts (destination already exists) are surfaced
+   rather than overwritten.
+
+Step 3 — install and register the userspace plugin-load guard
+(GH-874). The plugin can be silently skipped at session start by a
+Claude Code startup race; a **userspace** SessionStart hook runs even
+then and warns the user to reload. See
+[`references/plugin-load-race.md`](../../references/plugin-load-race.md)
+for the failure mode and diagnosis chain.
+
+1. **Copy the guard into userspace** (survives plugin-load failure —
+   it must NOT live under the versioned plugin cache):
+   - Source: `${CLAUDE_PLUGIN_ROOT}/hooks/scripts/plugin-load-guard.sh`
+   - Destination: `~/.claude/hooks/dev10x-plugin-load-guard.sh`
+     (create `~/.claude/hooks/` if absent; `chmod 0755` the copy)
+
+2. **Register it as a userspace SessionStart hook** in
+   `~/.claude/settings.json` (idempotent — skip if an entry whose
+   command ends in `dev10x-plugin-load-guard.sh` already exists):
+
+   ```json
+   {
+     "hooks": {
+       "SessionStart": [
+         {
+           "matcher": "*",
+           "hooks": [
+             {
+               "type": "command",
+               "command": "~/.claude/hooks/dev10x-plugin-load-guard.sh",
+               "timeout": 10
+             }
+           ]
+         }
+       ]
+     }
+   }
+   ```
+
+   Merge into any existing `SessionStart` array rather than replacing
+   it. If the harness does not tilde-expand the command, use the
+   absolute path (`/home/<user>/.claude/hooks/...`).
+
+3. **Remove stale versioned-path copies** — delete any prior guard
+   registration whose command points into a versioned plugin-cache path
+   (`~/.claude/plugins/cache/.../<version>/hooks/scripts/plugin-load-guard.sh`).
+   Such a copy defeats the guard's purpose: it disappears exactly when
+   plugin discovery is skipped.
+
+After the maintenance pass succeeds, record the plugin version
+so the SessionStart install-check stays silent until the next
+upgrade:
+
+```
+mcp__plugin_Dev10x_cli__record_upgrade()
+```
+
+The MCP tool reads the version from
+`$CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json` and writes it
+to `~/.config/Dev10x/version.yml` (post-GH-215). Skip this step if the
+maintenance pass reported failures — leaving `version.yml`
+stale keeps the upgrade prompt visible until the issue is
+resolved.
+
+## Post-upgrade verification (GH-1137)
+
+**A clean maintenance log is not proof the upgrade landed.** GH-1136
+was invisible for months because `ensure-base` reported "All base
+permissions already covered by global settings" while 137 of 285
+catalog rules were absent from every project file — a truthful log
+and a wrong outcome. Verify against the files, not the log.
+
+Run the four checks in
+[`references/post-upgrade-verification.md`](references/post-upgrade-verification.md):
+catalog reach across every worktree, no git-tracked settings file
+written, the `disableAutoMode` / `disableBypassPermissionsMode`
+string values intact, and a spot-check that a sanctioned command
+does not prompt.
+
+## Configuration
+
+See `Dev10x:plugin-maintenance` for `projects.yaml` location
+and base-permission semantics. Post-GH-215 the userspace config
+path is `~/.config/Dev10x/upgrade-cleanup-projects.yaml`. Old
+files at `~/.claude/skills/Dev10x:upgrade-cleanup/projects.yaml`
+and `~/.claude/memory/Dev10x/*` are migrated lazily on first
+read and explicitly by `dev10x config migrate`.

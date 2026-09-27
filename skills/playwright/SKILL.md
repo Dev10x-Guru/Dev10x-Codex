@@ -40,7 +40,7 @@ Wraps `uv run --with playwright python3` with:
 
 ## Writing Playwright Scripts
 
-Scripts live in `/tmp/claude/playwright/qa-<ticket>-<description>.py`. They must read
+Scripts live in `/tmp/Dev10x/playwright/qa-<ticket>-<description>.py`. They must read
 credentials from environment variables injected by the wrapper:
 
 ```python
@@ -48,10 +48,20 @@ import os
 
 CF_CLIENT_ID = os.environ["CF_CLIENT_ID"]
 CF_SECRET    = os.environ["CF_SECRET"]
-STAGING_URL  = os.environ.get("STAGING_URL", "https://staging-app.example.com")
-CRM_USERNAME = os.environ.get("CRM_USERNAME", "e2e_test_user")
+STAGING_URL  = os.environ["STAGING_URL"]
+CRM_USERNAME = os.environ["CRM_USERNAME"]
 CRM_PASSWORD = os.environ["CRM_PASSWORD"]
 ```
+
+All five are set by the wrapper, so read them with `os.environ[...]` and
+let a missing one fail loudly at import. A
+`os.environ.get("STAGING_URL", "<host>")` default here is **dead code**
+that reads as a working fallback — and while the wrapper's own
+assignment was unconditional, that dead default was exactly what made
+the resulting `ERR_NAME_NOT_RESOLVED` confusing to diagnose (GH-1130).
+
+To point a run at a different deployment, set `STAGING_URL` in the
+wrapper's environment; it now defers to a caller's value.
 
 ### Required Patterns
 
@@ -131,6 +141,14 @@ time.sleep(0.5)
 btn.click()
 ```
 
+For a **recorded** run, use `Annotator.tap(btn, announce=..., then=...)`
+from `lib/annotate.py` instead — it scrolls the target to the centre of
+the frame, asserts it is actually inside the viewport, points at it,
+narrates, acts, and holds a beat, in the order a viewer needs. Every click on the recorded path goes
+through it; a bare `locator.click()` cuts between two states with
+nothing showing what was pressed.
+See [`references/recording-for-humans.md`](references/recording-for-humans.md).
+
 **Video pacing** — add sleeps for reviewable playback:
 ```python
 time.sleep(1)  # after form fills
@@ -139,31 +157,79 @@ time.sleep(2)  # after result appears
 
 ### User Accounts
 
-| Account | Level | Dealer | Use for |
-|---|---|---|---|
-| `e2e_test_user` | 1 (USER) | 382 | Standard flows |
-| `janusz_ai` | 2 (ADMIN) | 585 | Admin-gated features (reopen/void WO) |
+**The account map lives in the secrets file, not in this script**
+(GH-1130). Accounts are keyed by an optional suffix shared between a
+username and a password key:
 
-`CRM_PASSWORD` -> `e2e_test_user`, `CRM_PASSWORD2` -> `janusz_ai`
+```sh
+CRM_USERNAME=<standard-level>   CRM_PASSWORD=…      # the default profile
+CRM_USERNAME2=<admin-level>     CRM_PASSWORD2=…     # --profile 2
+CRM_USERNAME_QA=<a bot>         CRM_PASSWORD_QA=…   # --profile _QA
+```
 
-To use `janusz_ai`, pass `--user janusz_ai` to the wrapper:
+The suffixes are the contract; the usernames are yours. Which accounts
+exist, and at what permission level, is a property of your deployment —
+so this table names roles rather than accounts on purpose.
+
+A third credential pair is two lines of config — no edit to the wrapper,
+and no fork (a fork loses the syntax validation and the
+no-hardcoded-credentials guarantee the wrapper exists to provide).
+
+Select one either by name, which is resolved against the file:
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/skills/playwright/scripts/run-playwright.sh \
-  /tmp/claude/playwright/qa-xxx.py --user janusz_ai
+  /tmp/Dev10x/playwright/qa-xxx.py --user <admin-level-username>
 ```
+
+or by suffix, which skips the lookup:
+```bash
+${CLAUDE_PLUGIN_ROOT}/skills/playwright/scripts/run-playwright.sh \
+  /tmp/Dev10x/playwright/qa-xxx.py --profile 2
+```
+
+`--user` with an unknown name lists what the secrets file does offer and
+names the two keys to add. A secrets file carrying only `CRM_PASSWORD`
+keeps working unsuffixed: the username falls back to `$CRM_USERNAME`,
+then `$PLAYWRIGHT_DEFAULT_USER`, then the wrapper's legacy built-in
+(`e2e_test_user`). That last one is a pre-GH-1130 default and matches
+only the deployment it came from — set `PLAYWRIGHT_DEFAULT_USER` rather
+than relying on it.
+
+Which account a given feature needs — permission level, dealer scoping —
+is a property of the deployment, not of this plugin. Record it in the
+project's own notes alongside the secrets file.
 
 ## Running Scripts
 
 ### Validate only (no browser)
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/skills/playwright/scripts/run-playwright.sh \
-  /tmp/claude/playwright/qa-xxx.py --validate-only
+  /tmp/Dev10x/playwright/qa-xxx.py --validate-only
 ```
 
 ### Execute
 ```bash
-${CLAUDE_PLUGIN_ROOT}/skills/playwright/scripts/run-playwright.sh /tmp/claude/playwright/qa-xxx.py
+${CLAUDE_PLUGIN_ROOT}/skills/playwright/scripts/run-playwright.sh /tmp/Dev10x/playwright/qa-xxx.py
 ```
+
+### Against a PR preview, or any non-default host
+
+Pass the per-run knobs as flags, never as an environment prefix:
+```bash
+${CLAUDE_PLUGIN_ROOT}/skills/playwright/scripts/run-playwright.sh \
+  /tmp/Dev10x/playwright/qa-xxx.py \
+  --staging-url https://<preview-host> \
+  --secrets-file <path-to-settings.secrets.env> \
+  --tail 40
+```
+
+`STAGING_URL=… run-playwright.sh …` prompts for approval on every run
+and cannot be silenced: an allow rule matches the command *prefix*, and
+an env prefix moves the command away from the script path the rule
+covers. `| tail -40` extends it past the rule for the same reason —
+`--tail <n>` prints the last *n* lines without a pipe, and still exits
+non-zero when the run failed. `STAGING_URL` and `PLAYWRIGHT_SECRETS_FILE`
+keep working for existing callers; a flag wins over them (GH-1263).
 
 The wrapper:
 1. Reads `/work/example/app-e2e/settings.secrets.env`
@@ -172,15 +238,26 @@ The wrapper:
 4. Runs `VIRTUAL_ENV="" uv run --with playwright python3 <script>`
 
 ### Install browsers (first time)
+
+Pin the version — an unbounded resolve picked up a release that refused
+to install a browser on a current Linux distro, reporting it as an OS
+problem rather than a resolver one (GH-1129):
+
 ```bash
-uv run --with playwright python3 -m playwright install chromium
+uv run --with 'playwright>=1.47,<2' python3 -m playwright install chromium
 ```
+
+`PLAYWRIGHT_SPEC` overrides the pin the wrapper runs scripts with.
 
 ## Common Failures
 
 | Symptom | Fix |
 |---|---|
 | `KeyError: CF_CLIENT_ID` | Script uses hardcoded creds — replace with `os.environ[...]` |
+| `net::ERR_NAME_NOT_RESOLVED` on the first `goto` | The run is pointed at the placeholder host. Set `STAGING_URL` in the wrapper's environment — it defers to a caller's value (GH-1130) |
+| `--user` rejects an account that exists | Its `CRM_USERNAME<suffix>` / `CRM_PASSWORD<suffix>` pair is missing from the secrets file. The error names the two keys to add |
+| Clicking Print hangs the run with no error | `window.print()` opens a browser modal that stops Playwright dead. Patch `print` in **both** realms — see [`references/print-capture.md`](references/print-capture.md) |
+| PII wandered into frame | `Annotator(page, redact=[...])` — opaque masks that survive navigation. See [`references/redaction.md`](references/redaction.md) |
 | Phone shows +61 | Prepend `1` for US country code |
 | Button click doesn't register | `scroll_into_view_if_needed()` + `time.sleep(0.5)` |
 | Screenshot misses snackbar | Screenshot immediately after `wait_for_selector`, not after sleep |
@@ -195,5 +272,5 @@ Dev10x:playwright
 ├── Called by: Dev10x:qa-self (Phase 3 execution)
 ├── Reads: /work/example/app-e2e/settings.secrets.env (credentials)
 ├── Scripts: run-playwright.sh (validate + inject + run)
-└── Output: /tmp/claude/playwright/  (screenshots, video)
+└── Output: /tmp/Dev10x/playwright/  (screenshots, video)
 ```

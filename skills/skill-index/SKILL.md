@@ -13,6 +13,7 @@ user-invocable: true
 invocation-name: Dev10x:skill-index
 allowed-tools:
   - Bash(${CLAUDE_PLUGIN_ROOT}/skills/skill-index/scripts/generate-all.sh:*)
+  - mcp__plugin_Dev10x_cli__generate_skill_index
   - Read(~/.claude/SKILLS.md)
   - Read(~/.claude/.skills-menu.txt)
 ---

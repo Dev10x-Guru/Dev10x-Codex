@@ -22,11 +22,11 @@ class TestCommandSubstitutionValidator:
     @pytest.mark.parametrize(
         "command",
         [
-            'gh api -f body="$(cat /tmp/claude/reply.txt)"',
-            'git commit -m "$(cat /tmp/claude/msg.txt)"',
+            'gh api -f body="$(cat /tmp/Dev10x/reply.txt)"',
+            'git commit -m "$(cat /tmp/Dev10x/msg.txt)"',
             'gh pr create --body "$(cat /tmp/pr-body.md)"',
             "gh api --method POST repos/o/r/pulls/1/comments"
-            ' -f body="$(cat /tmp/claude/reply-2.txt)"',
+            ' -f body="$(cat /tmp/Dev10x/reply-2.txt)"',
         ],
     )
     def test_blocks_cat_substitution(
@@ -40,12 +40,16 @@ class TestCommandSubstitutionValidator:
     @pytest.mark.parametrize(
         "command",
         [
-            "gh api -F body=@/tmp/claude/reply.txt",
-            "git commit -F /tmp/claude/msg.txt",
+            "gh api -F body=@/tmp/Dev10x/reply.txt",
+            "git commit -F /tmp/Dev10x/msg.txt",
             "gh pr create --body-file /tmp/pr-body.md",
             "cat /tmp/file.txt",
             'echo "$(git rev-parse HEAD)"',
             "basename $(git rev-parse --show-toplevel)",
+            # GH-309: $(cat ...) inside single quotes is literal text, not a
+            # subshell — must not block.
+            "echo 'docs say: use $(cat file) for piping'",
+            "gh api graphql -f query='{ node(id: \"$(cat foo)\") { id } }'",
         ],
     )
     def test_allows_safe_commands(

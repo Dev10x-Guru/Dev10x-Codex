@@ -19,6 +19,7 @@ allowed-tools:
   - Bash(rg:*)
   - Bash(${CLAUDE_PLUGIN_ROOT}/skills/skill-create/scripts/:*)
   - Bash(${CLAUDE_PLUGIN_ROOT}/skills/skill-index/scripts/:*)
+  - mcp__plugin_Dev10x_cli__generate_skill_index
 ---
 
 # Dev10x Skill Create

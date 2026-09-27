@@ -9,7 +9,7 @@ Common PlantUML patterns for architecture diagrams.
 java -jar ~/.local/bin/plantuml.jar diagram.puml
 
 # Generate all PUMLs in directory
-cd doc/adr/diagrams/NNNN/
+cd docs/adr/diagrams/NNNN/
 for f in *.puml; do java -jar ~/.local/bin/plantuml.jar "$f"; done
 ```
 

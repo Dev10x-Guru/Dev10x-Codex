@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import ClassVar
 
 from dev10x.domain import HookInput, HookResult
+from dev10x.domain.profile_tier import ProfileTier
+from dev10x.validators._quote_strip import quote_strip
+from dev10x.validators.base import ValidatorBase
 
 CAT_SUBSHELL_RE = re.compile(r"\$\(cat\s+\S+\)")
 
@@ -33,13 +37,15 @@ when the tool supports reading from a file directly."""
 
 
 @dataclass
-class CommandSubstitutionValidator:
-    name: str = "command-substitution"
+class CommandSubstitutionValidator(ValidatorBase):
+    name: ClassVar[str] = "command-substitution"
+    rule_id: ClassVar[str] = "DX002"
+    profile: ClassVar[ProfileTier] = ProfileTier.MINIMAL
 
     def should_run(self, inp: HookInput) -> bool:
-        return "$(cat " in inp.command
+        return "$(cat " in quote_strip(command=inp.command)
 
     def validate(self, inp: HookInput) -> HookResult | None:
-        if CAT_SUBSHELL_RE.search(inp.command):
+        if CAT_SUBSHELL_RE.search(quote_strip(command=inp.command)):
             return HookResult(message=BLOCK_MSG)
         return None

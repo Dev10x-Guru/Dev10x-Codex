@@ -13,12 +13,10 @@ allowed-tools:
   - Bash(git log:*)
   - Bash(git add:*)
   - Bash(git develop-log:*)
-  - Bash(ruff check:*)
-  - Bash(black --check:*)
-  - Bash(uv run:*)
-  - Bash(/tmp/claude/bin/mktmp.sh:*)
-  - Read(/tmp/claude/review/**)
-  - Write(/tmp/claude/review/**)
+  - Bash(pre-commit run:*)
+  - Bash(/tmp/Dev10x/bin/mktmp.sh:*)
+  - Read(/tmp/Dev10x/review/**)
+  - Edit(/tmp/Dev10x/review/**)
   - Bash(git commit:*)
 ---
 
@@ -31,7 +29,7 @@ Consume structured findings from `Dev10x:review` and create one
 ## Arguments
 
 - **findings file path** — path to the JSON findings file produced
-  by `Dev10x:review` (e.g., `/tmp/claude/review/findings-abc.json`)
+  by `Dev10x:review` (e.g., `/tmp/Dev10x/review/findings-abc.json`)
 
 ## When to Use
 
@@ -45,7 +43,8 @@ This skill follows `references/task-orchestration.md` patterns
 (Tier: Standard).
 
 **Auto-advance:** Complete each finding and immediately start the
-next. Never pause between findings.
+next — no checkpoints the resolver did not ask for. Never pause
+between findings.
 
 **REQUIRED: Create tasks before ANY work.** Execute at startup:
 
@@ -59,7 +58,8 @@ After reading findings, create one subtask per finding.
 
 Read the JSON findings file from the path argument. Parse the
 findings array. Filter to only `ERROR` and `WARNING` severity
-(skip `INFO`).
+(skip `INFO`). When a `confidence` field is present, also skip
+findings below the configured threshold (default: 70).
 
 Sort findings by file path to minimize context switches.
 
@@ -71,9 +71,13 @@ For each finding:
 2. **Implement the fix** — apply the suggested fix or implement
    a better solution based on the description
 3. **Validate the fix**:
-   - Run `ruff check` on the changed file
-   - Run `black --check` on the changed file
-   - If the fix introduces new lint/format errors, fix those too
+   - Run `pre-commit run --files <changed file>` — never inline
+     `ruff`/`black`/`mypy`/`isort` (GH-592, consistent with the
+     inline-linter block validator, GH-596)
+   - If a hook reports or auto-applies a lint/format change,
+     fold it into the same fixup
+   - If no `.pre-commit-config.yaml` exists, skip this validation
+     (no inline fallback) and note it in the finding's result
 4. **Stage the changes**: `git add <file>`
 5. **Create fixup commit** — find the original commit that
    introduced the finding's file and line using
@@ -122,6 +126,7 @@ Reads the same JSON format produced by `Dev10x:review`:
 [
   {
     "severity": "WARNING",
+    "confidence": 85,
     "source": "manual",
     "file": "src/auth/middleware.py",
     "line": 42,
@@ -133,7 +138,8 @@ Reads the same JSON format produced by `Dev10x:review`:
 ```
 
 Required fields: `file`, `line`, `description`
-Optional fields: `severity`, `source`, `suggested_fix`, `category`
+Optional fields: `severity`, `confidence`, `source`,
+`suggested_fix`, `category`
 
 ## Integration
 

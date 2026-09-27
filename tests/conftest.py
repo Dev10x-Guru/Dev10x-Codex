@@ -1,40 +1,158 @@
+import subprocess
+from collections.abc import Generator
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
+from factory.random import reseed_random
 
-from tests.fakers import (
-    BashHookInputFaker,
-    CompensationFaker,
-    ConfigFaker,
-    EditHookInputFaker,
-    HookInputFaker,
-    RuleFaker,
-)
+from dev10x.domain.claude_paths import ClaudeDir
+from dev10x.domain.common.result import ok
+from dev10x.domain.dev10x_paths import CONFIG_HOME_ENV_VAR, Dev10xConfigDir
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-@pytest.fixture()
-def hook_input_faker() -> type[HookInputFaker]:
-    return HookInputFaker
+def _repo_root_magicmock_files() -> set[Path]:
+    return {entry for entry in _REPO_ROOT.iterdir() if entry.name.startswith("<MagicMock")}
 
 
-@pytest.fixture()
-def bash_hook_input_faker() -> type[BashHookInputFaker]:
-    return BashHookInputFaker
+def _real_repo_head() -> str | None:
+    """HEAD SHA of the real repository this test session runs in.
+
+    Returns None when git is unavailable or _REPO_ROOT is not a checkout,
+    so the guard degrades to a no-op rather than erroring.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return result.stdout.strip()
 
 
-@pytest.fixture()
-def edit_hook_input_faker() -> type[EditHookInputFaker]:
-    return EditHookInputFaker
+@pytest.fixture(autouse=True)
+def _guard_real_repo_head_unchanged() -> Generator[None, None, None]:
+    """Fail the test if it moves the real repository's HEAD (GH-699).
+
+    A git rebase/reset whose cwd defaults to the real repo — instead of a
+    ``tmp_path`` sandbox — silently rewinds the branch under test and can
+    drop a commit before a push (observed dropping a commit twice while
+    shipping PR #698). Snapshot HEAD around every test; if it moved, move
+    the branch pointer back with ``reset --soft`` (restores the dropped tip
+    without touching the working tree, so local WIP is never clobbered) and
+    fail loudly naming the offending test so its unsandboxed git call can be
+    given ``cwd=tmp_path``.
+    """
+    before = _real_repo_head()
+    yield
+    after = _real_repo_head()
+    if before is None or after is None or before == after:
+        return
+    subprocess.run(
+        ["git", "reset", "--soft", before],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    pytest.fail(
+        f"Test rewound the real repo HEAD {before[:12]} -> {after[:12]} "
+        "(GH-699): a git rebase/reset ran against the real repository "
+        "instead of a tmp_path sandbox. The branch pointer was restored; "
+        "sandbox the offending git invocation with cwd=tmp_path.",
+        pytrace=False,
+    )
 
 
-@pytest.fixture()
-def rule_faker() -> type[RuleFaker]:
-    return RuleFaker
+@pytest.fixture(scope="session", autouse=True)
+def _guard_repo_root_magicmock_pollution() -> Generator[None, None, None]:
+    """Fail the session if a test leaks a MagicMock-named file at repo root.
+
+    When a mock's chained attribute (e.g. ``get_plan_path().with_suffix()``)
+    is passed to ``os.open()``/``write_text()``, the write lands at the
+    mock's repr, creating a literal ``<MagicMock name=... id=...>`` file in
+    the CWD that pollutes ``git add -A``. Catch and remove any such files so
+    they never reach a commit, then fail loudly so the offending mock is
+    fixed at the source (GH-332).
+    """
+    before = _repo_root_magicmock_files()
+    yield
+    leaked = sorted(entry for entry in _repo_root_magicmock_files() if entry not in before)
+    for entry in leaked:
+        entry.unlink()
+    assert not leaked, (
+        "Tests leaked MagicMock-named files at repo root (GH-332): "
+        f"{[entry.name for entry in leaked]}. A MagicMock was passed to a "
+        "file-write; configure the path mock to return a real tmp_path."
+    )
 
 
-@pytest.fixture()
-def compensation_faker() -> type[CompensationFaker]:
-    return CompensationFaker
+@pytest.fixture(autouse=True)
+def _reset_claude_dir_cache() -> None:
+    """Clear ClaudeDir's path cache to keep DEV10X_CLAUDE_HOME overrides isolated."""
+    ClaudeDir.reset_cache()
 
 
-@pytest.fixture()
-def config_faker() -> type[ConfigFaker]:
-    return ConfigFaker
+@pytest.fixture(autouse=True)
+def _isolate_dev10x_config_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Generator[None, None, None]:
+    """Point Dev10xConfigDir at an isolated tmp home (ADR-0018).
+
+    Durable session prefs now read the global ``~/.config/Dev10x/friction.yaml``
+    transitively via ``SessionYamlDocument._durable()``, and ``dev10x init`` /
+    ``dev10x session seed`` write it. Without isolation every session-config
+    test would read — and those commands would write — the developer's real
+    ``~/.config/Dev10x``. Tests that exercise default-root resolution override
+    this with their own ``monkeypatch.delenv`` (see ``test_dev10x_paths``).
+    """
+    monkeypatch.setenv(CONFIG_HOME_ENV_VAR, str(tmp_path / "dev10x-config-home"))
+    Dev10xConfigDir.reset_cache()
+    yield
+    Dev10xConfigDir.reset_cache()
+
+
+@pytest.fixture
+def stub_feature_branch() -> Generator[MagicMock, None, None]:
+    """Pin ``create_pr``'s branch-detection seam to a feature branch (GH-1124).
+
+    The GH-873 F1 guard refuses to open a PR when HEAD is on a base branch.
+    Left unstubbed, every ``create_pr`` test's verdict depends on which branch
+    CI happened to check out — green on a feature branch, red on a ``develop``
+    push, which left the base branch permanently red. Tests exercising
+    ``create_pr``'s *other* behaviour request this fixture so the guard is
+    never the thing under test; the guard keeps its own ambient-independent
+    coverage in ``TestCreatePrBaseBranchGuard``.
+    """
+    with patch("dev10x.domain.git_context.GitContext") as mock_git_context:
+        mock_git_context.return_value.branch = "janusz/GH-1124/test-isolation"
+        yield mock_git_context
+
+
+@pytest.fixture
+def stub_fixes_trailer_readback() -> Generator[AsyncMock, None, None]:
+    """Pin ``create_pr``'s post-create read-back to a compliant body (GH-1274).
+
+    ``create_pr`` re-reads the PR it just opened and refuses a body with
+    no ``Fixes:`` trailer. Tests exercising ``create_pr``'s *other*
+    behaviour mock ``async_run_script`` once for the whole call, so the
+    read-back would parse the create script's own stdout and every such
+    test would fail on a trailer that was never the subject. Same
+    contract as ``stub_feature_branch``: the guard keeps its own
+    coverage in ``TestCreatePrFixesTrailerReadback``.
+    """
+    with patch("dev10x.github.pr_get", new_callable=AsyncMock) as mock_pr_get:
+        mock_pr_get.return_value = ok({"body": "Story\n\nFixes: #1"})
+        yield mock_pr_get
+
+
+@pytest.fixture(autouse=True)
+def _seed_factory_faker() -> None:
+    """Reseed factory_boy's Faker before each test so generated values are
+    deterministic and a value-specific failure is reproducible (GH-570)."""
+    reseed_random("dev10x-tests")

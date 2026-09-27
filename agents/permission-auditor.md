@@ -44,135 +44,108 @@ For each registered hook:
 
 ### Phase 3: Allow Rule Classification
 
-Classify every allow rule into risk categories:
+Classify every allow rule into risk categories (DESTRUCTIVE,
+OVERLY_BROAD, CONTRADICTS_POLICY, SKILL_REQUIRED, HOOK_ENABLED,
+DEAD_RULE, WILDCARD_ESCAPE, PRIVILEGE_ESCALATION, REDUNDANT,
+SAFE). For each non-SAFE rule, note the specific dangerous
+command it permits, whether a deny rule could narrow it, and
+whether the rule should be replaced with granular alternatives.
 
-| Category | Criteria | Example |
-|----------|----------|---------|
-| **DESTRUCTIVE** | Permits irreversible operations with no skill coverage | `Bash(rm -rf:*)` allows recursive deletion |
-| **OVERLY_BROAD** | Single rule covers destructive + safe operations | `Bash(gh:*)` covers `gh repo delete` |
-| **CONTRADICTS_POLICY** | Rule conflicts with CLAUDE.md instructions | `git config:*` when CLAUDE.md says "NEVER update git config" |
-| **SKILL_REQUIRED** | Rule enables skill/worktree workflows — must not be removed | `Bash(git reset:*)` for rebase recovery in worktrees |
-| **HOOK_ENABLED** | Allow rule exists so a PreToolUse hook can fire its redirect message | `Bash(git push:*)` enabled for SkillRedirectValidator |
-| **DEAD_RULE** | Rule is overridden by a hook AND the hook does not depend on the allow rule to fire | `python3 -c "import json:*"` blocked by `block-python3-inline.py` |
-| **WILDCARD_ESCAPE** | Variable prefix acts as wildcard for any command | `Bash(VARNAME=:*)` matches `VARNAME=x; rm -rf /` |
-| **PRIVILEGE_ESCALATION** | Rule allows modifying permission settings themselves | `Write(~/.claude/**)` covers `settings.local.json` |
-| **REDUNDANT** | Duplicate of another rule | Two identical `curl -sI` entries |
-| **SAFE** | Appropriately scoped for its purpose | `Bash(git log:*)` |
+The HOOK_ENABLED vs DEAD_RULE distinction is critical: removing
+a HOOK_ENABLED rule replaces an educational redirect with a
+generic permission prompt. See ADR-0003 for the rationale.
 
-**HOOK_ENABLED vs DEAD_RULE distinction:** The permission layer
-runs before hooks. If a hook's redirect message depends on the
-allow rule passing silently (e.g., SkillRedirectValidator), the
-rule is `HOOK_ENABLED` — removing it replaces the educational
-redirect with a generic permission prompt. Only classify as
-`DEAD_RULE` when the hook blocks unconditionally regardless of
-whether the allow rule exists (e.g., `block-python3-inline.py`).
-See ADR-0003 for the full rationale.
+`dev10x permission audit` (PAP-6, GH-867) pre-computes these tokens.
 
-For each non-SAFE rule, note:
-- The specific dangerous command it permits
-- Whether a deny rule could narrow it
-- Whether the rule should be replaced with granular alternatives
+See [`references/agents/permission-auditor/classification.md`](../references/agents/permission-auditor/classification.md)
+for the full category table, criteria, examples, and the
+HOOK_ENABLED vs DEAD_RULE rule.
 
 ### Phase 4: Toxicity Pattern Detection
 
-For each allow rule classified as non-SAFE, determine if the issue is **structural** (no allow rule can fix it) or **rule-based** (fixable with rule changes):
+For each non-SAFE allow rule, determine if the issue is
+**structural** (no allow rule can fix it — fix the skill/hook
+pattern instead) or **rule-based** (fixable with allow/deny
+rule changes).
 
-**Structural patterns** (require skill/hook updates, not rule changes):
-- `PREFIX_POISONED_SUBSHELL`: `VAR=$(cmd) && script` — `$()` shifts prefix
-- `PREFIX_POISONED_CHAIN`: `mkdir -p /tmp && script` — `&&` shifts prefix
-- `PREFIX_POISONED_ENVVAR`: `ENV=val command` — env prefix breaks matching
-- `PREFIX_POISONED_COMMENT`: `# comment\ncommand` — `#` breaks all matching
-- `HOOK_BLOCKED_RETRY`: Pattern already blocked by hook, should never be attempted
+See [`references/agents/permission-auditor/classification.md`](../references/agents/permission-auditor/classification.md)
+for the structural pattern catalog (PREFIX_POISONED_*,
+HOOK_BLOCKED_RETRY), the rule-based pattern catalog
+(MISSING_DENY, NEEDS_GRANULAR, DEAD_RULE, HOOK_ENABLED), and
+the Known-Safe Patterns skip list (`git reset`, `git -C`, etc.)
+that must NOT be flagged.
 
-**Rule-based patterns** (fixable with allow/deny rule changes):
-- `MISSING_DENY`: Destructive variant lacks a deny override
-- `NEEDS_GRANULAR`: Broad rule should be split into safe subcommands
-- `DEAD_RULE`: Hook blocks what the rule permits (hook does not depend on the allow rule)
-- `HOOK_ENABLED`: Allow rule enables a hook's redirect message — do NOT recommend removal
+### Phase 4b: MCP Horizontal-Duplicate Detection (GH-371)
 
-### Known-Safe Patterns (Skip List)
+Run the `mcp-horizontal-duplicates` doctor strategy to find one logical
+capability served by several MCP installations under different prefixes
+— a catalog rule targeting one prefix does NOT cover the others.
+Severity: **LOW** (informational); offer consolidation, never force it.
 
-These allow rules are legitimate and must NOT be flagged as
-DESTRUCTIVE, OVERLY_BROAD, or CONTRADICTS_POLICY:
+See [`references/agents/permission-auditor/mcp-duplicates.md`](../references/agents/permission-auditor/mcp-duplicates.md)
+for the source-type table and the per-finding report steps.
 
-| Pattern | Classification | Rationale |
-|---------|---------------|-----------|
-| `Bash(git reset:*)` | SKILL_REQUIRED | Worktree rebase recovery needs `--hard`; skills gate destructive usage |
-| `Bash(git reset --hard:*)` | SKILL_REQUIRED | Explicit variant of above — same rationale |
-| `Bash(git reset --soft:*)` | SAFE | Non-destructive; moves HEAD only |
-| `Bash(git -C:*)` | SKILL_REQUIRED | Cross-repo targeting when CWD is a different worktree; CLAUDE.md forbids redundant `-C` (when CWD matches), not all `-C` usage |
+### Phase 4c: Worktree-Root Anchoring Audit (GH-376)
 
-When encountering these patterns during Phase 3, classify them
-per the table above — do not escalate to HIGH/CRITICAL.
+Check whether `.worktrees` parent directories are properly anchored across
+all CWD-keyed permission scopes. Three failure modes apply: workspace
+`additionalDirectories` anchoring at the leaf instead of the parent
+(MISSING_WORKTREES_PARENT / WORKTREE_LEAF_ANCHORING), bare-relative
+skill-script allow rules that silently target the wrong directory per
+worktree (RELATIVE_SKILL_SCRIPT), and the per-leaf skill-consent scope
+gap (upstream CC defect, GH-312 — informational only, not rule-fixable).
+Automated fix: `uvx dev10x permission doctor anchor-worktree-roots`.
+
+See [`references/agents/permission-auditor/worktree-anchoring.md`](../references/agents/permission-auditor/worktree-anchoring.md)
+for the failure-mode descriptions, detection steps, and severity table.
+
+### Phase 4d: Accepted-Findings Suppression (GH-1053)
+
+A proposal the maintainer already rejected must never be re-proposed.
+`dev10x permission audit` applies the accepted-findings catalog
+(shipped defaults + `~/.config/Dev10x/accepted-findings.yaml`) and
+renders each match under `## Suppressed by accepted-findings`. Carry
+those into Phase 7 **listed, not proposed** — never in the "Proposed
+changes" groups. The shipped set covers `git reset --hard`,
+`git push --force` / `-f`, and `git branch -D` / `-d` / `--delete`;
+proposing their removal fights `ensure-base`, which re-adds them from
+the baseline catalog in the same run. Catalog shape and accept/re-open
+semantics: the Accepted-Findings section of
+[`classification.md`](../references/agents/permission-auditor/classification.md).
 
 ### Phase 5: Deny Rule Gap Analysis
 
 Check for missing protection on known destructive operations.
 
-**IMPORTANT: Deny rules are absolute — they cannot be overridden by
-skills, hooks, or user approval. Only recommend deny rules for
-operations that should NEVER be permitted. For operations that are
-sometimes legitimate (e.g., via skills), recommend "ask" rules or
-note that hook protection is sufficient.**
+**IMPORTANT: Deny rules are absolute — they cannot be overridden
+by skills, hooks, or user approval. Only recommend deny rules
+for operations that should NEVER be permitted. For operations
+that are sometimes legitimate (e.g., via skills), recommend
+"ask" rules or note that hook protection is sufficient.**
 
-#### Step 1: Inventory hook and skill coverage
+Inventory hook/skill coverage first, then classify each
+destructive operation as **deny**, **ask**, **hook-protected**,
+or **skip**.
 
-Read the plugin's `hooks.json` and each hook script to build a
-coverage map. Also inventory skills that legitimately need
-dangerous-looking operations (e.g., `Dev10x:git` needs force-push,
-`update-config` needs settings writes, `Dev10x:gh-pr-monitor` needs
-`gh pr merge`).
-
-#### Step 2: Classify each destructive operation
-
-| Operation | Recommendation | Rationale |
-|-----------|---------------|-----------|
-| `git reset --hard` | **skip** | Skills use for rebase recovery in worktrees (SKILL_REQUIRED) |
-| `git checkout .` / `git restore .` | **ask** | Dangerous but not never-legitimate |
-| `git clean` | **ask** | Rarely legitimate, but not never |
-| `git push --force` (bare) | **ask** | `Dev10x:git` handles with branch checks |
-| `git push --force-with-lease` | **skip** | Legitimately used by skills |
-| Settings file writes | **skip** | `update-config`/`permission-maintenance` need this |
-| Hook/plugin file writes | **skip** | `update-config` needs this |
-| `rm -rf` on non-temp paths | **deny** | No legitimate skill usage |
-| Direct database writes | **deny** if not hook-protected | Check if `sql_safety.py` covers it |
-| `gh pr merge/close` | **skip** | Skills handle with safety gates |
-
-**Classification key:**
-- **deny** — Should NEVER succeed. No skill needs it, no hook covers it.
-- **ask** — Dangerous but sometimes legitimate. User prompted each time.
-- **hook-protected** — A PreToolUse hook validates contextually.
-  Recommend keeping the hook, not adding a redundant rule.
-- **skip** — Covered by skill safety logic. Do not recommend any rule.
+See [`references/agents/permission-auditor/destructive-ops.md`](../references/agents/permission-auditor/destructive-ops.md)
+for the full inventory steps, the per-operation matrix
+(`git reset --hard`, force-push, settings writes, `rm -rf`,
+`gh pr merge`, etc.), and the classification key.
 
 ### Phase 6: Instruction File Path Audit
 
-Scan CLAUDE.md files and memory files for hardcoded script paths
-that bypass skill invocations:
+Scan CLAUDE.md files and memory files for hardcoded script
+paths that bypass skill invocations. Flag paths in CLAUDE.md
+or memory files; exclude paths inside SKILL.md (skills
+legitimately reference their own scripts).
 
-**Files to scan:**
-- `CLAUDE.md` in project root and `.claude/` directories
-- `~/.claude/CLAUDE.md` (global instructions)
-- `~/.claude/projects/*/memory/**/*.md` (memory files)
+For each match: identify the parent skill and suggest the skill
+invocation name (or the MCP tool name when wrapped) as
+replacement.
 
-**Patterns to flag:**
-
-| Pattern | Severity | Rationale |
-|---------|----------|-----------|
-| `~/.claude/skills/*/scripts/*` | WARNING | Hardcoded skill script path — breaks on plugin updates |
-| `~/.claude/plugins/cache/*/*/skills/*/scripts/*` | WARNING | Resolved plugin cache path — ephemeral across versions |
-| `~/.claude/tools/*.py` called without skill context | LOW | May be intentional but worth noting |
-
-**For each match:**
-1. Identify the script's parent skill (from the path or nearby SKILL.md)
-2. Suggest the skill invocation name as replacement
-3. If the script is wrapped by an MCP tool, suggest the MCP tool name
-
-**Classification:**
-- Paths inside SKILL.md files are **excluded** (skills legitimately
-  reference their own scripts)
-- Paths in CLAUDE.md or memory files are **flagged** (instruction
-  leaks that bypass skill context)
+See [`references/agents/permission-auditor/instruction-paths.md`](../references/agents/permission-auditor/instruction-paths.md)
+for the file scan list, the pattern severity table, the
+per-match action steps, and the SKILL.md exclusion rule.
 
 ### Phase 7: Report & Propose
 
@@ -220,7 +193,7 @@ Present findings in a structured report:
 3. **Plugin hooks run alongside user hooks** — check for double execution and version drift
 4. **Variable assignment prefixes are wildcards** — `Bash(VAR=:*)` matches anything starting with `VAR=`, including `VAR=x; destructive_command`
 5. **`for` loop prefixes are wildcards** — `Bash(for x in:*)` pre-approves the entire loop body
-6. **Settings file write access requires nuance** — `Write(~/.claude/**)` without a deny on `settings*` is a concern, but skills like `update-config` and `permission-maintenance` legitimately need settings access. Recommend **ask** rules (not deny) for settings files when these skills are installed. Only recommend deny if no installed skill requires the access.
+6. **Settings file write access requires nuance** — `Write(~/.claude/**)` without a deny on `settings*` is a concern, but skills like `update-config` and `upgrade-cleanup` legitimately need settings access. Recommend **ask** rules (not deny) for settings files when these skills are installed. Only recommend deny if no installed skill requires the access.
 7. **Deny rules are absolute and non-overridable** — unlike ask rules (which prompt the user) or hooks (which can apply context-aware logic), deny rules cannot be bypassed by skills, hooks, or explicit user intent within a session. Always prefer ask rules over deny rules unless the operation should truly never succeed. Warn the user when proposing any deny rule.
 8. **Never propose allow rules for structurally broken patterns** — if a command is PREFIX_POISONED, the fix is the skill/hook pattern, not a wider rule
 9. **Script paths in instruction files are leaks** — `~/.claude/skills/*/scripts/*` or plugin cache paths in CLAUDE.md/memory files bypass skill context and break on version updates. Suggest the skill invocation name instead.

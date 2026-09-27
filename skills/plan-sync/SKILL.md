@@ -15,7 +15,9 @@ allowed-tools:
   - TaskList
   - TaskUpdate
   - Read
-  - Bash(${CLAUDE_PLUGIN_ROOT}/hooks/scripts/task-plan-sync.py:*)
+  - mcp__plugin_Dev10x_cli__plan_sync_set_context
+  - mcp__plugin_Dev10x_cli__plan_sync_json_summary
+  - mcp__plugin_Dev10x_cli__plan_sync_archive
 ---
 
 # Plan Sync — Reconcile Persisted Plan with Session State
@@ -82,25 +84,17 @@ TaskCreate(subject=<from plan>, description=<from plan>,
 
 For status mismatches, trust the session state (it's more
 recent) and update the plan file via:
-```bash
-task-plan-sync.py --set-context last_reconciled=<timestamp>
-```
+`mcp__plugin_Dev10x_cli__plan_sync_set_context(args=["last_reconciled=<timestamp>"])`
 
 ### Step 5: Update Plan Context (Optional)
 
 If the caller passes context arguments, store them:
 
-```bash
-task-plan-sync.py --set-context work_type=feature \
-    tickets='["GH-482"]' \
-    routing_table='{"commit":"Skill(Dev10x:git-commit)","create_pr":"Skill(Dev10x:gh-pr-create)","monitor_ci":"Skill(Dev10x:gh-pr-monitor)","push":"Skill(Dev10x:git)","groom":"Skill(Dev10x:git-groom)","branch":"Skill(Dev10x:ticket-branch)","verify_acceptance":"Skill(Dev10x:verify-acc-dod)"}'
-```
+`mcp__plugin_Dev10x_cli__plan_sync_set_context(args=["work_type=feature", "tickets=[\"GH-482\"]", "routing_table={...}"])`
 
 ### Step 6: Archive (if all complete)
 
 If all tasks in both plan and session are completed:
-```bash
-task-plan-sync.py --archive
-```
+`mcp__plugin_Dev10x_cli__plan_sync_archive()`
 
 Report: "Plan archived. All tasks completed."

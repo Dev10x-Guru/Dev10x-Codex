@@ -1,36 +1,48 @@
 #!/usr/bin/env bash
-# Create a unique temp file under /tmp/claude/<namespace>/.
+# Generate a unique temp path under /tmp/Dev10x/<namespace>/.
+#
+# Files: returns a path WITHOUT creating the file (use --create to
+# pre-create). This avoids the Write-tool overwrite gate firing on
+# every call (GH-39). Callers using the Write tool will create the
+# file fresh.
+# Directories: always created (the directory is the resource).
 #
 # Usage:
-#   mktmp.sh <namespace> <prefix> [.ext]
-#   mktmp.sh -d <namespace> <prefix>     # create a directory instead
+#   mktmp.sh <namespace> <prefix> [.ext]            # path only, no file
+#   mktmp.sh --create <namespace> <prefix> [.ext]   # pre-create empty file
+#   mktmp.sh -d <namespace> <prefix>                # create a directory
 #
 # Examples:
-#   mktmp.sh git commit-msg .txt         → /tmp/claude/git/commit-msg.XXXXXXXXXXXX.txt
-#   mktmp.sh git pr-review .json         → /tmp/claude/git/pr-review.XXXXXXXXXXXX.json
-#   mktmp.sh pr-monitor notify .txt      → /tmp/claude/pr-monitor/notify.XXXXXXXXXXXX.txt
-#   mktmp.sh skill-audit audit .md       → /tmp/claude/skill-audit/audit.XXXXXXXXXXXX.md
-#   mktmp.sh -d git groom               → /tmp/claude/git/groom.XXXXXXXXXXXX/
+#   mktmp.sh git commit-msg .txt         → /tmp/Dev10x/git/commit-msg.XXXXXXXXXXXX.txt
+#   mktmp.sh git pr-review .json         → /tmp/Dev10x/git/pr-review.XXXXXXXXXXXX.json
+#   mktmp.sh -d git groom                → /tmp/Dev10x/git/groom.XXXXXXXXXXXX/
 
 set -euo pipefail
 
 DIR_MODE=false
-if [[ "${1:-}" == "-d" ]]; then
-    DIR_MODE=true
+CREATE_FILE=false
+while [[ "${1:-}" == -* ]]; do
+    case "$1" in
+        -d) DIR_MODE=true ;;
+        --create) CREATE_FILE=true ;;
+        *) echo "mktmp.sh: unknown flag: $1" >&2; exit 2 ;;
+    esac
     shift
-fi
+done
 
-NAMESPACE="${1:?Usage: mktmp.sh [-d] <namespace> <prefix> [.ext]}"
-PREFIX="${2:?Usage: mktmp.sh [-d] <namespace> <prefix> [.ext]}"
+NAMESPACE="${1:?Usage: mktmp.sh [-d|--create] <namespace> <prefix> [.ext]}"
+PREFIX="${2:?Usage: mktmp.sh [-d|--create] <namespace> <prefix> [.ext]}"
 EXT="${3:-}"
 
-BASEDIR="/tmp/claude/$NAMESPACE"
+BASEDIR="/tmp/Dev10x/$NAMESPACE"
 mkdir -p "$BASEDIR"
 
 TEMPLATE="${PREFIX}.XXXXXXXXXXXX${EXT}"
 
 if $DIR_MODE; then
     mktemp -d --tmpdir="$BASEDIR" "$TEMPLATE"
-else
+elif $CREATE_FILE; then
     mktemp --tmpdir="$BASEDIR" "$TEMPLATE"
+else
+    mktemp --dry-run --tmpdir="$BASEDIR" "$TEMPLATE"
 fi

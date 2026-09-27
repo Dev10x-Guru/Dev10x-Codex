@@ -46,10 +46,8 @@ resources (in order, first match wins per resource type):
 
 ### Schema files
 
-1. `~/.claude/memory/Dev10x/db-*-schema.md` — global schema docs
+1. `~/.config/Dev10x/db-*-schema.md` — global schema docs
    (preferred, see `references/config-resolution.md`)
-2. `~/.claude/projects/<project>/memory/db-*-schema.md` — legacy
-   project-level schema docs (deprecated)
 
 ### Database configuration
 
@@ -58,9 +56,11 @@ search order. Key locations:
 
 1. `$DB_CONFIG` environment variable (explicit override)
 2. Plugin skill directory (`skills/db-psql/databases.yaml`)
-3. `~/.claude/memory/databases.yaml` — global, user-level config
-4. Sibling plugin skills (`skills/*/databases.yaml`)
-5. User skill directories (`~/.claude/skills/*/databases.yaml`)
+3. `~/.config/Dev10x/databases.yaml` — XDG; preferred global location
+4. `~/.claude/memory/Dev10x/databases.yaml` — deprecated fallback
+5. Sibling plugin skills (`skills/*/databases.yaml`)
+6. User skill directories (`~/.claude/skills/*/databases.yaml`)
+7. Marketplace plugins (`~/.claude/plugins/marketplaces/*/skills/*/databases.yaml`)
 
 ### Additional context
 
@@ -97,7 +97,7 @@ Always load available context before constructing queries.
 ## Schema Memory File Format
 
 Schema files should follow this template. Place them at
-`~/.claude/memory/Dev10x/db-<name>-schema.md` (preferred global
+`~/.config/Dev10x/db-<name>-schema.md` (preferred global
 path per `references/config-resolution.md`):
 
 ```markdown

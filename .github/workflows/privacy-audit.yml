@@ -1,0 +1,125 @@
+name: Privacy & Security Audit
+
+on:
+  pull_request:
+    branches: [develop]
+    paths:
+      - "src/**"
+      - "skills/**"
+      - "bin/**"
+      - "hooks/**"
+      - "servers/**"
+      - "commands/**"
+      - "PRIVACY_POLICY.md"
+      - ".github/workflows/privacy-audit.yml"
+      - "tests/skills/audit/test_privacy.py"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scanner-tests:
+    name: Scanner unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Run scanner unit tests
+        run: |
+          uv run --extra dev pytest tests/skills/audit/test_privacy.py \
+            -v --tb=short -o 'addopts='
+
+  changed-files:
+    name: Audit changed files
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Collect changed source files
+        id: changed
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          BASE_SHA="$(git merge-base "origin/${BASE_REF}" HEAD)"
+          git diff --name-only --diff-filter=AM "${BASE_SHA}" HEAD \
+            | grep -E '^(src|skills|bin|hooks|servers|commands)/.*\.(py|sh|md|yaml|yml|json|toml)$' \
+            > /tmp/changed-source.txt || true
+          echo "count=$(wc -l < /tmp/changed-source.txt)" >> "$GITHUB_OUTPUT"
+          if [ -s /tmp/changed-source.txt ]; then
+            echo "Changed source files:"
+            cat /tmp/changed-source.txt
+          else
+            echo "No source files changed in this PR."
+          fi
+
+      - name: Audit changed files
+        if: steps.changed.outputs.count != '0'
+        id: audit
+        run: |
+          set -euo pipefail
+          if xargs -a /tmp/changed-source.txt \
+            uv run --extra dev bin/check-privacy-policy.py \
+            > /tmp/audit-output.txt 2>&1; then
+            echo "violations=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "violations=true" >> "$GITHUB_OUTPUT"
+          fi
+          cat /tmp/audit-output.txt
+
+      - name: Comment on PR if violations found
+        if: steps.audit.outputs.violations == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "## Privacy & Security Audit"
+            echo
+            echo "This PR introduces external-service references that"
+            echo "are not documented in \`PRIVACY_POLICY.md\`, or adds"
+            echo "outbound-network imports to plugin source."
+            echo
+            echo "<details><summary>Audit output</summary>"
+            echo
+            echo '```'
+            cat /tmp/audit-output.txt
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+            echo "**To resolve:**"
+            echo
+            echo "- Add a row for each new service to the"
+            echo "  \"Third-party integrations\" table in"
+            echo "  \`PRIVACY_POLICY.md\`, or"
+            echo "- Suppress an intentional case with an inline marker:"
+            echo "  \`# privacy-audit: allow <service> — reason\`"
+          } > /tmp/audit-comment.md
+          gh pr comment "$PR_NUMBER" --body-file /tmp/audit-comment.md
+
+      - name: Fail job on violations
+        if: steps.audit.outputs.violations == 'true'
+        run: exit 1

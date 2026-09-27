@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from dev10x.hooks.task_plan_sync import _tool_outcome
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 HOOK = _REPO_ROOT / "hooks" / "scripts" / "task-plan-sync.py"
 
@@ -32,12 +34,12 @@ def _run_hook(
 
 
 def _plan_files(tmp_path: Path) -> list[Path]:
-    """Find plan.yaml in any .codex/session/ under CWD (the git repo)."""
+    """Find plan.yaml in any .claude/session/ under CWD (the git repo)."""
     toplevel = subprocess.check_output(
         ["git", "rev-parse", "--show-toplevel"],
         text=True,
     ).strip()
-    plan_path = Path(toplevel) / ".codex" / "session" / "plan.yaml"
+    plan_path = Path(toplevel) / ".claude" / "session" / "plan.yaml"
     if plan_path.exists():
         return [plan_path]
     return []
@@ -60,7 +62,7 @@ def _cleanup_plan() -> None:
         ["git", "rev-parse", "--show-toplevel"],
         text=True,
     ).strip()
-    plan_path = Path(toplevel) / ".codex" / "session" / "plan.yaml"
+    plan_path = Path(toplevel) / ".claude" / "session" / "plan.yaml"
     if plan_path.exists():
         plan_path.unlink()
     session_dir = plan_path.parent
@@ -76,6 +78,33 @@ def _clean_plan():
     _cleanup_plan()
     yield
     _cleanup_plan()
+
+
+class TestTheOutcomeSeam:
+    """The hook runs as a subprocess, so this seam needs in-process cover.
+
+    `_tool_outcome` is what lets a payload carrying only `tool_response`
+    reach the handler (GH-1309).
+    """
+
+    def test_a_structured_response_is_passed_through(self) -> None:
+        payload = {"tool_response": {"task": {"id": "3"}}}
+
+        assert _tool_outcome(payload=payload) == {"task": {"id": "3"}}
+
+    def test_a_rendered_result_still_wins(self) -> None:
+        payload = {"tool_result": "Task #9 created", "tool_response": {"task": {"id": "1"}}}
+
+        assert _tool_outcome(payload=payload) == "Task #9 created"
+
+    def test_a_wrapped_result_is_unwrapped(self) -> None:
+        """The older payload nested the rendered text under `content`."""
+        payload = {"tool_result": {"content": "Task #4 created"}}
+
+        assert _tool_outcome(payload=payload) == "Task #4 created"
+
+    def test_an_empty_payload_yields_nothing(self) -> None:
+        assert _tool_outcome(payload={}) == ""
 
 
 class TestTaskCreate:
@@ -111,6 +140,51 @@ class TestTaskCreate:
         assert task["subject"] == "Build feature"
         assert task["status"] == "pending"
         assert "created_at" in task
+
+    def test_a_structured_tool_response_persists_the_task(self) -> None:
+        """GH-1309: current Claude Code sends the created task, not prose.
+
+        The hook read `tool_result` and regex-matched the rendered string
+        a previous harness wrote. Against 2.1.263+ that field is absent,
+        so every `TaskCreate` was silently dropped — Claude Code's own
+        task list held the task, the hook exited 0, and `plan.yaml` had
+        no `tasks` key at all.
+        """
+        _run_hook(
+            payload={
+                "tool_name": "TaskCreate",
+                "tool_input": {"subject": "payload capture canary"},
+                "tool_response": {"task": {"id": "1", "subject": "payload capture canary"}},
+            },
+        )
+        plan = _read_plan_yaml(tmp_path=None)
+        assert len(plan["tasks"]) == 1
+        assert plan["tasks"][0]["id"] == "1"
+        assert plan["tasks"][0]["subject"] == "payload capture canary"
+
+    def test_an_integer_task_id_is_read_too(self) -> None:
+        """The id is JSON, so it may arrive unquoted."""
+        _run_hook(
+            payload={
+                "tool_name": "TaskCreate",
+                "tool_input": {"subject": "Numeric id"},
+                "tool_response": {"task": {"id": 7}},
+            },
+        )
+        plan = _read_plan_yaml(tmp_path=None)
+        assert plan["tasks"][0]["id"] == "7"
+
+    def test_a_response_without_a_task_creates_nothing(self) -> None:
+        """An unrecognised shape must not invent a task."""
+        result = _run_hook(
+            payload={
+                "tool_name": "TaskCreate",
+                "tool_input": {"subject": "No id anywhere"},
+                "tool_response": {"ok": True},
+            },
+        )
+        assert result.returncode == 0
+        assert _plan_files(tmp_path=None) == []
 
     def test_plan_metadata_initialized(self) -> None:
         _run_hook(
@@ -451,7 +525,7 @@ class TestArchive:
             ["git", "rev-parse", "--show-toplevel"],
             text=True,
         ).strip()
-        archive_dir = Path(toplevel) / ".codex" / "session" / "archive"
+        archive_dir = Path(toplevel) / ".claude" / "session" / "archive"
         if archive_dir.exists():
             import shutil
 
@@ -482,7 +556,7 @@ class TestArchive:
             ["git", "rev-parse", "--show-toplevel"],
             text=True,
         ).strip()
-        archive_dir = Path(toplevel) / ".codex" / "session" / "archive"
+        archive_dir = Path(toplevel) / ".claude" / "session" / "archive"
         _run_cli("--archive")
         assert archive_dir.exists()
         archives = list(archive_dir.glob("plan-*.yaml"))
@@ -523,7 +597,7 @@ class TestYamlRoundtrip:
         )
         files = _plan_files(tmp_path=None)
         assert len(files) == 1
-        assert ".codex/session/plan.yaml" in str(files[0])
+        assert ".claude/session/plan.yaml" in str(files[0])
 
     def test_json_summary_mode(self) -> None:
         _run_hook(

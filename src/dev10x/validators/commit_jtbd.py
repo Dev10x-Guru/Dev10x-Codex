@@ -14,8 +14,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, ClassVar
 
 from dev10x.domain import HookInput, HookResult
+from dev10x.domain.common.commit_subject import CommitSubject
+from dev10x.domain.common.result import ErrorResult, Result, err, ok
+from dev10x.domain.gitmoji import BYPASS_GITMOJI
+from dev10x.domain.profile_tier import ProfileTier
+from dev10x.validators.base import ValidatorBase
 
 _VERB_BASES = [
     "Add",
@@ -83,8 +89,8 @@ BLOCK_MSG = (
     "Update the commit message in the temp file and retry."
 )
 
+
 GIT_COMMIT_RE = re.compile(r"\bgit\s+commit\b")
-TICKET_RE = re.compile(r"^[A-Z]+-\d+\s+")
 
 
 def _expand_verbs(bases: list[str]) -> list[str]:
@@ -136,26 +142,19 @@ def _extract_title(command: str) -> str | None:
     return None
 
 
-def _strip_prefix(title: str) -> str:
-    i = 0
-    while i < len(title) and not title[i].isascii():
-        i += 1
-    desc = title[i:].strip()
-    desc = TICKET_RE.sub("", desc).strip()
-    return desc
-
-
-def _check_jtbd(title: str) -> tuple[bool, str]:
-    desc = _strip_prefix(title)
+def _check_jtbd(desc: str) -> Result[dict[str, Any]]:
     match = VERB_RE.match(desc)
     if match:
-        return False, match.group(1)
-    return True, ""
+        return err(match.group(1))
+    return ok({})
 
 
 @dataclass
-class CommitJtbdValidator:
-    name: str = "commit-jtbd"
+class CommitJtbdValidator(ValidatorBase):
+    name: ClassVar[str] = "commit-jtbd"
+    rule_id: ClassVar[str] = "DX008"
+    profile: ClassVar[ProfileTier] = ProfileTier.STRICT
+    bypass_gitmoji: frozenset[str] = BYPASS_GITMOJI
 
     def should_run(self, inp: HookInput) -> bool:
         return GIT_COMMIT_RE.search(inp.command) is not None
@@ -173,12 +172,16 @@ class CommitJtbdValidator:
         if title.startswith(("fixup!", "squash!", "Merge ")):
             return None
 
-        is_ok, verb = _check_jtbd(title)
-        if not is_ok:
+        subject = CommitSubject.parse(title)
+        if subject.gitmoji in self.bypass_gitmoji:
+            return None
+
+        result = _check_jtbd(subject.description)
+        if isinstance(result, ErrorResult):
             return HookResult(
                 message=BLOCK_MSG.format(
                     title=title,
-                    verb=verb,
+                    verb=result.error,
                     jtbd_verbs=JTBD_VERBS,
                 )
             )

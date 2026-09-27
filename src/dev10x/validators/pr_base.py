@@ -10,19 +10,22 @@ main > master > trunk). Allows --force to bypass.
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass
+from typing import ClassVar
 
+from dev10x import subprocess_utils
 from dev10x.domain import HookInput, HookResult
+from dev10x.domain.common.branch_name import BASE_BRANCH_PRIORITY
+from dev10x.domain.profile_tier import ProfileTier
+from dev10x.domain.rules.validation_rule import is_search_command
+from dev10x.validators.base import ValidatorBase
 
 GH_PR_CREATE_RE = re.compile(r"gh\s+pr\s+create")
 
-BRANCH_CANDIDATES = ["develop", "development", "main", "master", "trunk"]
-
 
 def _detect_base_branch() -> str | None:
-    for candidate in BRANCH_CANDIDATES:
-        result = subprocess.run(
+    for candidate in BASE_BRANCH_PRIORITY:
+        result = subprocess_utils.run(
             ["git", "rev-parse", "--verify", f"origin/{candidate}"],
             capture_output=True,
             text=True,
@@ -33,10 +36,24 @@ def _detect_base_branch() -> str | None:
 
 
 @dataclass
-class PrBaseValidator:
-    name: str = "pr-base"
+class PrBaseValidator(ValidatorBase):
+    name: ClassVar[str] = "pr-base"
+    rule_id: ClassVar[str] = "DX005"
+    profile: ClassVar[ProfileTier] = ProfileTier.MINIMAL
 
     def should_run(self, inp: HookInput) -> bool:
+        # A search tool naming `gh pr create` in its pattern is looking
+        # for the command, not running it — demanding a --base flag of
+        # `rg -n 'gh pr create --body-file' skills/` blocks the audit
+        # rather than the mistake (GH-1214 finding 6).
+        # That shape was observed, not hypothesised — the second of two
+        # live denials behind finding 6. DX005 needs its own call because
+        # it matches the raw string here and never reaches
+        # `MatchingRule.matches_command`, where the exemption already
+        # lived; hence `is_search_command` is public rather than fixed
+        # in place.
+        if is_search_command(command=inp.command):
+            return False
         return GH_PR_CREATE_RE.search(inp.command) is not None
 
     def validate(self, inp: HookInput) -> HookResult | None:

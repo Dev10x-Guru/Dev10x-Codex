@@ -1,0 +1,678 @@
+"""Gate policy resolver — presets over toggles (ADR-0016 spike).
+
+Single source of truth for "does this decision gate fire or
+auto-resolve?". Skills are policy-ignorant: they call the
+``resolve_gate`` MCP tool (which delegates here) instead of reading
+``friction_level`` / ``active_modes`` / ``walk_away`` and re-deriving
+gate behavior from prose.
+
+Resolution pipeline (ADR-0016 D-4, lowest to highest precedence):
+
+    plugin preset < project override < session preset choice
+                  < per-toggle session override < safety floors
+
+Baseline posture (ADR-0022 D-1): ``adaptive`` is the **sole shipped
+base preset** — auto-advance is the baseline, and every gate resolves
+to its recommended option unless a floor, a project pin, or a
+per-toggle override says otherwise. The ADR-0016 D-9 ``strict`` /
+``guided`` columns are retired; the postures they reached for are now
+expressed by ``supervisor_review`` (ADR-0022 D-2/D-3) and the existing
+project-tier ``.dev10x/gate-policy.yaml`` pins.
+
+The preset *mechanism* survives: user-defined presets in
+``~/.config/Dev10x/friction-presets.yaml`` and per-toggle overrides
+(ADR-0016 D-4) are untouched. Only the shipped three-way *choice* is
+gone, so a config naming ``strict`` or ``guided`` now raises
+:class:`UnknownPresetError` — loudly, rather than silently resolving at
+a more autonomous baseline (the FRIC-M3 migrator rewrites such configs).
+
+GH-1162 retired the read-compat seam that used to translate the v1
+vocabulary (``friction_level`` / ``walk_away`` / ``active_modes:
+solo-maintainer``) into presets and overlays. A config still speaking it
+is now REFUSED — see :func:`legacy_policy_keys` and
+:func:`legacy_config_message` — because the alternative is not a neutral
+fallback: resolving a ``friction_level: strict`` repo at the sole
+remaining baseline would hand it auto-merge.
+
+All functions are free of file I/O (ADR-0007 D3): the caller reads
+session/project configuration and passes parsed values in. Shipped
+preset value-maps live here as data; the planned
+``presets/friction/*.yaml`` files (ADR-0016 Q2) will hydrate the same
+structures at the infra tier.
+"""
+
+from __future__ import annotations
+
+import enum
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
+
+class GateEffect(enum.Enum):
+    """How a gate resolves for the current session (ADR-0016 D-6, D-9)."""
+
+    ASK = "ask"
+    AUTO_ADVANCE = "auto-advance"
+    SKIP = "skip"
+
+
+class UnknownToggleError(ValueError):
+    """Raised when a gate name does not map to a known toggle."""
+
+
+class UnknownPresetError(ValueError):
+    """Raised when a preset name is not shipped and not user-supplied."""
+
+
+AUTO_ADVANCE = "auto-advance"
+# Conditional toggle values — auto-advance when the condition holds, else ask.
+AUTO_ADVANCE_IF_BOT = "auto-advance-if-bot"
+AUTO_ADVANCE_IF_SAFE = "auto-advance-if-safe"
+AUTO_ADVANCE_IF_MERGED = "auto-advance-if-merged"
+AUTO_ADVANCE_IF_STALE_FREE = "auto-advance-if-stale-free"
+
+_ENUM_TOGGLES: frozenset[str] = frozenset(
+    {
+        "plan_approval",
+        "batch_layout",
+        "strategy_choice",
+        "artifact_preview",
+        "triage_response",
+        "thread_resolution",
+        "comment_hide",
+        "yagni_routing",
+        "shipping_continuation",
+        "request_review",
+        "external_notify",
+        "merge",
+        "completion_signoff",
+        "history_rewrite",
+        "workspace_choice",
+        "branch_cleanup",
+        "session_adoption",
+    }
+)
+
+_WEIGHT_TOGGLES: frozenset[str] = frozenset({"autofix_confidence", "batch_ambiguity_floor"})
+
+_BOOL_TOGGLES: frozenset[str] = frozenset({"zero_valid_autoflow", "anchor_recommendations"})
+
+_SETTING_TOGGLES: frozenset[str] = frozenset({"doubt_sink"})
+
+KNOWN_TOGGLES: frozenset[str] = _ENUM_TOGGLES | _WEIGHT_TOGGLES | _BOOL_TOGGLES | _SETTING_TOGGLES
+
+#: ``supervisor_review`` poles (ADR-0022 D-2). An enum rather than a
+#: boolean because the two are *states of the project*, not a negation of
+#: one another, and because a future third value has somewhere to go.
+SUPERVISOR_REVIEW_REQUIRED = "required"
+SUPERVISOR_REVIEW_NONE = "none"
+
+#: The overlay that declares a repo solo-shaped (ADR-0022 D-3). Repo shape
+#: is *read*, never declared afresh — adding a fourth way to say "solo"
+#: would re-grow the stack ADR-0022 collapses.
+SOLO_OVERLAY = "solo-maintainer"
+
+# Provenance labels for the four policy layers (GH-1252). A reason string
+# that names only the preset cannot be told apart from one where a
+# configured overlay contributed nothing — the reporter of GH-1252 read
+# `preset:adaptive` for a repo carrying two overlays and correctly
+# concluded the overlays were being discarded. They were not; the reason
+# string simply never named them.
+_LAYER_PRESET = "preset"
+_LAYER_OVERLAY_PREFIX = "overlay:"
+_LAYER_PROJECT = "project"
+_LAYER_SESSION = "session"
+
+
+def coerce_supervisor_review(value: object) -> str:
+    """Coerce a durable ``supervisor_review`` value to one of the two poles.
+
+    Only the exact literal ``"none"`` disables the supervisor park.
+    Absent, unrecognised, or malformed values — ``"no"``, ``False``,
+    and deliberately also ``"None"`` — read as ``required``, so every
+    typo fails toward MORE oversight (ADR-0022 D-2, mirroring the
+    direction ``human_review`` took under ADR-0019). Case folding is
+    withheld on purpose: ``"None"`` is far likelier to be a stray
+    Python literal than a considered "no supervisor reads this repo".
+    Surrounding whitespace is stripped, since that is a YAML artefact
+    rather than a different answer.
+    """
+    if isinstance(value, str) and value.strip() == SUPERVISOR_REVIEW_NONE:
+        return SUPERVISOR_REVIEW_NONE
+    return SUPERVISOR_REVIEW_REQUIRED
+
+
+#: The single shipped base preset (ADR-0022 D-1). Named rather than
+#: inlined so the resolver, the config seam, and the docs cannot drift on
+#: which posture "the baseline" is.
+BASELINE_PRESET = "adaptive"
+
+#: The one-shot migrator that rewrites a pre-ADR-0022 durable config into
+#: schema v2 (GH-1166). A constant, so the resolver's refusal below, the
+#: CLI, and the docs cannot drift on the command an operator must run.
+MIGRATOR_COMMAND = "dev10x config migrate-schema"
+
+#: Base-preset names ADR-0022 D-1 retired. ``adaptive`` is deliberately
+#: absent: it still resolves, it is simply no longer a *choice*. A name
+#: outside this set that is not shipped is a user-defined preset from
+#: ``friction-presets.yaml`` and reaches :class:`UnknownPresetError`.
+RETIRED_PRESET_NAMES = ("strict", "guided")
+
+SHIPPED_PRESETS: dict[str, dict[str, str | int | bool]] = {
+    # ADR-0022 D-1: the sole shipped baseline. Its toggle values are
+    # unchanged from the ADR-0016 D-10 table's right-hand column, including
+    # the author-keyed `auto-advance-if-bot` values for the batch gates
+    # (triage_response / thread_resolution / comment_hide, GH-745 F4):
+    # bot-authored threads auto-advance, human-authored threads gate —
+    # replying to or hiding a teammate's comment is a social act, not a
+    # mechanical step. Retiring `strict`/`guided` retires no behaviour
+    # `adaptive` had.
+    BASELINE_PRESET: {
+        "plan_approval": AUTO_ADVANCE,
+        "batch_layout": AUTO_ADVANCE,
+        "strategy_choice": AUTO_ADVANCE,
+        "artifact_preview": AUTO_ADVANCE,
+        "triage_response": AUTO_ADVANCE_IF_BOT,
+        "thread_resolution": AUTO_ADVANCE_IF_BOT,
+        "comment_hide": AUTO_ADVANCE_IF_BOT,
+        "yagni_routing": AUTO_ADVANCE,
+        "shipping_continuation": AUTO_ADVANCE,
+        "request_review": AUTO_ADVANCE,
+        "external_notify": "ask",
+        "merge": AUTO_ADVANCE,
+        "completion_signoff": AUTO_ADVANCE,
+        "history_rewrite": AUTO_ADVANCE_IF_SAFE,
+        "workspace_choice": AUTO_ADVANCE,
+        "branch_cleanup": AUTO_ADVANCE_IF_MERGED,
+        "session_adoption": AUTO_ADVANCE_IF_STALE_FREE,
+        "zero_valid_autoflow": True,
+        "autofix_confidence": 70,
+        "batch_ambiguity_floor": 3,
+        "anchor_recommendations": True,
+        "doubt_sink": "pr-description",
+    },
+}
+
+# Overlay presets — sparse patches applied on top of a base preset.
+SHIPPED_OVERLAYS: dict[str, dict[str, str | int | bool]] = {
+    "solo-maintainer": {
+        "request_review": "skip",
+        "external_notify": "skip",
+        "merge": AUTO_ADVANCE,
+    },
+    "afk": {
+        "session_adoption": AUTO_ADVANCE,
+        "doubt_sink": "pr-description",
+    },
+}
+
+
+@dataclass(frozen=True)
+class GateContext:
+    """Facts about the concrete gate instance, supplied by the skill.
+
+    Every field is optional — an omitted fact resolves in the *safe*
+    direction (unknown author is human, unknown reversibility is not
+    provably safe, unknown staleness is stale).
+    """
+
+    author_type: str | None = None  # "bot" | "human" | None (= human)
+    destructive: bool = False
+    irreversible: bool = False
+    cross_author: bool = False
+    secret_access: bool = False
+    privacy_disclosure: bool = False
+    blocking: bool = False
+    provably_safe: bool = False  # history_rewrite: fixup-only groom etc.
+    branch_merged: bool = False  # branch_cleanup: tip reachable from base
+    session_stale: bool = True  # session_adoption: yaml mismatches work
+    overlap_signals: int | None = None
+    confidence: int | None = None
+    valid_fixup_count: int | None = None
+    # Must the supervisor read this PR before the next step is allowed
+    # (ADR-0022 D-2)? ``required`` | ``none``. Defaults to ``required`` so
+    # an unconfigured repo — and every typo — fails toward MORE oversight.
+    supervisor_review: str = SUPERVISOR_REVIEW_REQUIRED
+    # Has the supervisor already signed off on the commits under review?
+    # Carried by the durable ``review:cleared`` PR label (GH-1008, ADR-0022
+    # D-5) and read by the infra tier; ``False`` — the safe pole — keeps the
+    # floor standing when the label cannot be read at all.
+    supervisor_cleared: bool = False
+
+
+@dataclass(frozen=True)
+class GateResolution:
+    """The resolver's answer for one gate instance (wire-shaped)."""
+
+    gate: str
+    effect: GateEffect
+    resolved_option: str | None
+    log_to: str
+    reason: str
+    floors_applied: list[str] = field(default_factory=list)
+    anchor_recommendations: bool = True
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "gate": self.gate,
+            "effect": self.effect.value,
+            "resolved_option": self.resolved_option,
+            "log_to": self.log_to,
+            "reason": self.reason,
+            "floors_applied": self.floors_applied,
+            "anchor_recommendations": self.anchor_recommendations,
+        }
+
+    def visible_record(self) -> str | None:
+        """The D-7 one-line transcript record for an auto-advance (ADR-0016).
+
+        Returns ``None`` for ``ask``/``skip`` — only auto-advances need a
+        visible record so a present supervisor can notice and override
+        mid-flight. Silent auto-advance is a compliance bug (D-7); the
+        infra tier both surfaces this string and appends it to the audit
+        log + ``doubt_sink``.
+        """
+        if self.effect is not GateEffect.AUTO_ADVANCE:
+            return None
+        return f'⚙ gate:{self.gate} auto-advance → "{self.resolved_option}" ({self.reason})'
+
+
+# Every other floor fires on something about the ACTION — a secret, an
+# irreversible write, a cross-author push — so its `ask` is self-explanatory
+# and has no config escape by design. `supervisor_review` is the exception:
+# it fires on a durable CONFIGURATION fact, and the operator who trips it
+# has usually just composed the baseline plus `[solo-maintainer, afk]` and
+# been promised "full walk-away, merges included". They get an `ask` naming
+# a floor, with nothing to say that a project key rather than the preset is
+# holding it (GH-1056) — so an unattended run freezes with no actionable
+# diagnosis. Name the remedy in the reason. The floor does NOT move: a
+# session overlay must never lift a durable project fact (ADR-0019, retained
+# by ADR-0022 D-5), because "who reads this PR" is a property of the repo,
+# not of how this session was launched.
+_FLOOR_REMEDIES = {
+    "supervisor_review": (
+        "the supervisor reads this PR before the next step — add the "
+        "review:cleared label once they have (Dev10x:gh-pr-request-review "
+        "writes it), or set supervisor_review: none in the matching "
+        "projects[] entry of ~/.config/Dev10x/friction.yaml if they do not"
+    ),
+}
+
+
+def supervisor_review_gate(*, solo_repo: bool) -> str:
+    """The gate ``supervisor_review`` floors, given the repo's shape.
+
+    ADR-0022 D-3: the same setting gates a *different* toggle depending on
+    repo shape. In a solo repo the supervisor is the last reader before
+    merge; in a team repo they are the *first* reader, before teammates are
+    asked to spend time — so ``required`` precedes the team request rather
+    than replacing it.
+    """
+    return "merge" if solo_repo else "request_review"
+
+
+def _floors(*, gate: str, context: GateContext, solo_repo: bool = False) -> list[str]:
+    """Safety floors — deny-overrides; ``ask`` regardless of any toggle."""
+    floors: list[str] = []
+    if context.secret_access:
+        floors.append("secret_access")
+    if context.destructive and context.irreversible:
+        floors.append("destructive_irreversible")
+    if context.cross_author:
+        floors.append("cross_author_push")
+    if context.privacy_disclosure:
+        floors.append("privacy_disclosure")
+    if context.blocking:
+        floors.append("blocking")
+    # ADR-0019 behaviour 3 (GH-1000), renamed and generalised by ADR-0022
+    # D-2: the `human_review` boolean's floor is this one. Its other two
+    # consequences remain skill concerns, not gate concerns.
+    #
+    # ADR-0022 D-5. Expressed as a floor precisely because a floor can only
+    # ever force `ask` — that is what keeps `supervisor_review` a
+    # PRECONDITION for autonomy and never a grant of it. The floor lifts
+    # only on a positive sign-off signal (the `review:cleared` label,
+    # GH-1163); it is not lifted by `supervisor_review` being read from a
+    # caller-supplied context, which the infra tier drops unconditionally.
+    if (
+        gate == supervisor_review_gate(solo_repo=solo_repo)
+        and context.supervisor_review == SUPERVISOR_REVIEW_REQUIRED
+        and not context.supervisor_cleared
+    ):
+        floors.append("supervisor_review")
+    return floors
+
+
+def _merge_layers(
+    *,
+    preset: str,
+    overlays: list[str],
+    project_overrides: dict[str, str | int | bool],
+    session_overrides: dict[str, str | int | bool],
+    shipped_presets: dict[str, dict[str, str | int | bool]] | None = None,
+    shipped_overlays: dict[str, dict[str, str | int | bool]] | None = None,
+    user_presets: dict[str, dict[str, str | int | bool]] | None = None,
+) -> tuple[dict[str, str | int | bool], dict[str, str]]:
+    """Merge the four policy layers, returning values AND their provenance.
+
+    The second element maps each toggle to the label of the layer that
+    supplied its winning value. Without it a reason string can only name
+    the preset, so an overlay-supplied value is indistinguishable from a
+    baseline one — which is how GH-1252 came to be filed as "overlays are
+    inert" against a resolver that applies them correctly.
+    """
+    # The shipped maps default to the domain constants so pure-domain
+    # callers/tests need no I/O; the infra tier injects the YAML-hydrated
+    # maps (ADR-0016 D-1) at the MCP boundary. A drift-guard test keeps
+    # the two identical.
+    base_presets = SHIPPED_PRESETS if shipped_presets is None else shipped_presets
+    base_overlays = SHIPPED_OVERLAYS if shipped_overlays is None else shipped_overlays
+    presets = {**base_presets, **(user_presets or {})}
+    if preset not in presets:
+        # A retired name is not a typo — it is a v1 config that never ran
+        # the migrator, so name the migrator rather than only the shipped
+        # set (GH-1162). Every other unknown name stays a plain typo.
+        hint = (
+            f" — {preset!r} was retired by ADR-0022; run `{MIGRATOR_COMMAND}`"
+            if preset in RETIRED_PRESET_NAMES
+            else ""
+        )
+        raise UnknownPresetError(
+            f"Unknown preset {preset!r}; shipped: {sorted(base_presets)}{hint}"
+        )
+    resolved = dict(presets[preset])
+    sources = dict.fromkeys(resolved, _LAYER_PRESET)
+    for overlay in overlays:
+        if overlay not in base_overlays:
+            raise UnknownPresetError(
+                f"Unknown overlay {overlay!r}; shipped: {sorted(base_overlays)}"
+            )
+        patch = base_overlays[overlay]
+        resolved.update(patch)
+        sources.update(dict.fromkeys(patch, f"{_LAYER_OVERLAY_PREFIX}{overlay}"))
+    resolved.update(project_overrides)
+    sources.update(dict.fromkeys(project_overrides, _LAYER_PROJECT))
+    resolved.update(session_overrides)
+    sources.update(dict.fromkeys(session_overrides, _LAYER_SESSION))
+    return resolved, sources
+
+
+@dataclass(frozen=True)
+class _Conditional:
+    """A conditional toggle value: a predicate plus a reason-fact renderer.
+
+    ``predicate`` decides auto-advance (True) vs ask (False) from the gate
+    context; ``fact`` renders the context fact appended to the reason
+    string (e.g. ``author=bot``), given the context and whether the
+    predicate matched. Adding a new ``AUTO_ADVANCE_IF_*`` value is now a
+    table entry, not another copy-pasted branch (audit #845).
+    """
+
+    predicate: Callable[[GateContext], bool]
+    fact: Callable[[GateContext, bool], str]
+
+
+def _bool_fact(key: str) -> Callable[[GateContext, bool], str]:
+    return lambda _context, matched: f"{key}={'true' if matched else 'false'}"
+
+
+def _author_fact(context: GateContext, matched: bool) -> str:
+    return "author=bot" if matched else f"author={context.author_type or 'human'}"
+
+
+# Conditional toggle value → (predicate, reason-fact). The predicate's
+# truth selects auto-advance; ``fact`` mirrors the exact reason-string
+# suffix each branch produced before the table existed.
+_CONDITIONAL_TOGGLES: dict[str, _Conditional] = {
+    AUTO_ADVANCE_IF_BOT: _Conditional(
+        predicate=lambda c: (c.author_type or "human") == "bot",
+        fact=_author_fact,
+    ),
+    AUTO_ADVANCE_IF_SAFE: _Conditional(
+        predicate=lambda c: c.provably_safe,
+        fact=_bool_fact("safe"),
+    ),
+    AUTO_ADVANCE_IF_MERGED: _Conditional(
+        predicate=lambda c: c.branch_merged,
+        fact=_bool_fact("merged"),
+    ),
+    AUTO_ADVANCE_IF_STALE_FREE: _Conditional(
+        predicate=lambda c: not c.session_stale,
+        fact=lambda _context, matched: f"stale={'false' if matched else 'true'}",
+    ),
+}
+
+
+def _apply_conditions(
+    *, gate: str, value: str, context: GateContext, toggles: dict[str, str | int | bool]
+) -> tuple[GateEffect, str]:
+    """Resolve conditional enum values against the gate context."""
+    if value == "skip":
+        return GateEffect.SKIP, f"{gate}=skip"
+    if value == "ask":
+        return GateEffect.ASK, f"{gate}=ask"
+    conditional = _CONDITIONAL_TOGGLES.get(value)
+    if conditional is not None:
+        matched = conditional.predicate(context)
+        effect = GateEffect.AUTO_ADVANCE if matched else GateEffect.ASK
+        return effect, f"{gate}={value} {conditional.fact(context, matched)}"
+    if value == AUTO_ADVANCE:
+        return _weight_conditions(gate=gate, context=context, toggles=toggles)
+    raise UnknownToggleError(f"Unknown value {value!r} for toggle {gate!r}")
+
+
+def _weight_conditions(
+    *, gate: str, context: GateContext, toggles: dict[str, str | int | bool]
+) -> tuple[GateEffect, str]:
+    """Weight toggles and the zero-VALID bool condition plain auto-advance."""
+    if gate == "batch_layout" and context.overlap_signals is not None:
+        floor = int(toggles["batch_ambiguity_floor"])
+        if context.overlap_signals < floor:
+            return (
+                GateEffect.ASK,
+                f"{gate}={AUTO_ADVANCE} signals={context.overlap_signals}<floor={floor}",
+            )
+        return (
+            GateEffect.AUTO_ADVANCE,
+            f"{gate}={AUTO_ADVANCE} signals={context.overlap_signals}>=floor={floor}",
+        )
+    if (
+        gate in {"triage_response", "thread_resolution", "comment_hide"}
+        and context.valid_fixup_count == 0
+        and not bool(toggles["zero_valid_autoflow"])
+    ):
+        return GateEffect.ASK, f"{gate}={AUTO_ADVANCE} zero_valid_autoflow=0"
+    return GateEffect.AUTO_ADVANCE, f"{gate}={AUTO_ADVANCE}"
+
+
+def _reason_prefix(*, preset: str, overlays: list[str], source: str) -> str:
+    """Render the layer-provenance prefix of a reason string (GH-1252).
+
+    Keeps ``preset:<name>`` leading in every form so existing readers and
+    the audit log's record line stay parseable, then names the layer that
+    actually won. When the preset wins but overlays are in play, the
+    overlays are listed rather than omitted — "these were applied and
+    none of them claims this gate" is the fact a reader needs, and its
+    absence is what made a working resolver look broken.
+    """
+    base = f"preset:{preset}"
+    if source != _LAYER_PRESET:
+        return f"{base} via {source}"
+    if overlays:
+        return f"{base} overlays=[{','.join(overlays)}]"
+    return base
+
+
+def resolve_gate(
+    *,
+    gate: str,
+    context: GateContext,
+    preset: str,
+    overlays: list[str] | None = None,
+    project_overrides: dict[str, str | int | bool] | None = None,
+    session_overrides: dict[str, str | int | bool] | None = None,
+    shipped_presets: dict[str, dict[str, str | int | bool]] | None = None,
+    shipped_overlays: dict[str, dict[str, str | int | bool]] | None = None,
+    user_presets: dict[str, dict[str, str | int | bool]] | None = None,
+) -> GateResolution:
+    """Resolve one decision gate to ask / auto-advance / skip (ADR-0016).
+
+    Pipeline: merge layers (preset → overlays → project → session
+    per-toggle), evaluate conditional values against ``context``, then
+    apply safety floors — floors always win (deny-overrides). The
+    ``shipped_presets`` / ``shipped_overlays`` maps default to the domain
+    constants; the infra tier injects the YAML-hydrated maps (ADR-0016
+    D-1).
+
+    Conditional toggle values (``auto-advance-if-*``) resolve through the
+    ``_CONDITIONAL_TOGGLES`` table, whose entries are the *function-form*
+    of a Policy Rule (ADR-0007): a ``GateContext -> bool`` predicate paired
+    with a reason-fact renderer, rather than a persisted ``PolicyRule``
+    object. The predicate's truth selects auto-advance vs ask; safety
+    floors still override the result.
+    """
+    if gate not in _ENUM_TOGGLES:
+        raise UnknownToggleError(f"Unknown gate {gate!r}; known: {sorted(_ENUM_TOGGLES)}")
+    active_overlays = list(overlays or [])
+    toggles, toggle_sources = _merge_layers(
+        preset=preset,
+        overlays=active_overlays,
+        project_overrides=dict(project_overrides or {}),
+        session_overrides=dict(session_overrides or {}),
+        shipped_presets=shipped_presets,
+        shipped_overlays=shipped_overlays,
+        user_presets=user_presets,
+    )
+    anchor = bool(toggles["anchor_recommendations"])
+    log_to = str(toggles["doubt_sink"])
+
+    # Repo shape is READ from the overlays already in play (ADR-0022 D-3),
+    # not declared afresh. These are the post-guard overlays: an
+    # `allowed_overlays` guard that dropped `solo-maintainer` leaves the repo
+    # reading as team-shaped, which floors `request_review` instead of
+    # `merge` — strictly the safer of the two effect points.
+    floors = _floors(gate=gate, context=context, solo_repo=SOLO_OVERLAY in active_overlays)
+    if floors:
+        reason = f"floor:{'+'.join(floors)} overrides preset:{preset}"
+        remedies = [_FLOOR_REMEDIES[name] for name in floors if name in _FLOOR_REMEDIES]
+        return GateResolution(
+            gate=gate,
+            effect=GateEffect.ASK,
+            resolved_option=None,
+            log_to=log_to,
+            reason=f"{reason} — {'; '.join(remedies)}" if remedies else reason,
+            floors_applied=floors,
+            anchor_recommendations=anchor,
+        )
+
+    value = str(toggles[gate])
+    effect, reason = _apply_conditions(gate=gate, value=value, context=context, toggles=toggles)
+    prefix = _reason_prefix(
+        preset=preset,
+        overlays=active_overlays,
+        source=toggle_sources.get(gate, _LAYER_PRESET),
+    )
+    return GateResolution(
+        gate=gate,
+        effect=effect,
+        resolved_option="Recommended" if effect is GateEffect.AUTO_ADVANCE else None,
+        log_to=log_to,
+        reason=f"{prefix} {reason}",
+        floors_applied=[],
+        anchor_recommendations=anchor,
+    )
+
+
+def legacy_policy_keys(
+    *,
+    friction_level: str | None,
+    walk_away: bool,
+    active_modes: list[str],
+    gate_preset: str | None,
+    gate_overlays: list[str],
+) -> list[str]:
+    """Name the pre-ADR-0022 keys still declaring this config's posture.
+
+    Empty means the config speaks v2 and resolves normally. Non-empty
+    means the retired read-compat seam (GH-1162) would have been the only
+    thing translating it, so the caller must refuse rather than resolve —
+    see :func:`legacy_config_message` for why refusing is the safe half.
+
+    Each detected key is one the seam actually consumed:
+
+    * ``friction_level`` — the seam's preset leg. Any value counts,
+      including a value the parser could not recognise: the shipped
+      three-way choice is gone, so *naming a posture at all* is v1.
+    * ``walk_away`` — the seam's afk-overlay leg.
+    * ``active_modes: solo-maintainer`` — the seam's solo-overlay leg, and
+      only when ``gate_overlays`` does not already carry that overlay. A
+      migrated config states it in both places (the migrator materialises
+      the overlay and leaves ``active_modes`` alone, since modes are a
+      playbook/DoD axis), so this fires exactly when the overlay would
+      otherwise be silently dropped.
+    * ``gate_preset`` naming a retired posture — caught here so the refusal
+      names the migrator before ``_merge_layers`` reports a bare unknown
+      preset.
+
+    Structural modes (``review-deferred``, ``swarm-child``) were never gate
+    concerns and are not v1 markers; a config carrying only those, or
+    nothing at all, resolves at the baseline exactly as before.
+    """
+    keys: list[str] = []
+    if friction_level is not None:
+        keys.append("friction_level")
+    if walk_away:
+        keys.append("walk_away")
+    if SOLO_OVERLAY in active_modes and SOLO_OVERLAY not in gate_overlays:
+        keys.append(f"active_modes: {SOLO_OVERLAY}")
+    if gate_preset in RETIRED_PRESET_NAMES:
+        keys.append(f"gate_preset: {gate_preset}")
+    return keys
+
+
+def legacy_config_message(*, keys: list[str]) -> str:
+    """The actionable refusal for a config :func:`legacy_policy_keys` flagged.
+
+    Refusing is the SAFE half of retiring the seam, and the half that is
+    easy to lose. The tempting alternative — resolve at the sole remaining
+    baseline — silently WIDENS autonomy on exactly the repos that had
+    asked for less: a repo pinned to ``friction_level: strict`` would come
+    up auto-merging. CI cannot catch that, because CI has no pre-ADR-0022
+    config to resolve.
+
+    So the message names the migrator command rather than the offending
+    key alone: the operator needs the remedy, not the diagnosis.
+    """
+    return (
+        f"Durable gate policy still uses pre-ADR-0022 keys ({', '.join(keys)}); "
+        "the read-compat seam that translated them was retired in GH-1162. "
+        f"Run `{MIGRATOR_COMMAND}` to convert ~/.config/Dev10x/friction.yaml "
+        "(and any legacy .claude/Dev10x/config.yaml) to schema v2 — "
+        "Dev10x:upgrade-cleanup Step 1b and Dev10x:plugin-doctor Step 0 run it "
+        "for you. Refusing to resolve at the baseline preset instead: a repo "
+        "that pinned a stricter posture would silently gain autonomy."
+    )
+
+
+__all__ = [
+    "AUTO_ADVANCE",
+    "BASELINE_PRESET",
+    "MIGRATOR_COMMAND",
+    "RETIRED_PRESET_NAMES",
+    "SOLO_OVERLAY",
+    "SUPERVISOR_REVIEW_NONE",
+    "SUPERVISOR_REVIEW_REQUIRED",
+    "GateContext",
+    "GateEffect",
+    "GateResolution",
+    "KNOWN_TOGGLES",
+    "SHIPPED_OVERLAYS",
+    "SHIPPED_PRESETS",
+    "UnknownPresetError",
+    "UnknownToggleError",
+    "coerce_supervisor_review",
+    "legacy_config_message",
+    "legacy_policy_keys",
+    "resolve_gate",
+    "supervisor_review_gate",
+]

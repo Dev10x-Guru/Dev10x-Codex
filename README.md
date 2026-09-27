@@ -1,7 +1,33 @@
+<p align="center">
+  <a href="https://github.com/Dev10x-Guru/dev10x-claude/releases"><img src="https://img.shields.io/github/v/release/Dev10x-Guru/dev10x-claude?style=for-the-badge&color=blue" alt="GitHub Release"></a>
+  <img src="https://img.shields.io/badge/skills-69-green?style=for-the-badge" alt="69 Skills">
+  <img src="https://img.shields.io/badge/agents-21-purple?style=for-the-badge" alt="21 Agents">
+  <img src="https://img.shields.io/badge/hooks-6-orange?style=for-the-badge" alt="6 Hooks">
+  <a href="https://github.com/Dev10x-Guru/dev10x-claude/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Dev10x-Guru/dev10x-claude?style=for-the-badge&color=green" alt="License"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Dev10x-Guru/dev10x-claude/stargazers"><img src="https://img.shields.io/github/stars/Dev10x-Guru/dev10x-claude?style=flat-square&logo=github" alt="GitHub stars"></a>
+  <img src="https://img.shields.io/badge/clones-20k+-blue?style=flat-square" alt="GitHub clones">
+  <a href="https://github.com/Dev10x-Guru/dev10x-claude/issues"><img src="https://img.shields.io/github/issues/Dev10x-Guru/dev10x-claude?style=flat-square" alt="GitHub issues"></a>
+  <img src="https://img.shields.io/badge/python-3.11+-yellow?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
+</p>
+
+<p align="center">
+  <a href="https://dev10x.guru">
+    <img src="https://dev10x.guru/og-image.png" alt="Dev10x — Stop babysitting your AI. Start supervising." width="800">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://dev10x.guru">Dev10x.guru</a> | <a href="https://www.skool.com/Dev10x-1892/about">Join Community</a>
+</p>
+
+---
+
 # Dev10x Claude Plugin
 
-Stop babysitting your AI. Start supervising it.  
-Join the community: https://www.skool.com/Dev10x-1892/about
+Stop babysitting your AI. Start supervising it.
 
 ---
 
@@ -195,18 +221,21 @@ review comment) is concise enough to evaluate in seconds.
 | **Session** | [`session-tasks`](skills/session-tasks/SKILL.md), [`session-wrap-up`](skills/session-wrap-up/SKILL.md), [`plan-sync`](skills/plan-sync/SKILL.md), [`fanout`](skills/fanout/SKILL.md), [`verify-acc-dod`](skills/verify-acc-dod/SKILL.md) | In-session work tracking, parallel execution, acceptance verification |
 | **DB** | [`db`](skills/db/SKILL.md), [`db-psql`](skills/db-psql/SKILL.md) | Safe database query planning and execution |
 | **Tooling** | [`py-uv`](skills/py-uv/SKILL.md), [`slack`](skills/slack/SKILL.md), [`slack-review-request`](skills/slack-review-request/SKILL.md), [`slack-setup`](skills/slack-setup/SKILL.md), [`ask`](skills/ask/SKILL.md) | Python packaging, Slack notifications, interactive prompts |
-| **Meta** | [`skill-create`](skills/skill-create/SKILL.md), [`skill-audit`](skills/skill-audit/SKILL.md), [`skill-index`](skills/skill-index/SKILL.md), [`audit-report`](skills/audit-report/SKILL.md), [`playbook`](skills/playbook/SKILL.md), [`skill-reinforcement`](skills/skill-reinforcement/SKILL.md), [`onboarding`](skills/onboarding/SKILL.md) | Create, audit, discover, and learn skills |
-| **Maintenance** | [`memory-maintenance`](skills/memory-maintenance/SKILL.md), [`permission-maintenance`](skills/permission-maintenance/SKILL.md), [`playbook-maintenance`](skills/playbook-maintenance/SKILL.md), [`context-audit`](skills/context-audit/SKILL.md) | Memory, permission, playbook, and context hygiene |
+| **Meta** | [`skill-create`](skills/skill-create/SKILL.md), [`skill-audit`](skills/skill-audit/SKILL.md), [`skill-index`](skills/skill-index/SKILL.md), [`audit-file`](skills/audit-file/SKILL.md), [`playbook`](skills/playbook/SKILL.md), [`diag-friction`](skills/diag-friction/SKILL.md), [`onboarding`](skills/onboarding/SKILL.md) | Create, audit, discover, and learn skills |
+| **Maintenance** | [`memory-maintenance`](skills/memory-maintenance/SKILL.md), [`plugin-maintenance`](skills/plugin-maintenance/SKILL.md), [`upgrade-cleanup`](skills/upgrade-cleanup/SKILL.md), [`playbook-maintenance`](skills/playbook-maintenance/SKILL.md), [`context-audit`](skills/context-audit/SKILL.md) | Memory, permission, playbook, and context hygiene |
 
 All skills use the `Dev10x:` prefix — type `/Dev10x:git-commit` in the Claude
 Code CLI to run it. Run `/Dev10x:skill-index` for the full reference.
 
 ## Installation
 
+```bash
+claude plugin marketplace add Dev10x-Guru/dev10x-claude
+claude plugin install Dev10x@Dev10x-Guru
 ```
-/plugin marketplace add Dev10x-Guru/dev10x-claude
-/plugin install Dev10x@Dev10x-Guru
-```
+
+Run these in your shell, not inside a Claude Code session — the
+in-session `/plugin` slash commands are unreliable for install.
 
 [Full installation guide →](docs/installation.md) — prerequisites,
 dependencies, manual clone, develop branch, and verification.
@@ -215,13 +244,6 @@ dependencies, manual clone, develop branch, and verification.
 
 [Why Dev10x →](docs/why-dev10x.md) — who it's for, what problems
 it solves, and how it compares to alternatives.
-
-## Codex Skills
-
-A Codex-native pack is available in `codex-skills/` for use outside
-Claude Code.
-
-[Codex skills guide →](docs/codex.md)
 
 ## Community
 

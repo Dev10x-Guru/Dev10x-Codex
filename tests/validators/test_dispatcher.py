@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.validators.loop_shapes import BARE_POLL_LOOP, PR_WATCH_LOOP, UNTIL_POLL_LOOP
+
 DISPATCHER = (
     Path(__file__).resolve().parent.parent.parent
     / "hooks"
@@ -80,13 +82,69 @@ class TestDispatcherBlocking:
     def test_allows_commit_with_skill_temp_f_flag(self) -> None:
         result = _run_hook(
             tool_name="Bash",
-            command="git commit -F /tmp/claude/git/commit-msg.W9DryMXsQ5Aw.txt",
+            command="git commit -F /tmp/Dev10x/git/commit-msg.W9DryMXsQ5Aw.txt",
         )
         assert result.returncode == 0
 
     def test_allows_commit_with_any_file_under_git_namespace(self) -> None:
         result = _run_hook(
             tool_name="Bash",
-            command="git commit -F /tmp/claude/git/msg.txt",
+            command="git commit -F /tmp/Dev10x/git/msg.txt",
         )
+        assert result.returncode == 0
+
+
+class TestMonitorToolReachesTheChain:
+    """A Monitor command is a Bash command (GH-1211, GH-1212).
+
+    hooks.json has registered the ``Monitor`` matcher since GH-1138, but
+    the entry point discarded every payload whose ``tool_name`` was not
+    ``Bash`` before any validator ran — so the registration was inert and
+    a poll loop routed through Monitor reached the supervisor as a raw
+    permission prompt no allow rule could answer.
+    """
+
+    def test_blocks_the_field_reported_pr_watch_loop(self) -> None:
+        result = _run_hook(tool_name="Monitor", command=PR_WATCH_LOOP)
+        assert result.returncode == 2
+
+    def test_blocks_a_bare_while_sleep_loop_naming_no_pr_command(self) -> None:
+        """The defect is the loop, not the payload command (GH-1212).
+
+        Two gaps had to close for this to block: the loop patterns were
+        single-line (no `sleep` several lines below `do` could match), and
+        `skill_redirect.should_run`'s fast-path token filter dropped any
+        command naming none of `commit`/`push`/`checks`/… before the
+        engine ran.
+        """
+        result = _run_hook(tool_name="Monitor", command=BARE_POLL_LOOP)
+        assert result.returncode == 2
+
+    def test_bare_watch_loop_names_the_rule_not_a_raw_regex(self) -> None:
+        result = _run_hook(tool_name="Monitor", command=BARE_POLL_LOOP)
+        assert "watch-loop-handrolled" in result.stderr
+        assert r"\bsleep\b" not in result.stderr
+
+    def test_bare_watch_loop_renders_every_alternative(self) -> None:
+        """`use-alternative` rules used to emit a bare `Skill()` (GH-1212)."""
+        result = _run_hook(tool_name="Monitor", command=BARE_POLL_LOOP)
+        assert "Skill()" not in result.stderr
+        assert "run_in_background" in result.stderr
+        assert "dev10x foreman watch" in result.stderr
+
+    def test_blocks_a_multiline_until_sleep_loop(self) -> None:
+        result = _run_hook(tool_name="Monitor", command=UNTIL_POLL_LOOP)
+        assert result.returncode == 2
+
+    def test_blocks_the_same_loop_submitted_as_bash(self) -> None:
+        """Routing through Monitor must not be the cheaper path."""
+        result = _run_hook(tool_name="Bash", command=PR_WATCH_LOOP)
+        assert result.returncode == 2
+
+    def test_allows_a_benign_monitor_command(self) -> None:
+        result = _run_hook(tool_name="Monitor", command="git status")
+        assert result.returncode == 0
+
+    def test_allows_an_empty_monitor_command(self) -> None:
+        result = _run_hook(tool_name="Monitor", command="")
         assert result.returncode == 0

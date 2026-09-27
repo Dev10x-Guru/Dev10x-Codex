@@ -1,9 +1,11 @@
+version: "0.105.0"
+
 # playbook.yaml — Reusable play templates for orchestration skills
 # Default location: ${CLAUDE_PLUGIN_ROOT}/skills/playbook/references/playbook.yaml
 # User overrides (resolution order — see references/config-resolution.md):
 #   1. .claude/Dev10x/playbooks/<skill-key>.yaml (project-local)
-#   2. ~/.claude/memory/Dev10x/playbooks/<skill-key>.yaml (global + repo match)
-#   3. ~/.claude/projects/<project>/memory/playbooks/<skill-key>.yaml (legacy)
+#   2. ~/.config/Dev10x/playbooks/<skill-key>.yaml (global + repo match)
+#      → fallback: ~/.claude/memory/Dev10x/playbooks/<skill-key>.yaml
 # Managed by Dev10x:playbook skill.
 #
 # Structure:
@@ -15,6 +17,8 @@
 #   1. fragments from the user override file (if present)
 #   2. fragments from this default playbook file
 #   User-defined fragments with the same name shadow defaults.
+#   When shadowing, steps matched by subject inherit skills, agent,
+#   model, and modes from the default if omitted (GH-938).
 #
 # Play-level fields:
 #   prompt — heuristic guidance for when this play type applies
@@ -40,10 +44,6 @@
 #               mode name to either "skip" (remove step) or a dict
 #               of field overrides {subject, prompt, skills, ...}.
 #               See references/execution-modes.md for the full spec.
-#   friction  — per-friction-level overrides (optional). Map of
-#               friction level (strict/guided/adaptive) to either
-#               "skip" or a dict of field overrides.
-#               See references/friction-levels.md § Playbook Integration.
 #
 # Fragments — reusable step sequences referenced via `- fragment: <name>`.
 # A fragment reference copies the fragment's steps inline at resolution
@@ -55,21 +55,39 @@
 
 fragments:
   shipping-pipeline:
+    - subject: Commit implementation changes
+      type: detailed
+      prompt: >
+        Commit outstanding implementation work now so Dev10x:review
+        has a non-empty diff to inspect — the review skills compute
+        their diff from commits against base (develop-diff), not the
+        working tree, so an uncommitted-only branch reviews nothing
+        (GH-858 F3). Atomic commits, gitmoji + ticket ID.
+        Auto-advance — do not pause after committing. No-op when the
+        Implement epic already committed.
+      skills: [Dev10x:git-commit]
     - subject: Code review
       type: detailed
       prompt: >
         Self-review the current branch to catch issues before
-        creating the PR.
+        creating the PR. Run with --unattended. Auto-fix all
+        findings. Auto-advance without supervisor gate.
       skills: [Dev10x:review, Dev10x:review-fix]
-      friction:
-        adaptive:
-          prompt: >
-            Self-review with --unattended flag. Auto-fix all
-            findings. Auto-advance without supervisor gate.
       modes:
         supervised:
           prompt: >
             Present findings for approval before auto-fixing.
+    - subject: Simplify post-review changes
+      type: detailed
+      condition: review-fix-produced-changes
+      optional: true
+      prompt: >
+        Run the simplify skill on files changed by review-fix
+        to catch unnecessary complexity introduced during the
+        fix phase. Clarity improvements only — do not change
+        functionality. Skip if review-fix made no changes or
+        if the simplify skill is not available.
+      skills: [simplify]  # external user-level skill (like test)
     - subject: Commit outstanding changes
       type: detailed
       prompt: >
@@ -88,7 +106,11 @@ fragments:
       type: detailed
       prompt: >
         Watch CI checks on the draft PR. Fix any failures
-        with fixup commits and push.
+        with fixup commits and push. NOTE (GH-779): if the repo's
+        CI skips draft PRs (no checks ever register on a draft),
+        mark the PR ready BEFORE this step via the `pr_ready` MCP
+        wrapper — otherwise the monitor polls a PR that never
+        produces a verdict.
       skills: [Dev10x:gh-pr-monitor]
     - subject: Apply fixups to review comments
       type: epic
@@ -113,25 +135,67 @@ fragments:
       type: detailed
       prompt: >
         Assign reviewers and post Slack notification per project
-        config.
+        config. Auto-assign from CODEOWNERS — no AskUserQuestion
+        for reviewer selection.
       skills: [Dev10x:gh-pr-request-review]
       modes:
         solo-maintainer:
           subject: Mark PR ready for review
           prompt: >
-            Run `gh pr ready`. No reviewers, no Slack.
-      friction:
-        adaptive:
+            Mark ready via the `pr_ready` MCP wrapper (GH-779) — not
+            raw `gh pr ready`. No reviewers, no Slack.
+    - subject: Merge PR
+      type: detailed
+      prompt: >
+        Merge the PR after all checks pass. Use the merge
+        strategy from project settings (rebase preferred to
+        preserve groomed commit history).
+      skills: [Dev10x:gh-pr-merge]
+      modes:
+        solo-maintainer:
           prompt: >
-            Auto-assign reviewers from CODEOWNERS. No
-            AskUserQuestion for reviewer selection.
+            Solo maintainer — no reviewers to wait for. Merge
+            immediately after marking ready and CI passes.
+      condition: solo-maintainer
     - subject: Verify acceptance criteria
       type: detailed
       prompt: >
         Always delegate to Dev10x:verify-acc-dod skill
-        regardless of mode or friction level. The skill
-        reads friction_level and adapts its own gates.
+        regardless of mode. The skill owns its own gates.
       skills: [Dev10x:verify-acc-dod]
+
+  # Bundled multi-issue implementation (GH-196).
+  # Replaces the single "Implement changes" epic when work-on
+  # is run with ≥ 2 ticket inputs and Strategy B (bundled PR)
+  # is selected. One commit per batch; batches are computed in
+  # Phase 3 via overlap signals (see work-on instructions § Batch
+  # Detection). The bundle-aware variant of the Implement epic
+  # expands at Phase 4 time into one sub-step per batch — this
+  # fragment exists so project overrides can substitute it for
+  # the default "Implement changes" epic without duplicating the
+  # surrounding shipping pipeline.
+  bundle-implementation:
+    - subject: Implement bundle batches
+      type: epic
+      prompt: >
+        Iterate the batches resolved in Phase 3 (read
+        `batches` from plan-sync context). For each batch,
+        execute the per-batch loop in order:
+        (a) Design approach for this batch using the
+        gathered context for every batch member.
+        (b) Implement the changes that close every batch
+        member.
+        (c) Delegate exactly one commit via
+        Skill(Dev10x:git-commit) — body must enumerate
+        every batch member and emit one `Fixes:` line per
+        ticket so each issue auto-closes on merge.
+        Do NOT delegate a commit between batch members of
+        the same batch. Do NOT skip a batch because its
+        changes "feel" trivial — singleton batches still
+        get their own commit so the PR history maps cleanly
+        to the bundled tickets. After all batches commit,
+        the surrounding shipping pipeline runs once for the
+        whole PR.
 
   shipping-pipeline-continuation:
     - subject: Code review
@@ -154,14 +218,12 @@ fragments:
       skills: [Dev10x:gh-pr-monitor]
     - subject: Groom commit history
       type: detailed
-      prompt: Squash fixups into their parent commits.
+      prompt: >
+        Squash fixups into their parent commits. Choose the best
+        grooming option and auto-advance. No strategy gate —
+        select fixup autosquash if fixup commits exist, mass
+        rewrite otherwise.
       skills: [Dev10x:git-groom]
-      friction:
-        adaptive:
-          prompt: >
-            Choose the best grooming option and auto-advance.
-            No strategy gate — select fixup autosquash if
-            fixup commits exist, mass rewrite otherwise.
     - subject: Update PR description
       type: detailed
       prompt: >
@@ -177,14 +239,27 @@ fragments:
         solo-maintainer:
           subject: Mark PR ready for review
           prompt: >
-            Run `gh pr ready` if still draft. No reviewer
+            Mark ready via the `pr_ready` MCP wrapper (GH-779) if
+            still draft — not raw `gh pr ready`. No reviewer
             assignment, no Slack.
+    - subject: Merge PR
+      type: detailed
+      prompt: >
+        Merge the PR after all checks pass. Use the merge
+        strategy from project settings (rebase preferred to
+        preserve groomed commit history).
+      skills: [Dev10x:gh-pr-merge]
+      modes:
+        solo-maintainer:
+          prompt: >
+            Solo maintainer — no reviewers to wait for. Merge
+            immediately after marking ready and CI passes.
+      condition: solo-maintainer
     - subject: Verify acceptance criteria
       type: detailed
       prompt: >
         Always delegate to Dev10x:verify-acc-dod skill
-        regardless of mode or friction level. The skill
-        reads friction_level and adapts its own gates.
+        regardless of mode. The skill owns its own gates.
       skills: [Dev10x:verify-acc-dod]
 
 # Mode definitions — structural modes that adapt step behavior.
@@ -197,12 +272,8 @@ fragments:
 #   cautious     — extra verification, confirm destructive ops
 #   pair-review  — human review at implementation checkpoints
 #
-# Friction levels (pacing — how gates behave):
-#   strict / guided / adaptive
-#   Declared via `friction:` on steps, NOT as modes.
-#   afk = adaptive, auto-advance = adaptive.
-#
-# Per-step modes and friction are declared inline (see above).
+# Per-step modes are declared inline (see above). Gate pacing is
+# no longer a per-step concern — a step states its behaviour once.
 # Project-level mode activation:
 #   active_modes: [solo-maintainer]
 #   mode_extensions:
@@ -229,21 +300,17 @@ defaults:
       - subject: Draft Job Story
         type: detailed
         prompt: >
-          Invoke in attended mode. Pass gathered context to avoid
-          redundant API calls. If approved, write back to the
-          ticket as a comment.
+          Pass gathered context to avoid redundant API calls.
+          Accept what the skill produces, use it in the session,
+          and improve if needed. Auto-advance without approval,
+          then write the story back to the ticket as a comment.
         skills: [Dev10x:jtbd]
-        friction:
-          adaptive:
-            prompt: >
-              Accept what the skill produces, use in the session,
-              and improve if needed. Auto-advance without approval.
         modes:
           solo-maintainer:
             prompt: >
               Draft JTBD as a documentation artifact. It does not
-              need approval in adaptive mode, but serves as an
-              indicator of how well the agent understood the task.
+              need approval, but serves as an indicator of how
+              well the agent understood the task.
           supervised:
             prompt: >
               Present JTBD draft for approval. Do not write to
@@ -254,13 +321,9 @@ defaults:
           Understand the codebase areas affected by this change.
           For small changes (single file, < 50 lines), collapse
           into a single "read and propose" step. For large changes,
-          produce an approach summary before implementing.
-        friction:
-          adaptive:
-            prompt: >
-              Choose the best option and auto-advance. Make
-              design decisions autonomously without asking
-              for approach approval.
+          produce an approach summary before implementing. Choose
+          the best option and auto-advance — make design decisions
+          autonomously without asking for approach approval.
         modes:
           supervised:
             prompt: >
@@ -289,12 +352,20 @@ defaults:
               Summarize the implementation strategy. If multiple
               valid approaches exist, present trade-offs and ask
               for supervisor input.
+      - subject: Plan the commit sequence
+        type: detailed
+        prompt: >
+          Produce an explicit ordered per-commit plan before writing
+          code: for each commit, note the gitmoji, ticket ID, files
+          it owns, and which earlier commit(s) it depends on.
+          Refactor commits precede feature commits.
       - subject: Implement changes
         type: epic
         prompt: >
-          Execute the approved approach. Create atomic commits per
-          logical change. Follow project coding conventions and
-          patterns from existing code.
+          Execute the approved approach and the commit-sequence plan.
+          Create atomic commits per logical change, refactor commits
+          before feature commits. Follow project coding conventions
+          and patterns from existing code.
       - subject: Verify
         type: epic
         prompt: >
@@ -303,7 +374,7 @@ defaults:
         steps:
           - subject: Run tests
             type: detailed
-            prompt: Run pytest with coverage. Fix failures.
+            prompt: Run via Skill(Dev10x:py-test) with coverage. Fix failures.
             skills: [test]
           - subject: Run lint
             type: detailed
@@ -364,7 +435,7 @@ defaults:
         steps:
           - subject: Run existing tests
             type: detailed
-            prompt: Run pytest with coverage. Ensure no regressions.
+            prompt: Run via Skill(Dev10x:py-test) with coverage. Ensure no regressions.
             skills: [test]
           - subject: Add regression test
             type: detailed
@@ -434,7 +505,7 @@ defaults:
         steps:
           - subject: Run tests
             type: detailed
-            prompt: Run pytest with coverage. Fix failures.
+            prompt: Run via Skill(Dev10x:py-test) with coverage. Fix failures.
             skills: [test]
           - subject: Run lint
             type: detailed
@@ -447,12 +518,21 @@ defaults:
           the work as done locally.
       - fragment: shipping-pipeline
         condition: if-pr-decided
+      # The shipping-pipeline fragment already ends with its own
+      # "Verify acceptance criteria" step, which serves as the
+      # terminal gate on the PR path. This play-level verify runs
+      # ONLY on the no-PR path (fragment skipped) so exactly one
+      # Verify-AC task is ever instantiated (GH-781). Without the
+      # if-no-pr condition, choosing "create PR" produced two
+      # adjacent Verify-AC tasks.
       - subject: Verify acceptance criteria
         type: detailed
+        condition: if-no-pr
         prompt: >
-          Confirm work is complete per the acceptance criteria
-          for the chosen outcome. If no PR was created, verify
-          locally that all expected deliverables are done.
+          Terminal gate for the local (no-PR) outcome only — the
+          if-pr-decided path is already terminated by the shipping
+          fragment's own Verify-AC step. Verify locally that all
+          expected deliverables are done.
 
   investigation:
     prompt: >
@@ -499,6 +579,95 @@ defaults:
           If a fix is warranted, offer to switch to a bugfix
           plan. If more investigation is needed, suggest
           creating a follow-up ticket.
+
+  structured-spec:
+    prompt: >
+      Use when a ticket is a good fit for SPDD-style scoping —
+      multi-component design, cross-layer changes, or API
+      additions. The Phase 1 suitability gate routes good-fit
+      tickets here; poor-fit tickets (single-file tweaks,
+      config-only changes, exploratory spikes) fall back to
+      the `feature` play. See `references/skill-pipelines.md`
+      "Structured Spec Pipeline" for the rationale.
+
+      The pipeline materializes ADR 0005's six-step SPDD loop
+      on top of existing skills:
+      scope-with-reasons → adr (if architectural) →
+      spec-update gate → implement → py-test (API) →
+      py-test (unit) → spec-sync gate before merge.
+    steps:
+      - subject: Set up workspace
+        type: detailed
+        prompt: >
+          Create a feature branch from develop. Skip if a matching
+          branch already exists.
+        skills: [Dev10x:ticket-branch]
+      - subject: Scope ticket with REASONS sections
+        type: detailed
+        prompt: >
+          Invoke Dev10x:ticket-scope. The skill renders Entities,
+          Norms, and Safeguards sections inline using the
+          autopopulator (`dev10x.scope.render_norms` /
+          `render_safeguards`). The saved spec at
+          docs/specs/<TICKET-ID>.md becomes the source of truth
+          for the rest of the pipeline.
+        skills: [Dev10x:ticket-scope]
+      - subject: Record ADR (if architectural decision involved)
+        type: detailed
+        prompt: >
+          When the spec introduces or changes an architectural
+          boundary, an ADR is required. Skip otherwise.
+        skills: [Dev10x:adr]
+        condition: if-architectural
+      - subject: Spec-update gate (Golden Rule)
+        type: detailed
+        prompt: >
+          Before implementing, check whether requirements shifted
+          since the spec was saved. If yes, run Dev10x:spec-update
+          (spec-first edit) and re-enter this step. If no, proceed
+          to Implement.
+        skills: [Dev10x:spec-update]
+        condition: if-requirements-shifted
+      - subject: Plan the commit sequence
+        type: detailed
+        prompt: >
+          Produce an explicit ordered per-commit plan before writing
+          code: for each commit, note the gitmoji, ticket ID, files
+          it owns, and which earlier commit(s) it depends on.
+          Refactor commits precede feature commits. Fold this plan
+          into the saved spec at docs/specs/<TICKET-ID>.md (e.g. a
+          checklist under Implementation Steps) so it survives the
+          spec-sync gate.
+      - subject: Implement changes
+        type: epic
+        prompt: >
+          Generate code from the spec and the commit-sequence plan.
+          The spec — not a custom plan — IS the prompt. Each
+          Implementation Step in the spec becomes a concrete edit,
+          refactor commits before feature commits.
+      - subject: Verify — API tests
+        type: detailed
+        prompt: >
+          Run integration / API tests covering the spec's
+          Acceptance Criteria. Failures indicate the spec is
+          either wrong or under-implemented; do not silently
+          weaken assertions.
+        skills: [test]
+      - subject: Verify — unit tests
+        type: detailed
+        prompt: >
+          Run unit tests covering Implementation Steps. Aim for
+          100% coverage of new code, per project convention.
+        skills: [test]
+      - subject: Spec-sync gate before merge
+        type: detailed
+        prompt: >
+          Run Dev10x:spec-sync in check-only mode. Behavioural
+          drift blocks the pipeline (route back to spec-update).
+          Structural drift triggers a regenerate-and-commit pass
+          so the spec matches the final code shape.
+        skills: [Dev10x:spec-sync]
+      - fragment: shipping-pipeline
 
 # User overrides — added when user customizes a plan.
 # persist: true = reuse across sessions; false = one-time.

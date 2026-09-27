@@ -11,9 +11,16 @@ description: >
 user-invocable: true
 invocation-name: Dev10x:park-remind
 allowed-tools:
+  - Read
+  - Write
+  - Edit
   - Bash(${CLAUDE_PLUGIN_ROOT}/skills/slack/slack-notify.py:*)
-  - Bash(/tmp/claude/bin/mktmp.sh:*)
-  - Write(/tmp/claude/slack/**)
+  - Bash(/tmp/Dev10x/bin/mktmp.sh:*)
+  - Bash(git branch:*)
+  - Bash(git rev-parse:*)
+  - mcp__plugin_Dev10x_cli__mktmp
+  - mcp__plugin_Dev10x_cli__task_index_append
+  - Edit(/tmp/Dev10x/slack/**)
 ---
 
 # Dev10x:park-remind — Slack DM Reminder
@@ -34,7 +41,10 @@ Mark completed when done: `TaskUpdate(taskId, status="completed")`
 ## Overview
 
 Send a self-DM via Slack with a deferred item, formatted with session
-context so you know where to pick it up.
+context so you know where to pick it up. After the DM is sent, append
+a pointer entry to the project task index so
+`Dev10x:park-discover` can surface it locally without a Slack search
+(GH-85).
 
 ## Prerequisites
 
@@ -47,13 +57,16 @@ context so you know where to pick it up.
 
 ```bash
 git branch --show-current
-basename "$(git rev-parse --show-toplevel)"
-date +%Y-%m-%d
 ```
 
-Extract from branch name:
+```bash
+git rev-parse --show-toplevel
+```
+
+Each in a single Bash call — no `;` chaining, no subshells.
+Extract from the branch name:
 - Ticket ID (pattern: `username/TICKET-ID/[worktree/]description`)
-- Project name (from repo root basename)
+- Project name (from the toplevel basename)
 
 ### 2. Format message
 
@@ -74,9 +87,10 @@ separate line after the item text.
 For multi-line messages, write the formatted text to a unique temp file
 using the Write tool first, then pass it via command substitution:
 
-```bash
-/tmp/claude/bin/mktmp.sh slack remind-msg .txt
 ```
+mcp__plugin_Dev10x_cli__mktmp(namespace="slack", prefix="remind-msg", ext=".txt")
+```
+
 Write content to the returned path using Write tool, then:
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/skills/slack/slack-notify.py \
@@ -87,9 +101,38 @@ Do NOT use heredoc (`cat <<'EOF'`) to build the message inline —
 the bash security hook blocks it. Always use Write tool → temp file
 → `$(cat ...)` for multi-line content.
 
-### 4. Confirm
+### 4. Append to the task index
 
-Report to user: "Sent reminder to your Slack DMs."
+After Slack confirms delivery, append a pointer entry using the
+schema documented in `Dev10x:park-todo` § Task Index Append:
+
+```
+mcp__plugin_Dev10x_cli__task_index_append(entry={
+    "subject": "<item text, single line>",
+    "status": "pending",
+    "source": "slack-reminder",
+    "created_at": "<YYYY-MM-DD>",
+    "metadata": {
+        "branch": "<current-branch>",
+        "slack_ts": "<timestamp returned by slack-notify>",
+        "slack_permalink": "<permalink returned by slack-notify>",
+    },
+})
+```
+
+The Slack DM remains the authoritative content; the index entry is
+the local pointer that `Dev10x:park-discover` reads without a network
+round-trip.
+
+The tool creates the store on first use and appends under a lock, so
+there is nothing to create or preserve by hand. Do NOT Write/Edit the
+store — ADR-0018 D5 rehomed it out of the repo precisely so no
+Write/Edit consent gate fires on a deferral.
+
+### 5. Confirm
+
+Report to user: "Sent reminder to your Slack DMs and indexed in the
+project task index."
 
 ## Standalone Usage
 

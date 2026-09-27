@@ -29,35 +29,36 @@
 
 ## Option A: Marketplace install (recommended)
 
-Add the marketplace source and install the plugin:
+Run these commands in your shell (not inside a Claude Code session —
+the in-session `/plugin` slash commands are unreliable for install):
 
-```
-/plugin marketplace add Dev10x-Guru/dev10x-claude
-/plugin install Dev10x@Dev10x-Guru
+```bash
+claude plugin marketplace add Dev10x-Guru/dev10x-claude
+claude plugin install Dev10x@Dev10x-Guru
 ```
 
 Update to the latest version:
 
-```
-/plugin update Dev10x@Dev10x-Guru
+```bash
+claude plugin update Dev10x@Dev10x-Guru
 ```
 
 ### Install the develop (pre-release) version
 
 To test the latest develop branch before it's released:
 
-```
-/plugin marketplace remove Dev10x-Guru
-/plugin marketplace add Dev10x-Guru/dev10x-claude#develop
-/plugin install Dev10x@Dev10x-Guru
+```bash
+claude plugin marketplace remove Dev10x-Guru
+claude plugin marketplace add Dev10x-Guru/dev10x-claude#develop
+claude plugin install Dev10x@Dev10x-Guru
 ```
 
 Switch back to stable releases:
 
-```
-/plugin marketplace remove Dev10x-Guru
-/plugin marketplace add Dev10x-Guru/dev10x-claude
-/plugin install Dev10x@Dev10x-Guru
+```bash
+claude plugin marketplace remove Dev10x-Guru
+claude plugin marketplace add Dev10x-Guru/dev10x-claude
+claude plugin install Dev10x@Dev10x-Guru
 ```
 
 ## Option B: Manual clone
@@ -75,17 +76,30 @@ git clone git@github.com:Dev10x-Guru/dev10x-claude.git \
 > `https://github.com/Dev10x-Guru/dev10x-claude.git` and
 > authenticate when prompted.
 
-Register the plugin so Claude Code loads it on every session:
+Register the local clone as a marketplace and install the plugin
+from it:
 
 ```bash
-claude plugin add --local ~/.claude/plugins/Dev10x
+claude plugin marketplace add ~/.claude/plugins/Dev10x
+claude plugin install Dev10x@Dev10x-Guru
 ```
 
 Update manually with:
 
 ```bash
 cd ~/.claude/plugins/Dev10x && git pull
+claude plugin marketplace update Dev10x-Guru
 ```
+
+## Option C: GitHub Action (automated PR review)
+
+To run Dev10x automated PR review on a repository — independent of the
+Claude Code plugin — install the **Dev10x PR Review** GitHub Action.
+Add an `ANTHROPIC_API_KEY` secret and a workflow that references
+`Dev10x-Guru/dev10x-claude@v1`. It reviews PRs on open and, on close,
+proposes learned review rules via a rules-update PR for your approval.
+See [GitHub Action install](github-action-install.md) for the full
+install, permissions, troubleshooting, and cost guidance.
 
 ## Verify the installation
 
@@ -101,7 +115,7 @@ You should see a skills reference listing all available commands.
 
 ## Try without installing
 
-Load the plugin for a single session:
+Load the plugin for a single session without registering it:
 
 ```bash
 claude --plugin-dir ~/.claude/plugins/Dev10x

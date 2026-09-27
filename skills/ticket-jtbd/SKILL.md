@@ -10,6 +10,7 @@ description: >
 user-invocable: true
 invocation-name: Dev10x:ticket-jtbd
 allowed-tools:
+  - Skill(Dev10x:jira)
   - Bash(gh pr view:*)
   - Bash(gh pr diff:*)
   - Bash(gh pr edit:*)
@@ -24,6 +25,8 @@ allowed-tools:
   - mcp__claude_ai_Linear__update_issue
   - Bash(secret-tool lookup:*)
   - Bash(curl:*atlassian.net*)
+  - Bash(gh issue comment:*)
+  - mcp__plugin_Dev10x_cli__detect_tracker
 ---
 
 # Write JTBD Story to Target
@@ -79,14 +82,23 @@ Determine the write target from the arguments:
 
 ### Step 2: Gather Identifiers
 
-Extract all available identifiers for context:
+Extract all available identifiers for context.
+
+**If a PR was provided**, read its branch through the MCP wrapper and
+take the ticket ID from the second `/`-delimited segment:
+
+```
+mcp__plugin_Dev10x_cli__pr_detect(arg="{PR_NUMBER}")
+```
+
+It returns `BRANCH` fetched from GitHub rather than local git, which
+is what makes it correct in a multi-worktree checkout.
+
+**If a ticket was provided**, find the linked PR. No MCP wrapper
+covers PR search, so this is the one raw call in this skill:
 
 ```bash
-# If PR provided, extract ticket ID from branch
-gh pr view {PR_NUMBER} --json headRefName -q '.headRefName' | cut -d'/' -f2
-
-# If ticket provided, find linked PR
-gh pr list --search "{TICKET_ID}" --state open --json number --limit 1
+gh pr list --search "{TICKET_ID}" --state open --json number --limit 1  # cli-friction: allow raw-gh-pr — no MCP wrapper covers PR search
 ```
 
 ### Step 3: Delegate to Dev10x:jtbd Base Skill
@@ -109,9 +121,9 @@ If the user approved the story (non-empty return):
 Write the updated body to a temp file (include PR# to avoid clashes),
 then use `--body-file`:
 
-1. Use the Write tool to create `/tmp/claude/pr-body-{PR_NUMBER}.md`
+1. Use the Write tool to create `/tmp/Dev10x/pr-body-{PR_NUMBER}.md`
    with the Job Story prepended to the existing body
-2. Run: `gh pr edit {PR_NUMBER} --repo {REPO} --body-file /tmp/claude/pr-body-{PR_NUMBER}.md`
+2. Run: `gh pr edit {PR_NUMBER} --repo {REPO} --body-file /tmp/Dev10x/pr-body-{PR_NUMBER}.md`
 
 The story goes at the **top** of the description so it's the first
 thing visible in PR lists and Slack previews.
@@ -135,12 +147,11 @@ mcp__claude_ai_Linear__update_issue(
 ```
 
 **JIRA ticket target:**
-Write an ADF payload file, then use the `jira-update.sh` script.
-Note: JIRA integration requires the external `Dev10x:jira` skill.
+Delegate to the `Dev10x:jira` skill for JIRA updates.
 
-1. Use the Write tool to create `/tmp/claude/jira-payload-{TICKET_ID}.json`
+1. Use the Write tool to create `/tmp/Dev10x/jira-payload-{TICKET_ID}.json`
    with the JIRA REST API v3 ADF document format
-2. Run: `JIRA_TENANT=<your-jira-tenant> ~/.claude/skills/Dev10x:jira/scripts/jira-update.sh {TICKET_ID} /tmp/claude/jira-payload-{TICKET_ID}.json`
+2. Invoke `Skill(skill="Dev10x:jira")` to apply the payload to the ticket
 
 ### Step 5: Confirm
 

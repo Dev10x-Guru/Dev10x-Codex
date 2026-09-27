@@ -1,0 +1,85 @@
+#!/bin/sh
+# Outer audit wrapper for Dev10x hooks (GH-860).
+#
+# Usage: audit-wrap <hook-name> <command> [args...]
+#
+# Measures total wall-clock time (including uv/python startup) around
+# the child command, passes stdin through unchanged, preserves exit
+# code, and records one JSONL entry of phase="wrap" via the audit
+# CLI shim.
+#
+# Env:
+#   DEV10X_HOOK_AUDIT=0              — disable logging (child still runs)
+#   DEV10X_HOOK_AUDIT_DIR=/tmp/...   — override log dir
+#   DEV10X_HOOK_SPAN_ID=<hex>        — correlation id injected for the
+#                                      @audit_hook decorator to pick up
+#
+# Output: stdout/stderr pass through; log records go to
+# $DEV10X_HOOK_AUDIT_DIR/hooks-YYYY-MM-DD.jsonl.
+
+set -u
+
+HOOK_NAME="${1:-unknown}"
+shift || true
+
+if [ "$#" -eq 0 ]; then
+    echo "audit-wrap: missing command after hook name" >&2
+    exit 2
+fi
+
+# Mint a span id if one wasn't already provided by an outer context.
+if [ -z "${DEV10X_HOOK_SPAN_ID:-}" ]; then
+    if command -v od >/dev/null 2>&1 && [ -r /dev/urandom ]; then
+        SPAN_ID=$(od -An -N8 -tx1 < /dev/urandom | tr -d ' \n')
+    else
+        SPAN_ID="$$.$(date +%s)"
+    fi
+    DEV10X_HOOK_SPAN_ID="$SPAN_ID"
+    export DEV10X_HOOK_SPAN_ID
+else
+    SPAN_ID="$DEV10X_HOOK_SPAN_ID"
+fi
+
+# Record start time in nanoseconds when available, else seconds.
+START_NS=$(date +%s%N 2>/dev/null || echo "")
+if [ -z "$START_NS" ] || [ "$START_NS" = "$(date +%s)N" ]; then
+    START_S=$(date +%s)
+    USE_NS=0
+else
+    USE_NS=1
+fi
+
+# Run the child command, preserving stdin, stdout, stderr, and exit code.
+"$@"
+CHILD_EXIT=$?
+
+# Compute total_ms.
+if [ "$USE_NS" = "1" ]; then
+    END_NS=$(date +%s%N)
+    TOTAL_MS=$(( (END_NS - START_NS) / 1000000 ))
+else
+    END_S=$(date +%s)
+    TOTAL_MS=$(( (END_S - START_S) * 1000 ))
+fi
+
+# Audit disabled? Skip the record write.
+case "${DEV10X_HOOK_AUDIT:-1}" in
+    0|false|no|off)
+        exit "$CHILD_EXIT"
+        ;;
+esac
+
+# Locate the plugin root (the wrapper lives at hooks/scripts/audit-wrap).
+WRAPPER_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+PLUGIN_ROOT=$(CDPATH='' cd -- "$WRAPPER_DIR/../.." && pwd)
+
+# Invoke the audit CLI shim to write the wrap record.
+# Fall back silently if the shim is unavailable or errors — logging
+# must never block the hook pipeline.
+if [ -x "$PLUGIN_ROOT/hooks/scripts/audit-record.py" ]; then
+    "$PLUGIN_ROOT/hooks/scripts/audit-record.py" \
+        "$HOOK_NAME" "$SPAN_ID" "$TOTAL_MS" "$CHILD_EXIT" "$@" \
+        </dev/null >/dev/null 2>&1 || true
+fi
+
+exit "$CHILD_EXIT"

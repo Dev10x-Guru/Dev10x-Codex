@@ -18,12 +18,47 @@ Usage:
 If output.md is omitted, writes to stdout.
 """
 
+import io
+import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
+
+def _atomic_write_text(output_path: str, content: str) -> None:
+    """Crash-safe write via mkstemp + fsync + os.replace (GH-562).
+
+    This standalone uv-script cannot import
+    ``dev10x.domain.file_locks.atomic_write_text``, so the same
+    temp-then-rename pattern is inlined here.
+    """
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
+    try:
+        os.write(fd, content.encode("utf-8"))
+        os.fsync(fd)
+        os.close(fd)
+        os.replace(tmp, str(target))
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+# Transcript grammar (GH-588). The single source of truth lives in
+# dev10x.audit.transcript_grammar. This PEP 723 standalone uv-script cannot
+# import dev10x at module scope, so it mirrors the patterns inline;
+# tests/audit/test_transcript_grammar.py asserts the mirror stays identical.
 TURN_RE = re.compile(
     r"^## Turn (\d+) \[([^\]]+)\] (USER|ASSISTANT)(.*)",
     re.MULTILINE,
@@ -153,33 +188,45 @@ def parse_turns(text: str) -> list[Turn]:
     return turns
 
 
-def classify_action(tool_name: str, input_summary: str) -> str:
-    if tool_name == "Skill":
-        return "Skill"
-    if tool_name == "Agent":
-        return "Agent"
-    if tool_name in ("TaskCreate", "TaskUpdate", "TaskList", "TaskGet"):
-        return "Task"
-    if tool_name == "AskUserQuestion":
-        return "Decision"
-    if tool_name in ("Write", "Edit"):
-        return "CodeChange"
-    if tool_name == "Read":
-        return "Read"
-    if tool_name in ("Glob", "Grep"):
-        return "Search"
-    if tool_name in ("WebFetch", "WebSearch"):
-        return "Web"
+ACTION_TYPE_BY_TOOL: dict[str, str] = {
+    "Skill": "Skill",
+    "Agent": "Agent",
+    "TaskCreate": "Task",
+    "TaskUpdate": "Task",
+    "TaskList": "Task",
+    "TaskGet": "Task",
+    "AskUserQuestion": "Decision",
+    "Write": "CodeChange",
+    "Edit": "CodeChange",
+    "Read": "Read",
+    "Glob": "Search",
+    "Grep": "Search",
+    "WebFetch": "Web",
+    "WebSearch": "Web",
+}
 
-    combined = f"{tool_name} {input_summary}".lower()
 
-    if tool_name == "Bash":
-        for action_type, keywords in ACTION_KEYWORDS.items():
-            for kw in keywords:
-                if kw.lower() in combined:
-                    return action_type
-
+def _classify_bash(input_summary: str) -> str:
+    combined = f"Bash {input_summary}".lower()
+    for action_type, keywords in ACTION_KEYWORDS.items():
+        for kw in keywords:
+            if kw.lower() in combined:
+                return action_type
     return "Other"
+
+
+def classify_action(tool_name: str, input_summary: str) -> str:
+    try:
+        from dev10x.domain.common.tool_signature import ToolSignature  # noqa: PLC0415
+
+        return ToolSignature(tool=tool_name, value="").classify_action(input_summary=input_summary)
+    except ImportError:
+        mapped = ACTION_TYPE_BY_TOOL.get(tool_name)
+        if mapped is not None:
+            return mapped
+        if tool_name == "Bash":
+            return _classify_bash(input_summary=input_summary)
+        return "Other"
 
 
 def describe_tool_call(tc: ToolCall) -> str:
@@ -319,8 +366,9 @@ def main() -> None:
 
     if len(sys.argv) >= 3:
         output_path = sys.argv[2]
-        with open(output_path, "w") as f:
-            write_output(rows=rows, out=f)
+        buf = io.StringIO()
+        write_output(rows=rows, out=buf)
+        _atomic_write_text(output_path, buf.getvalue())
         print(f"Phase 1 output written to {output_path}", file=sys.stderr)
     else:
         write_output(rows=rows, out=sys.stdout)

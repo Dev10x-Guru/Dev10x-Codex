@@ -10,7 +10,7 @@ description: >
   check, pattern catalog mapping, or comprehensive quality review.
   DO NOT TRIGGER when: reviewing a single branch (use Dev10x:review),
   scoping a single ticket (use Dev10x:ticket-scope), or running a
-  DDD workshop (use Dev10x:ddd-workshop).
+  DDD workshop (use Dev10x:ddd).
 user-invocable: true
 allowed-tools:
   - Agent
@@ -19,14 +19,15 @@ allowed-tools:
   - Grep
   - Glob
   - Read
-  - Write(docs/memos/**)
+  - Edit(docs/memos/**)
   - Bash(gh pr list:*)
-  - Bash(gh api repos/:*)
   - TaskCreate
   - TaskUpdate
   - Skill(Dev10x:project-scope)
   - Skill(Dev10x:adr)
   - Skill(Dev10x:ticket-create)
+  - Skill(Dev10x:git-commit)
+  - mcp__plugin_Dev10x_cli__detect_tracker
 ---
 
 # Dev10x:project-audit — Comprehensive Architecture Audit
@@ -46,14 +47,14 @@ prioritized improvement backlog with milestones and blocking chains.
 **Do NOT use for:**
 - Single-branch code review → `Dev10x:review`
 - Single-ticket scoping → `Dev10x:ticket-scope`
-- DDD domain modeling → `Dev10x:ddd-workshop`
+- DDD domain modeling → `Dev10x:ddd`
 - Single-PR QA analysis → `Dev10x:qa-scope`
 
 ## Orchestration
 
 This skill follows `references/task-orchestration.md` patterns.
 
-**Auto-advance:** Complete each phase, immediately start the next.
+**Auto-advance:** Complete each phase, immediately start the next — no checkpoints the resolver did not ask for.
 Only pause at the Phase 2 selection gate and Phase 4 synthesis
 review.
 
@@ -164,10 +165,18 @@ After all agents return:
    - Coverage gaps (G, H findings)
 5. **Write findings memo** — create `docs/memos/architecture-audit-YYYY-MM-DD.md`
    with full findings, priority matrix, and milestone proposals.
-6. **Draft ADR proposals** — for HIGH-impact findings that represent
+6. **Persist the memo (commit it) — REQUIRED (GH-481).** The memo is
+   the durable artifact of an expensive multi-agent audit. Left as an
+   untracked working-tree file it is the most easily-lost form of work:
+   any `git clean`, worktree reset, or branch switch discards it
+   silently. Immediately commit it via `Skill(Dev10x:git-commit)` so it
+   lands in history regardless of whether Phase 5 runs. Do NOT end the
+   skill (or proceed to the gate) with the memo uncommitted.
+7. **Draft ADR proposals** — for HIGH-impact findings that represent
    architectural decisions, propose ADRs via `Skill(Dev10x:adr)`.
 
-**If `--memo-only`:** Stop here. Present memo and skip Phase 5.
+**If `--memo-only`:** Commit the memo (step 6), then stop here.
+Present the memo and skip Phase 5.
 
 ### Synthesis Review Gate
 

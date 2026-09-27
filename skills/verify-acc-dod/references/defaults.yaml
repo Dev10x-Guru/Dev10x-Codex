@@ -1,10 +1,14 @@
 # Default acceptance criteria with executable checks
 # Plugin-owned — updates propagate automatically to all projects.
-# Repo overrides: ~/.claude/memory/Dev10x/dod-acceptance-criteria.yaml
+# Repo overrides: ~/.config/Dev10x/dod-acceptance-criteria.yaml
+#   (read-compat fallback for one release:
+#    ~/.claude/memory/Dev10x/dod-acceptance-criteria.yaml, GH-1035)
 #
 # Schema per check:
 #   name:             Human-readable criterion name (required)
-#   check:            Shell command to run (use {pr_number} and {repo} placeholders)
+#   check:            Shell command to run (use {pr_number}, {repo}, and
+#                     {base_branch} placeholders — {base_branch} avoids a
+#                     hardcoded develop so main-only repos work, GH-854 F2)
 #                     Special values:
 #                       "manual"  — ask the user via AskUserQuestion
 #                       "prompt"  — Claude evaluates the prompt from session context
@@ -14,6 +18,26 @@
 #   expect_gt:        Output (parsed as number) must be greater than this value
 #   prompt:           For "manual": question shown to user
 #                     For "prompt": instruction Claude evaluates contextually
+#   modes:            Per-mode overrides (optional). Map of mode name
+#                     to {skip: true} to skip when that mode is active.
+#                     Resolve active_modes from the DURABLE gate policy —
+#                     global ~/.config/Dev10x/friction.yaml (projects[]
+#                     match), falling back to legacy .claude/Dev10x/config.yaml.
+#                     NOT the retired ephemeral .claude/Dev10x/session.yaml
+#                     (ADR-0018, GH-854 F3).
+#   requires_human_review:
+#                     Optional boolean (ADR-0019, carried forward by
+#                     ADR-0022 D-2). When true, skip this check if the
+#                     durable review posture is `none` — no supervisor
+#                     reads this project's PRs, so a review-shaped check
+#                     is out of scope. Report it as
+#                     "skipped (supervisor_review: none)". Resolve the
+#                     posture via mcp__plugin_Dev10x_cli__supervisor_review_status
+#                     (absent or malformed reads as `required`), never by
+#                     reading the durable YAML directly. This is a
+#                     separate field, NOT a `modes:` entry — the posture
+#                     is a project fact, not a mode name, and must not be
+#                     smuggled into that map.
 #
 # Only one expect_* field per check. First match wins.
 
@@ -24,13 +48,13 @@ defaults:
         check: git status --porcelain
         expect: ""
       - name: CI passing
-        check: gh pr checks {pr_number} --repo {repo}
+        check: gh pr checks {pr_number} --repo {repo}  # cli-friction: allow raw-gh-pr — DoD runner executes this shell template directly
         expect_contains: "All checks were successful"
       - name: PR not draft
-        check: gh pr view {pr_number} --repo {repo} --json isDraft -q .isDraft
+        check: gh pr view {pr_number} --repo {repo} --json isDraft -q .isDraft  # cli-friction: allow raw-gh-pr — DoD runner executes this shell template directly
         expect: "false"
       - name: No fixup commits
-        check: git log --oneline origin/develop..HEAD
+        check: git log --oneline origin/{base_branch}..HEAD
         expect_not_contains: "fixup!"
       - name: Skill routing compliance
         check: prompt
@@ -42,16 +66,43 @@ defaults:
           raw git push)? Check iterative loops especially — the first
           iteration often uses the skill but subsequent iterations
           fall back to raw CLI.
+      - name: Fixes-linked issue scope delivered
+        check: prompt
+        prompt: >
+          For each Fixes:/Closes: link on the PR, compare the linked
+          issue's title and acceptance criteria against the diff (git
+          diff origin/{base_branch}..HEAD). FAIL when a titled capability is
+          unbuilt — tell-tales: new production code with no non-test
+          caller, or a review comment / unchecked checklist item noting
+          remaining work. A Fixes: link auto-closes its issue on merge
+          regardless of disclosure, so this catches self-disclosed cuts
+          too. On failure, recommend: drop or narrow the Fixes: link, or
+          split the undelivered scope into a tracked follow-up issue
+          before merge.
       - name: No unresolved review threads
-        check: >
-          gh pr view {pr_number} --repo {repo}
-          --json reviewThreads -q '[.reviewThreads[] | select(.isResolved == false)] | length'
-        expect: "0"
+        check: prompt
+        prompt: >
+          Call mcp__plugin_Dev10x_cli__unresolved_threads(repo="{repo}",
+          pr_number={pr_number}). PASS when the returned `count` is 0;
+          FAIL otherwise, naming each unresolved thread's author and
+          path. This is a mechanical read, not a judgement — do not
+          reason about whether a thread "looks addressed": an
+          unresolved thread is a failure.
+        requires_human_review: true
+        modes:
+          review-deferred:
+            skip: true
       - name: Review requested
         check: >
           gh pr view {pr_number} --repo {repo}
-          --json reviewRequests -q '.reviewRequests | length'
+          --json reviewRequests -q '.reviewRequests | length'  # cli-friction: allow raw-gh-pr — DoD runner executes this shell template directly
         expect_gt: 0
+        requires_human_review: true
+        modes:
+          solo-maintainer:
+            skip: true
+          review-deferred:
+            skip: true
 
   bugfix:
     checks:
@@ -59,16 +110,16 @@ defaults:
         check: git status --porcelain
         expect: ""
       - name: CI passing
-        check: gh pr checks {pr_number} --repo {repo}
+        check: gh pr checks {pr_number} --repo {repo}  # cli-friction: allow raw-gh-pr — DoD runner executes this shell template directly
         expect_contains: "All checks were successful"
       - name: PR not draft
-        check: gh pr view {pr_number} --repo {repo} --json isDraft -q .isDraft
+        check: gh pr view {pr_number} --repo {repo} --json isDraft -q .isDraft  # cli-friction: allow raw-gh-pr — DoD runner executes this shell template directly
         expect: "false"
       - name: Regression test present
-        check: git diff origin/develop..HEAD --stat
+        check: git diff origin/{base_branch}..HEAD --stat
         expect_contains: "test_"
       - name: No fixup commits
-        check: git log --oneline origin/develop..HEAD
+        check: git log --oneline origin/{base_branch}..HEAD
         expect_not_contains: "fixup!"
       - name: Skill routing compliance
         check: prompt
@@ -77,16 +128,43 @@ defaults:
           test runs delegated to the test skill (not raw pytest/uv
           run pytest)? Were all commits via Dev10x:git-commit? Were
           all pushes via Dev10x:git? Check iterative loops especially.
+      - name: Fixes-linked issue scope delivered
+        check: prompt
+        prompt: >
+          For each Fixes:/Closes: link on the PR, compare the linked
+          issue's title and acceptance criteria against the diff (git
+          diff origin/{base_branch}..HEAD). FAIL when a titled capability is
+          unbuilt — tell-tales: new production code with no non-test
+          caller, or a review comment / unchecked checklist item noting
+          remaining work. A Fixes: link auto-closes its issue on merge
+          regardless of disclosure, so this catches self-disclosed cuts
+          too. On failure, recommend: drop or narrow the Fixes: link, or
+          split the undelivered scope into a tracked follow-up issue
+          before merge.
       - name: No unresolved review threads
-        check: >
-          gh pr view {pr_number} --repo {repo}
-          --json reviewThreads -q '[.reviewThreads[] | select(.isResolved == false)] | length'
-        expect: "0"
+        check: prompt
+        prompt: >
+          Call mcp__plugin_Dev10x_cli__unresolved_threads(repo="{repo}",
+          pr_number={pr_number}). PASS when the returned `count` is 0;
+          FAIL otherwise, naming each unresolved thread's author and
+          path. This is a mechanical read, not a judgement — do not
+          reason about whether a thread "looks addressed": an
+          unresolved thread is a failure.
+        requires_human_review: true
+        modes:
+          review-deferred:
+            skip: true
       - name: Review requested
         check: >
           gh pr view {pr_number} --repo {repo}
-          --json reviewRequests -q '.reviewRequests | length'
+          --json reviewRequests -q '.reviewRequests | length'  # cli-friction: allow raw-gh-pr — DoD runner executes this shell template directly
         expect_gt: 0
+        requires_human_review: true
+        modes:
+          solo-maintainer:
+            skip: true
+          review-deferred:
+            skip: true
 
   pr-continuation:
     checks:
@@ -94,13 +172,13 @@ defaults:
         check: git status --porcelain
         expect: ""
       - name: CI passing
-        check: gh pr checks {pr_number} --repo {repo}
+        check: gh pr checks {pr_number} --repo {repo}  # cli-friction: allow raw-gh-pr — DoD runner executes this shell template directly
         expect_contains: "All checks were successful"
       - name: PR not draft
-        check: gh pr view {pr_number} --repo {repo} --json isDraft -q .isDraft
+        check: gh pr view {pr_number} --repo {repo} --json isDraft -q .isDraft  # cli-friction: allow raw-gh-pr — DoD runner executes this shell template directly
         expect: "false"
       - name: No fixup commits
-        check: git log --oneline origin/develop..HEAD
+        check: git log --oneline origin/{base_branch}..HEAD
         expect_not_contains: "fixup!"
       - name: Skill routing compliance
         check: prompt
@@ -108,16 +186,43 @@ defaults:
           Review the session for skill routing violations in
           iterative fix-test loops: did all test runs use the test
           skill? Did all commits use Dev10x:git-commit?
+      - name: Fixes-linked issue scope delivered
+        check: prompt
+        prompt: >
+          For each Fixes:/Closes: link on the PR, compare the linked
+          issue's title and acceptance criteria against the diff (git
+          diff origin/{base_branch}..HEAD). FAIL when a titled capability is
+          unbuilt — tell-tales: new production code with no non-test
+          caller, or a review comment / unchecked checklist item noting
+          remaining work. A Fixes: link auto-closes its issue on merge
+          regardless of disclosure, so this catches self-disclosed cuts
+          too. On failure, recommend: drop or narrow the Fixes: link, or
+          split the undelivered scope into a tracked follow-up issue
+          before merge.
       - name: No unresolved review threads
-        check: >
-          gh pr view {pr_number} --repo {repo}
-          --json reviewThreads -q '[.reviewThreads[] | select(.isResolved == false)] | length'
-        expect: "0"
+        check: prompt
+        prompt: >
+          Call mcp__plugin_Dev10x_cli__unresolved_threads(repo="{repo}",
+          pr_number={pr_number}). PASS when the returned `count` is 0;
+          FAIL otherwise, naming each unresolved thread's author and
+          path. This is a mechanical read, not a judgement — do not
+          reason about whether a thread "looks addressed": an
+          unresolved thread is a failure.
+        requires_human_review: true
+        modes:
+          review-deferred:
+            skip: true
       - name: Re-review requested
         check: >
           gh pr view {pr_number} --repo {repo}
-          --json reviewRequests -q '.reviewRequests | length'
+          --json reviewRequests -q '.reviewRequests | length'  # cli-friction: allow raw-gh-pr — DoD runner executes this shell template directly
         expect_gt: 0
+        requires_human_review: true
+        modes:
+          solo-maintainer:
+            skip: true
+          review-deferred:
+            skip: true
 
   local-only:
     checks:

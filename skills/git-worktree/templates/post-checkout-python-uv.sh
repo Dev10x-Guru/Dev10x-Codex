@@ -7,6 +7,11 @@
 #   avoid carrying over work-in-progress that creates confusion
 # - Gitignored files (.env, settings.local.json) ARE still copied —
 #   they are local config, not WIP
+# - GH-1299: git-tracked files are NEVER copied. `git worktree add` has
+#   already checked them out at the new worktree's own commit; copying
+#   the source checkout's version over that reverts them to whatever
+#   that checkout happens to hold, which is how fresh worktrees kept
+#   arriving with uncommitted deletions in tracked .claude/rules/*.md.
 # - Install dependencies so the worktree is ready to use
 #
 # How it works:
@@ -21,24 +26,45 @@
 if [ "$1" = "0000000000000000000000000000000000000000" ]; then
     echo "New worktree detected. Running setup..."
     pwd
-    ORIGINAL_REPO=/work/<org>/<project-name>
+    ORIGINAL_REPO="/work/<org>/<project-name>"
 
     # ── Dirty-file exclusion ────────────────────────────────────────
     # Build the full list of dirty files once for the entire repo.
     # git status --porcelain output: 2-char status + space + path
     # sed strips the 3-char prefix, leaving bare repo-relative paths.
     # Gitignored files do NOT appear, so they pass through to copy.
+    #
+    # GH-774: -uall lists untracked files INDIVIDUALLY. Without it git
+    # collapses a fully-untracked directory to a single `?? path/` entry;
+    # for `.claude/Dev10x/` (when a sibling like auto-advance-records.md is
+    # untracked-and-unignored) that collapsed entry becomes an
+    # `--exclude=Dev10x/` pattern in copy_folder and drops the WHOLE dir —
+    # including the durable config.yaml — from the worktree copy.
     DIRTY_LIST=$(mktemp)
-    git -C "$ORIGINAL_REPO" status --porcelain 2>/dev/null | \
+    git -C "$ORIGINAL_REPO" status --porcelain -uall 2>/dev/null | \
         sed 's/^...//' > "$DIRTY_LIST"
+
+    # ── Tracked-file exclusion (GH-1299) ────────────────────────────
+    # Every path git tracks in ORIGINAL_REPO. A tracked file is owned by
+    # the branch, not by the checkout, so it must never ride across: the
+    # new worktree already has the right version and ORIGINAL_REPO may be
+    # on an older commit or a different branch entirely.
+    TRACKED_LIST=$(mktemp)
+    git -C "$ORIGINAL_REPO" ls-files 2>/dev/null > "$TRACKED_LIST"
+    # An empty list means the listing failed, not that nothing is
+    # tracked — and it fails OPEN, restoring the exact overwrite this
+    # guard exists to prevent. Say so rather than reverting in silence.
+    [ -s "$TRACKED_LIST" ] || echo "warning: could not list tracked files in" \
+        "$ORIGINAL_REPO — tracked config may be overwritten (GH-1299)" >&2
 
     # copy_file <path>
     # Copies a single file from ORIGINAL_REPO, skipping if it has
-    # uncommitted changes. Creates parent directories as needed.
+    # uncommitted changes or is git-tracked. Creates parent dirs.
     copy_file() {
         src="$1"
         full="$ORIGINAL_REPO/$src"
-        [ -f "$full" ] && ! grep -qFx "$src" "$DIRTY_LIST" && {
+        [ -f "$full" ] && ! grep -qFx "$src" "$DIRTY_LIST" \
+            && ! grep -qFx "$src" "$TRACKED_LIST" && {
             mkdir -p "$(dirname "$src")"
             cp "$full" "$src" 2>/dev/null
         }
@@ -46,17 +72,18 @@ if [ "$1" = "0000000000000000000000000000000000000000" ]; then
 
     # copy_folder <path> [extra-rsync-excludes...]
     # Rsync a directory from ORIGINAL_REPO, excluding files with
-    # uncommitted changes. Extra --exclude patterns (e.g. "worktrees")
-    # can be passed as additional arguments.
+    # uncommitted changes and every git-tracked path. Extra --exclude
+    # patterns (e.g. "worktrees") can be passed as additional arguments.
     copy_folder() {
         src="$1"; shift
         full="$ORIGINAL_REPO/$src"
         [ -d "$full" ] || return 0
         dir_excl=$(mktemp)
         grep "^${src}" "$DIRTY_LIST" | sed "s|^${src}||" > "$dir_excl"
+        grep "^${src}" "$TRACKED_LIST" | sed "s|^${src}||" >> "$dir_excl"
         extra=""
         for pattern in "$@"; do extra="$extra --exclude=$pattern"; done
-        eval rsync -a --exclude-from="$dir_excl" $extra \
+        eval rsync -a --exclude-from="$dir_excl" "$extra" \
             "\"$full/\"" "\"${src}/\"" 2>/dev/null
         rm -f "$dir_excl"
     }
@@ -75,8 +102,15 @@ if [ "$1" = "0000000000000000000000000000000000000000" ]; then
 
     # ── FILES TO COPY (add new entries here) ────────────────────────
     copy_clean ".env"
+    copy_clean ".env.supabase"
     copy_clean "development.secrets.env"
-    copy_clean ".claude/" worktrees          # exclude worktrees subdir
+    # ADR-0018: session state no longer lives per-repo under
+    # .claude/Dev10x/. Durable prefs are global
+    # (~/.config/Dev10x/friction.yaml) and the ephemeral session.yaml is
+    # retired. Exclude Dev10x/ from the copy so no stale per-repo state
+    # (legacy config.yaml, auto-advance doubt-sink) rides across; seed
+    # (below) ensures the global friction.yaml + the .gitignore fresh.
+    copy_clean ".claude/" worktrees "Dev10x"
     copy_clean ".idea/"
 
     # Ensure .claude/ exists even if source had nothing to copy
@@ -85,7 +119,18 @@ if [ "$1" = "0000000000000000000000000000000000000000" ]; then
         echo '{}' > .claude/settings.local.json
     fi
 
-    rm -f "$DIRTY_LIST"
+    # >>> Dev10x session-seed (ADR-0018) >>>
+    # Ensure the global friction.yaml and the self-ignoring
+    # .claude/Dev10x/.gitignore exist. Idempotent — seed leaves present
+    # files untouched. Best-effort: a missing dev10x CLI is non-fatal.
+    if command -v dev10x >/dev/null 2>&1; then
+        dev10x session seed || true
+    elif command -v uvx >/dev/null 2>&1; then
+        uvx dev10x session seed || true
+    fi
+    # <<< Dev10x session-seed (ADR-0018) <<<
+
+    rm -f "$DIRTY_LIST" "$TRACKED_LIST"
 
     # ── Post-copy setup ─────────────────────────────────────────────
     command -v uv >/dev/null && uv sync

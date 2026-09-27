@@ -1,101 +1,95 @@
-"""Task plan synchronizer — persists task state to a YAML plan file.
+"""Task plan synchronizer — CLI entry points for plan operations.
 
-Triggered on TaskCreate and TaskUpdate. Maintains a per-project
-plan file that survives context compaction and session restarts.
+Triggered on TaskCreate and TaskUpdate (via `cmd_hook`) or invoked
+directly from `dev10x hook plan ...` commands. The mutation logic
+lives in `dev10x.plan.service`; this module is the thin CLI adapter
+that handles stdin parsing, locking, and stdout/exit-code shaping.
 
 Plan file location:
-    <git-toplevel>/.codex/session/plan.yaml
+    <git-toplevel>/.claude/session/plan.yaml
 """
 
 from __future__ import annotations
 
 import json
 import sys
-from datetime import UTC, datetime
-from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
-from dev10x.domain.git_context import GitContext
-from dev10x.domain.plan import Plan
-
-_git = GitContext()
-
-
-def get_toplevel() -> str | None:
-    return _git.toplevel
-
-
-def get_plan_path(*, toplevel: str) -> Path:
-    return Path(toplevel) / ".codex" / "session" / "plan.yaml"
-
-
-def read_plan(*, plan_path: Path) -> dict[str, Any]:
-    plan = Plan.load(path=plan_path)
-    return plan._to_dict()
+from dev10x.domain.documents.plan import Plan, get_plan_path, get_toplevel
+from dev10x.domain.file_locks import file_lock
+from dev10x.plan.service import (
+    PlanServiceError,
+    archive_plan,
+    plan_summary,
+    set_plan_context,
+)
 
 
 def cmd_set_context(*, args: list[str]) -> None:
-    toplevel = get_toplevel()
-    if not toplevel:
-        print("Not in a git repository", file=sys.stderr)
+    try:
+        updated = set_plan_context(args=args)
+    except PlanServiceError as exc:
+        print(str(exc), file=sys.stderr)
         sys.exit(1)
-
-    plan_path = get_plan_path(toplevel=toplevel)
-    plan = Plan.load(path=plan_path)
-    plan.ensure_metadata()
-
-    for arg in args:
-        if "=" not in arg:
-            print(f"Invalid argument (expected K=V): {arg}", file=sys.stderr)
-            sys.exit(1)
-        key, value = arg.split("=", 1)
-        plan.set_context(key=key, value=value)
-
-    plan.save(path=plan_path)
-    context = plan.metadata.get("context", {})
-    print(f"Updated plan context: {list(context.keys())}")
+    print(f"Updated plan context: {updated}")
 
 
 def cmd_archive() -> None:
-    toplevel = get_toplevel()
-    if not toplevel:
-        print("Not in a git repository", file=sys.stderr)
+    try:
+        result = archive_plan()
+    except PlanServiceError as exc:
+        print(str(exc), file=sys.stderr)
         sys.exit(1)
-
-    plan_path = get_plan_path(toplevel=toplevel)
-    if not plan_path.exists():
+    if not result["archived"]:
         print("No plan file to archive")
         sys.exit(0)
-
-    plan = Plan.load(path=plan_path)
-    archive_dir = Path(toplevel) / ".codex" / "session" / "archive"
-    archive_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-    branch_slug = plan.metadata.get("branch", "unknown")
-    branch_slug = branch_slug.replace("/", "-")[:50]
-    archive_name = f"plan-{timestamp}-{branch_slug}.yaml"
-    archive_path = archive_dir / archive_name
-
-    plan.metadata["archived_at"] = datetime.now(UTC).isoformat()
-    plan.save(path=archive_path)
-    plan_path.unlink()
-    print(f"Archived plan to {archive_path.name}")
+    print(f"Archived plan to {result['archive_name']}")
 
 
 def cmd_json_summary() -> None:
-    toplevel = get_toplevel()
-    if not toplevel:
+    try:
+        summary = plan_summary()
+    except PlanServiceError:
         json.dump({}, sys.stdout)
         sys.exit(0)
 
-    plan_path = get_plan_path(toplevel=toplevel)
-    plan = Plan.load(path=plan_path)
-    if not plan.metadata:
+    if not summary:
         json.dump({}, sys.stdout)
         sys.exit(0)
 
-    json.dump(plan._to_dict(), sys.stdout, indent=2)
+    json.dump(summary, sys.stdout, indent=2)
+
+
+def _apply_task_create(*, plan: Plan, tool_input: dict[str, Any], tool_result: Any) -> bool:
+    return plan.handle_task_create(tool_input=tool_input, tool_result=tool_result)
+
+
+def _apply_task_update(*, plan: Plan, tool_input: dict[str, Any], tool_result: Any) -> bool:
+    plan.handle_task_update(tool_input=tool_input)
+    return True
+
+
+TOOL_HANDLERS: dict[str, Callable[..., bool]] = {
+    "TaskCreate": _apply_task_create,
+    "TaskUpdate": _apply_task_update,
+}
+
+
+def _tool_outcome(*, payload: dict[str, Any]) -> Any:
+    """What the tool reported back, across both PostToolUse shapes.
+
+    Claude Code delivered the result as rendered text under
+    ``tool_result`` and now delivers it structured under
+    ``tool_response`` (GH-1309) — the newer payload carries no
+    ``tool_result`` field at all. Both are handed on unchanged so the
+    handlers decide what to read; deciding here would need this seam to
+    know which tool ran.
+    """
+    result = payload.get("tool_result", "")
+    if isinstance(result, dict):
+        result = result.get("content", str(result))
+    return result or payload.get("tool_response", "")
 
 
 def cmd_hook() -> None:
@@ -109,35 +103,29 @@ def cmd_hook() -> None:
         sys.exit(0)
 
     tool_input = payload.get("tool_input", {})
-    tool_result = payload.get("tool_result", "")
-    if isinstance(tool_result, dict):
-        tool_result = tool_result.get("content", str(tool_result))
+    tool_result = _tool_outcome(payload=payload)
 
-    tool_name = payload.get("tool_name", "")
+    handler = TOOL_HANDLERS.get(payload.get("tool_name", ""))
+    if handler is None:
+        sys.exit(0)
 
     toplevel = get_toplevel()
     if not toplevel:
         sys.exit(0)
 
     plan_path = get_plan_path(toplevel=toplevel)
-    plan = Plan.load(path=plan_path)
-    is_new_plan = plan.is_new
-    plan.ensure_metadata()
+    # Lock spans the full load→mutate→save cycle: without it, two
+    # concurrent TaskCreate hooks both read the same baseline plan
+    # and the second save clobbers the first task entry.
+    with file_lock(plan_path):
+        plan = Plan.load(path=plan_path)
+        is_new_plan = plan.is_new
+        plan.ensure_metadata()
 
-    changed = False
-    if tool_name == "TaskCreate":
-        changed = plan.handle_task_create(
-            tool_input=tool_input,
-            tool_result=tool_result,
-        )
-    elif tool_name == "TaskUpdate":
-        plan.handle_task_update(tool_input=tool_input)
-        changed = True
-    else:
-        sys.exit(0)
+        changed = handler(plan=plan, tool_input=tool_input, tool_result=tool_result)
 
-    if is_new_plan and not changed:
-        sys.exit(0)
+        if is_new_plan and not changed:
+            sys.exit(0)
 
-    plan.check_all_completed()
-    plan.save(path=plan_path)
+        plan.check_all_completed()
+        plan.save(path=plan_path)

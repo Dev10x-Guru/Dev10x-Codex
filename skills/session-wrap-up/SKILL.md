@@ -9,12 +9,43 @@ description: >
   list, or starting new work (use Dev10x:work-on).
 user-invocable: true
 invocation-name: Dev10x:session-wrap-up
+allowed-tools:
+  - mcp__plugin_Dev10x_cli__pr_detect
+  - mcp__plugin_Dev10x_cli__task_index_append
+  - mcp__plugin_Dev10x_cli__task_index_get
+  - mcp__plugin_Dev10x_cli__task_index_set
 ---
 
 # Dev10x:session-wrap-up — Session End Orchestrator
 
 **Announce:** "Using Dev10x:session-wrap-up to capture open loops
 before closing this session."
+
+## Mandatory Invocation Triggers (GH-163)
+
+Audit GH-163 caught a session that wound down with CI still
+unconfirmed, 5 newly-created follow-up issues unlinked to the
+parent ticket, no plan-sync archive, and no parking note —
+`Dev10x:session-wrap-up` matched every trigger but was never
+invoked, and the parent orchestrator marked its wrap-up task
+`completed` without a `Skill()` call.
+
+**Hard trigger signals that REQUIRE this skill (do not skip):**
+
+- User signals end-of-session: "wrap up", "pause", "done for
+  today", "that's it"
+- CI on a session-created PR is still pending or unconfirmed
+  and the user is stepping away
+- Open loops (PRs awaiting review, deferred tasks, unfiled
+  follow-ups) exist with no plan-sync archive
+- Orchestrators (`Dev10x:work-on`, `Dev10x:fanout`) reach the
+  plan completion gate with non-empty pending tasks
+
+**Anti-pattern (PROHIBITED):** Marking a "Session wrap-up" or
+"Park items" task `completed` in an orchestrator's task list
+without calling `Skill(Dev10x:session-wrap-up)` first. The task
+completion is the side effect of the skill running — not a
+substitute for running it.
 
 ## Overview
 
@@ -25,7 +56,7 @@ each one to the right discovery context.
 
 This skill follows `references/task-orchestration.md` patterns.
 
-**Auto-advance:** Complete each step, immediately start the next.
+**Auto-advance:** Complete each step, immediately start the next — no checkpoints the resolver did not ask for.
 Never pause to ask "should I continue?" between steps.
 
 **REQUIRED: Create tasks before ANY work.** Execute these
@@ -66,10 +97,20 @@ session (lines starting with `+` that contain TODO or FIXME).
 
 ### 1d. Open PRs
 
-```bash
-gh pr list --head "$(git branch --show-current)" --state open \
-  --json number,title,url --limit 5
-```
+Call `mcp__plugin_Dev10x_cli__pr_detect(arg="")` (no arg) — the
+tool auto-detects the PR for the current branch and returns
+`pr_number`, `repo`, `pr_url`, and `branch`. Treat an `error`
+response (no PR for branch) as "no open PR" rather than a
+failure. No raw `gh` invocation or branch-name subshell is
+needed.
+
+**Merge-gated completion (GH-729).** An open/unmerged PR means the
+session is **not** complete — "shippable / handed off to review" is
+not terminal. When a detected PR is unmerged, the right deferral is
+a **"Monitor PR #<N> for review / merge"** task (owned by
+`Dev10x:gh-pr-monitor`), not a passive "Verify AC and close". This
+mirrors `verify-acc-dod`'s merge-gated Decision Gate and keeps the
+task-list invariant (GH-149) pointed at the real remaining work.
 
 ### 1e. Project TODO file
 
@@ -150,6 +191,101 @@ PR author to pick up in a future session.
 The `🔖 **Session bookmark**` prefix on the first line is required —
 `Dev10x:park-discover` scans for this exact pattern when checking open
 PRs for deferred work.
+
+## Phase 3b: Session State Persistence (GH-917, GH-782)
+
+**After triage, before summary**, persist session state to the
+per-repo task index so a future session can resume where this one
+left off. Write it through the MCP tools — never with Write/Edit
+(ADR-0018 D5, GH-1009).
+
+**What to persist:**
+
+1. **Uncompleted tasks** — append each pending/in-progress entry
+   from `TaskList` with `source: session-wrap-up`, one call per
+   task:
+   ```
+   mcp__plugin_Dev10x_cli__task_index_append(entry={
+       "subject": "Implement fix",
+       "status": "pending",
+       "source": "session-wrap-up",
+       "metadata": {"type": "epic"},
+   })
+   ```
+
+2. **Continuation prompt** — generate a one-paragraph summary
+   of what was in progress and what to do next. Pass it as
+   `continuation_prompt` to `task_index_set` (below). This
+   bootstraps context after `/clear` or a new session.
+
+3. **Collected insights** — any lessons learned, patterns
+   discovered, or decisions made during the session that
+   are not captured in code or commits. Pass as `insights`.
+
+4. **Freshness stamp (GH-782)** — stamp the index with the wrapping
+   session's branch/tickets and a wrap timestamp so a later session
+   can tell live deferrals from stale carryover (see the scope note
+   below — this is `park-discover`'s input, not the
+   `session_adoption` gate's identity). Steps 2–4 are one call:
+   ```
+   mcp__plugin_Dev10x_cli__task_index_set(
+       continuation_prompt="<one paragraph>",
+       insights=["<lesson>"],
+       branch="<current git branch>",
+       tickets=["GH-782"],          # ticket IDs this session worked
+       wrapped_at="2026-07-09T10:30:00Z",   # ISO8601 UTC
+   )
+   ```
+   Only the fields you pass are written, so this cannot blank the
+   `tasks:` appended in step 1. `Dev10x:park-discover` reads these
+   keys to classify each carried entry as **live** (branch matches,
+   or a ticket overlaps the resuming session) or **stale** (identity
+   mismatch, or an old `wrapped_at`) — see that skill's *Staleness
+   classification*. Without the stamp a months-old `tasks:` list /
+   `continuation_prompt` is silently re-surfaced as if current — the
+   GH-782 root cause.
+
+**Ephemeral-only, no durable keys (GH-774, ADR-0018).** Durable
+preferences — `friction_level`, `active_modes`, and the
+`gate_*` keys — live in the global
+`~/.config/Dev10x/friction.yaml`. This skill persists **only**
+ephemeral state: do NOT write `friction_level` or `active_modes`
+anywhere. A leftover `active_modes: [solo-maintainer]` carried in
+session state was the PR #740 auto-merge hazard; keeping durable
+keys out of what this skill rewrites removes that class of
+stale-mode bug.
+
+**The freshness stamp is NOT the gate's session identity
+(GH-1001).** Two things once shared these key names, and only one
+of them still lives here:
+
+- The `branch:` / `tickets:` written in step 4 above stay. Their
+  consumer is `Dev10x:park-discover`, which classifies each carried
+  entry live-or-stale against them. Dropping the stamp reintroduces
+  the GH-782 bug where a months-old `tasks:` list resurfaces as
+  current.
+- The identity the Phase 0 `session_adoption` gate reads is a
+  *different* thing and does not come from here. Plan-sync persists
+  it (MCP-written, gate-free) and `_computed_session_stale()` reads
+  it from there — so do not expect `task_index_set(branch=…)` to
+  influence that gate, and do not treat this stamp as a durable pref.
+
+**Integration with `/clear`:** After persisting, inform the user:
+"Session state saved. To resume after `/clear`, invoke
+`Dev10x:work-on` — it will detect the saved state and offer to
+continue."
+
+> **Rehomed in GH-1009 (ADR-0018 D5).** This phase — and the `park`
+> family and `Dev10x:gh-pr-bookmark` — used to Write/Edit the task
+> index at `.claude/Dev10x/session.yaml`. GH-1001 left that in place
+> as a documented exception pending a destination decision; GH-1009
+> made it, because a Write/Edit under a project's `.claude/` trips
+> Claude Code's self-settings consent gate on every session
+> regardless of allow rules (ADR-0018 RC-A) — so the exception was
+> paying the exact cost the ADR exists to remove. The index now lives
+> outside every repo and only the `task_index_*` MCP tools write it.
+> The retired path is read for one release, then deleted by
+> `Dev10x:plugin-doctor`.
 
 ## Phase 4: Summary
 

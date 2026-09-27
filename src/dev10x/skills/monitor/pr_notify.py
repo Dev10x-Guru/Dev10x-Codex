@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["slack_sdk"]
+# dependencies = ["slack_sdk>=3.21,<4"]
 # ///
 """
 PR notification helper for Phase 3 of pr:monitor.
@@ -20,7 +20,7 @@ Subcommands:
 Usage:
     pr-notify.py prepare --pr 123 --repo owner/repo
     pr-notify.py send --pr 123 --repo owner/repo \\
-        --channel CHANNEL_ID --message-file /tmp/claude/pr-monitor/pr-notify-msg.txt \\
+        --channel CHANNEL_ID --message-file /tmp/Dev10x/pr-monitor/pr-notify-msg.txt \\
         --reviewer org/team \\
         [--skip-slack] [--skip-reviewers] [--skip-checklist]
     pr-notify.py status --pr 123 --repo owner/repo [--json]
@@ -30,12 +30,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from dev10x.domain.common.repository_ref import RepositoryRef
+from dev10x.domain.common.result import ErrorResult
+from dev10x.skills.common.jtbd import extract_jtbd, md_to_slack_bold
+from dev10x.skills.notifications import slack_notify
 
 
 def gh_json(args: list[str]) -> Any:
@@ -70,28 +76,18 @@ def count_open_threads(pr_number: int, repo: str) -> int:
     return int(count)
 
 
-def extract_jtbd(body: str) -> str | None:
-    lines = body.splitlines()
-    for i, line in enumerate(lines):
-        if line.strip().startswith("**When**"):
-            jtbd_lines = [line.strip()]
-            for next_line in lines[i + 1 :]:
-                if not next_line.strip() or next_line.startswith("#"):
-                    break
-                jtbd_lines.append(next_line.strip())
-            return " ".join(jtbd_lines)
-    return None
-
-
-def md_to_slack_bold(text: str) -> str:
-    return re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
-
-
 def split_title_jtbd(pr_title: str) -> tuple[str, str | None]:
     if " \u2014 " in pr_title:
         title, embedded_jtbd = pr_title.split(" \u2014 ", maxsplit=1)
         return title.strip(), embedded_jtbd.strip()
     return pr_title, None
+
+
+def _repo_name(repo: str) -> str:
+    ref = RepositoryRef.try_parse(repo)
+    if ref is not None:
+        return ref.name
+    return repo.split("/")[-1]
 
 
 def format_slack_message(
@@ -101,7 +97,7 @@ def format_slack_message(
     pr_title: str,
     jtbd: str | None,
 ) -> str:
-    repo_short = repo.split("/")[-1]
+    repo_short = _repo_name(repo)
     link = f"<{pr_url}|{repo_short}#{pr_number}>"
     short_title, title_jtbd = split_title_jtbd(pr_title=pr_title)
     effective_jtbd = jtbd or title_jtbd
@@ -167,7 +163,9 @@ def update_pr_checklist(pr_number: int, repo: str, diff: str) -> None:
     print(f"✅ PR #{pr_number} checklist updated.")
 
 
-def fetch_ci_checks(pr_number: int, repo: str) -> list[dict[str, Any]]:
+def get_ci_checks(pr_number: int, repo: str) -> list[dict[str, Any]]:
+    # `conclusion` was removed from `gh pr checks --json`; `bucket`
+    # (pass/fail/pending/skipping/cancel) is the normalized verdict (GH-773).
     return gh_json(
         args=[
             "pr",
@@ -176,12 +174,12 @@ def fetch_ci_checks(pr_number: int, repo: str) -> list[dict[str, Any]]:
             "--repo",
             repo,
             "--json",
-            "name,state,conclusion,startedAt,completedAt",
+            "name,state,bucket,startedAt,completedAt",
         ]
     )
 
 
-def fetch_review_comments(pr_number: int, repo: str) -> list[dict[str, Any]]:
+def get_review_comments(pr_number: int, repo: str) -> list[dict[str, Any]]:
     return gh_json(
         args=[
             "api",
@@ -196,7 +194,7 @@ def fetch_review_comments(pr_number: int, repo: str) -> list[dict[str, Any]]:
     )
 
 
-def fetch_reviewers(pr_number: int, repo: str) -> dict[str, Any]:
+def get_reviewers(pr_number: int, repo: str) -> dict[str, Any]:
     return gh_json(
         args=[
             "pr",
@@ -210,32 +208,45 @@ def fetch_reviewers(pr_number: int, repo: str) -> dict[str, Any]:
     )
 
 
+_BUCKET_DISPLAY = {
+    "pass": "✅ pass",
+    "fail": "❌ fail",
+    "pending": "⏳ pending",
+    "skipping": "⏭️ skipping",
+    "cancel": "🚫 cancel",
+}
+
+
+def _is_zero_ts(ts: str) -> bool:
+    # gh emits the Go zero time for not-yet-run checks instead of an empty
+    # string, so a naive truthiness check treats them as real timestamps.
+    return not ts or ts.startswith("0001-01-01")
+
+
+def _format_check_duration(started: str, completed: str, bucket: str) -> str:
+    if _is_zero_ts(started) or _is_zero_ts(completed):
+        return "..." if bucket == "pending" else "-"
+    t0 = datetime.fromisoformat(started)
+    t1 = datetime.fromisoformat(completed)
+    secs = int((t1 - t0).total_seconds())
+    if secs < 0:
+        return "-"
+    return f"{secs // 60}m {secs % 60}s" if secs >= 60 else f"{secs}s"
+
+
 def format_ci_table(checks: list[dict[str, Any]]) -> str:
     if not checks:
         return "No CI checks found."
     lines = ["| Check | Status | Duration |", "| --- | --- | --- |"]
     for c in checks:
         name = c.get("name", "unknown")
-        state = c.get("state", "")
-        conclusion = c.get("conclusion", "")
-        if state == "COMPLETED":
-            icon = "✅" if conclusion == "SUCCESS" else "❌"
-            status = f"{icon} {conclusion.lower()}"
-        elif state == "IN_PROGRESS":
-            status = "⏳ running"
-        else:
-            status = f"⏸️ {state.lower()}"
-        started = c.get("startedAt") or ""
-        completed = c.get("completedAt") or ""
-        if started and completed:
-            t0 = datetime.fromisoformat(started.replace("Z", "+00:00"))
-            t1 = datetime.fromisoformat(completed.replace("Z", "+00:00"))
-            secs = int((t1 - t0).total_seconds())
-            duration = f"{secs // 60}m {secs % 60}s" if secs >= 60 else f"{secs}s"
-        elif state == "IN_PROGRESS":
-            duration = "..."
-        else:
-            duration = "-"
+        bucket = c.get("bucket", "")
+        status = _BUCKET_DISPLAY.get(bucket, f"⏸️ {bucket or 'unknown'}")
+        duration = _format_check_duration(
+            started=c.get("startedAt") or "",
+            completed=c.get("completedAt") or "",
+            bucket=bucket,
+        )
         lines.append(f"| {name} | {status} | {duration} |")
     return "\n".join(lines)
 
@@ -284,32 +295,125 @@ def format_reviewers_section(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_status_report(
-    checks: list[dict[str, Any]],
-    comments: list[dict[str, Any]],
-    reviewers: dict[str, Any],
-) -> str:
+@dataclass(frozen=True)
+class PRStatusSnapshot:
+    """Immutable bundle of the three independent PR status fetches (GH-839).
+
+    Groups CI checks, review comments, and reviewer data into one value
+    object so the ``format_*`` helpers consume a single testable input
+    (buildable in-memory, no live PR needed) and so the fetches can run
+    concurrently instead of serially.
+    """
+
+    ci_checks: list[dict[str, Any]]
+    review_comments: list[dict[str, Any]]
+    reviewers: dict[str, Any]
+
+
+def fetch_status_snapshot(pr_number: int, repo: str) -> PRStatusSnapshot:
+    """Fetch CI checks, review comments, and reviewers concurrently (GH-839).
+
+    The three ``gh`` calls are independent, so a small thread pool collapses
+    their latency from 3× serial to ~1× per monitor tick. ``gh_json`` exits
+    non-zero on failure; that ``SystemExit`` surfaces via ``future.result()``.
+    """
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        checks = pool.submit(get_ci_checks, pr_number=pr_number, repo=repo)
+        comments = pool.submit(get_review_comments, pr_number=pr_number, repo=repo)
+        reviewers = pool.submit(get_reviewers, pr_number=pr_number, repo=repo)
+        return PRStatusSnapshot(
+            ci_checks=checks.result(),
+            review_comments=comments.result(),
+            reviewers=reviewers.result(),
+        )
+
+
+def format_status_report(snapshot: PRStatusSnapshot) -> str:
     sections = [
         "## CI Check Status\n",
-        format_ci_table(checks=checks),
+        format_ci_table(checks=snapshot.ci_checks),
         "\n## Review Comments\n",
-        format_comments_section(comments=comments),
+        format_comments_section(comments=snapshot.review_comments),
         "\n## Reviewers\n",
-        format_reviewers_section(data=reviewers),
+        format_reviewers_section(data=snapshot.reviewers),
     ]
     return "\n".join(sections)
 
 
+@dataclass(frozen=True)
+class PRNotificationContext:
+    """PR facts needed to prepare a review notification (GH-839).
+
+    Separates GitHub fetch results from the Slack/JTBD formatting so
+    ``cmd_prepare`` is a thin adapter over testable pieces.
+    """
+
+    pr_number: int
+    repo: str
+    pr_url: str
+    pr_title: str
+    pr_state: str
+    open_threads: int
+    jtbd: str | None
+    slack_message: str
+
+    @property
+    def ready(self) -> bool:
+        return self.open_threads == 0 and self.pr_state == "OPEN"
+
+
+def build_notification_context(pr_number: int, repo: str) -> PRNotificationContext:
+    """Assemble a :class:`PRNotificationContext`, fetching concurrently (GH-839).
+
+    The PR view and the open-thread count are independent gh calls, so they
+    run in parallel; JTBD extraction and Slack formatting are pure and run
+    afterward on the fetched data.
+    """
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pr_future = pool.submit(
+            gh_json,
+            args=[
+                "pr",
+                "view",
+                str(pr_number),
+                "--repo",
+                repo,
+                "--json",
+                "number,title,body,url,state",
+            ],
+        )
+        threads_future = pool.submit(count_open_threads, pr_number=pr_number, repo=repo)
+        pr = pr_future.result()
+        open_threads = threads_future.result()
+
+    jtbd = extract_jtbd(body=pr.get("body") or "")
+    message = format_slack_message(
+        pr_number=pr_number,
+        repo=repo,
+        pr_url=pr["url"],
+        pr_title=pr["title"],
+        jtbd=jtbd,
+    )
+    return PRNotificationContext(
+        pr_number=pr_number,
+        repo=repo,
+        pr_url=pr["url"],
+        pr_title=pr["title"],
+        pr_state=pr["state"],
+        open_threads=open_threads,
+        jtbd=jtbd,
+        slack_message=message,
+    )
+
+
 def cmd_status(args: argparse.Namespace) -> None:
-    checks = fetch_ci_checks(pr_number=args.pr, repo=args.repo)
-    comments = fetch_review_comments(pr_number=args.pr, repo=args.repo)
-    reviewers = fetch_reviewers(pr_number=args.pr, repo=args.repo)
-    report = format_status_report(checks=checks, comments=comments, reviewers=reviewers)
+    snapshot = fetch_status_snapshot(pr_number=args.pr, repo=args.repo)
+    report = format_status_report(snapshot=snapshot)
     if args.json:
         output = {
-            "ci_checks": checks,
-            "review_comments": comments,
-            "reviewers": reviewers,
+            "ci_checks": snapshot.ci_checks,
+            "review_comments": snapshot.review_comments,
+            "reviewers": snapshot.reviewers,
             "report_markdown": report,
         }
         print(json.dumps(output, indent=2))
@@ -318,39 +422,18 @@ def cmd_status(args: argparse.Namespace) -> None:
 
 
 def cmd_prepare(args: argparse.Namespace) -> None:
-    pr = gh_json(
-        args=[
-            "pr",
-            "view",
-            str(args.pr),
-            "--repo",
-            args.repo,
-            "--json",
-            "number,title,body,url,state",
-        ]
-    )
-
-    open_threads = count_open_threads(pr_number=args.pr, repo=args.repo)
-    jtbd = extract_jtbd(body=pr.get("body") or "")
-    message = format_slack_message(
-        pr_number=args.pr,
-        repo=args.repo,
-        pr_url=pr["url"],
-        pr_title=pr["title"],
-        jtbd=jtbd,
-    )
-
+    ctx = build_notification_context(pr_number=args.pr, repo=args.repo)
     output = {
-        "pr_number": args.pr,
-        "repo": args.repo,
-        "pr_url": pr["url"],
-        "pr_title": pr["title"],
-        "pr_state": pr["state"],
-        "open_threads": open_threads,
-        "jtbd_found": jtbd is not None,
-        "jtbd": jtbd,
-        "slack_message": message,
-        "ready": open_threads == 0 and pr["state"] == "OPEN",
+        "pr_number": ctx.pr_number,
+        "repo": ctx.repo,
+        "pr_url": ctx.pr_url,
+        "pr_title": ctx.pr_title,
+        "pr_state": ctx.pr_state,
+        "open_threads": ctx.open_threads,
+        "jtbd_found": ctx.jtbd is not None,
+        "jtbd": ctx.jtbd,
+        "slack_message": ctx.slack_message,
+        "ready": ctx.ready,
     }
 
     print(json.dumps(output, indent=2))
@@ -368,35 +451,15 @@ def cmd_send(args: argparse.Namespace) -> None:
         if args.message_file:
             message = Path(args.message_file).read_text()
 
-        # Post via Slack notification script if available, otherwise
-        # print the message for the user to post manually.
-        slack_notify = Path(__file__).parents[4] / "skills" / "slack" / "slack-notify.py"
-        if slack_notify.exists() and args.channel:
-            notify_args = [
-                "run",
-                "--script",
-                str(slack_notify),
-                "--channel",
-                args.channel,
-                "--message",
-                message,
-            ]
-            result = subprocess.run(
-                ["uv", *notify_args],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode != 0:
-                print(
-                    f"❌ Slack notification failed: {result.stderr.strip()}",
-                    file=sys.stderr,
-                )
+        # Post via importable slack_notify module (GH-442). Works in both
+        # plugin-checkout and uvx-installed contexts.
+        if args.channel:
+            result = slack_notify.notify_slack(channel=args.channel, message=message)
+            if isinstance(result, ErrorResult):
+                print(f"❌ Slack notification failed: {result.error}", file=sys.stderr)
                 sys.exit(1)
-            print(result.stdout.strip())
-            ts_match = re.search(r"ts=(\S+)", result.stdout)
-            if ts_match:
-                slack_ts = ts_match.group(1)
+            print(f"✅ Slack message sent successfully! ts={result.value}")
+            slack_ts = result.value
         else:
             print(f"📋 Notification message (post manually):\n{message}")
 
@@ -480,6 +543,10 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    try:
+        args.repo = str(RepositoryRef.parse(args.repo))
+    except ValueError as exc:
+        parser.error(str(exc))
     commands = {
         "prepare": cmd_prepare,
         "send": cmd_send,

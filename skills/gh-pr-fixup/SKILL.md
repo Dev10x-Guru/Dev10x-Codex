@@ -11,7 +11,13 @@ user-invocable: true
 invocation-name: Dev10x:gh-pr-fixup
 allowed-tools:
   - mcp__plugin_Dev10x_cli__pr_comment_reply
+  - Skill(Dev10x:git)
+  - Skill(Dev10x:py-test)
   - mcp__plugin_Dev10x_cli__pr_comments
+  - Bash(gh pr comment:*)
+  - Bash(gh api:*)
+  - Bash(pytest:*)
+  - mcp__plugin_Dev10x_cli__push_safe
 ---
 
 # Implement Fix for PR Review Comment
@@ -27,17 +33,32 @@ already been validated as needing a code change. It:
 4. Pushes the commit
 5. Replies to the comment with the commit reference
 
-**Critical rule: ONE fixup commit per PR comment.**
+**Critical rule: ONE fixup commit per PR comment — unless the fix
+spans hunks owned by multiple branch commits.** "One fixup per
+comment" is a traceability floor (so reviewers can match comment to
+commit), not a cap on commit count. When `Dev10x:git-fixup` reports
+multi-owner staged changes (status: `multi`), create **one fixup per
+owning commit**, all referencing the same review comment URL.
+Bundling cross-commit hunks into a single fixup creates conflicts on
+autosquash that `git rerere` then silently re-applies — see GH-299.
+
+**Entry point rule:** `Dev10x:gh-pr-respond` is the recommended
+entry point for all PR review comments. It orchestrates triage,
+fixup, reply, and thread resolution as a pipeline. Calling
+`Dev10x:gh-pr-fixup` directly skips triage, reply formatting,
+and thread resolution — use it only when you have already
+validated the comment and will handle reply/resolution yourself.
 
 **When to use this skill:**
 - Called by `Dev10x:gh-pr-respond` after `Dev10x:gh-pr-triage` returns `VALID`
-- Standalone when you already know a comment needs a fix
+- Standalone only when the comment is already validated and you
+  will handle reply and thread resolution separately
 
 ## Orchestration
 
 This skill follows `references/task-orchestration.md` patterns.
 
-**Auto-advance:** Complete each step, immediately start the next.
+**Auto-advance:** Complete each step, immediately start the next — no checkpoints the resolver did not ask for.
 Never pause to ask "should I continue?" between steps.
 
 **REQUIRED: Create tasks before ANY work.** Execute these
@@ -170,14 +191,30 @@ this comment:
 
 ### Step 5: Create Fixup Commit (delegate to Dev10x:git-fixup)
 
-**IMPORTANT:** Delegate to the `Dev10x:git-fixup` skill.
+**IMPORTANT:** Delegate to the `Dev10x:git-fixup` skill. It resolves
+the fixup target by blaming the staged hunks (GH-299), so each fixup
+lands adjacent to the commit that actually owns the touched lines.
 
 ```bash
 # Stage the changes
 git add {file_path}
 
-# Delegate to Dev10x:git-fixup skill (handles message format)
+# Delegate to Dev10x:git-fixup skill (handles target resolution + message format)
 ```
+
+**When the fix spans multiple owning commits**, `Dev10x:git-fixup`
+returns a `multi` status and refuses to create a cross-commit fixup.
+In that case:
+
+1. Restage hunks per owning commit (`git restore --staged .` then
+   `git add -p` for each owner's files/hunks)
+2. Invoke `Dev10x:git-fixup` once per owning commit
+3. Collect every resulting commit hash; pass all of them to Step 6
+   and reference each in the Step 7 reply (e.g. "Fixed in `abc1234`
+   and `def5678` — payments service + regression tests")
+
+Multiple fixups for one review comment are allowed and correct here —
+they preserve traceability while keeping each fixup foldable.
 
 **Fixup commit format:**
 ```
@@ -197,10 +234,15 @@ Get the commit hash and build both link types for the reply:
 ```bash
 commit_hash=$(git rev-parse --short HEAD)
 full_hash=$(git rev-parse HEAD)
-# PR-relative link — shows diff within PR context (becomes 404 after groom)
+# PR-relative link — most useful while the PR is in flight: clicks
+# land in the inline-diff view inside the PR and reviewers can comment
+# on the change without leaving the page. Becomes 404 once the commit
+# vanishes (after groom, after merge with squash strategy).
 pr_commit_url="https://github.com/{owner}/{repo}/pull/{pr_number}/commits/${full_hash}"
-# Absolute repo link — survives grooming, useful for post-groom audit
-repo_commit_url="https://github.com/{owner}/{repo}/commit/${full_hash}"
+# Absolute repo permalink — survives grooming and merge: rebase
+# rewrites the SHA on the branch but the original commit remains
+# reachable in the repo, so the permalink stays valid post-merge.
+permalink="https://github.com/{owner}/{repo}/commit/${full_hash}"
 ```
 
 ### Step 7: Reply to Comment Thread
@@ -212,7 +254,7 @@ Reply **in the review comment thread** (not as a top-level PR comment).
 mcp__plugin_Dev10x_cli__pr_comment_reply(
     pr_number={pr_number},
     comment_id={comment_id},
-    body="Fixed in [`{short_hash}`]({pr_commit_url}) · [permalink]({repo_commit_url}) - {brief_explanation}"
+    body="Fixed in [`{short_hash}`]({pr_commit_url}) · [permalink]({permalink}) - {brief_explanation}"
 )
 ```
 
@@ -220,19 +262,24 @@ mcp__plugin_Dev10x_cli__pr_comment_reply(
 ```bash
 gh api --method POST \
   repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies \
-  -f body="Fixed in [\`{short_hash}\`]({pr_commit_url}) · [permalink]({repo_commit_url}) - {brief_explanation}"
+  -f body="Fixed in [\`{short_hash}\`]({pr_commit_url}) · [permalink]({permalink}) - {brief_explanation}"
 ```
 
-**Reply format (GH-777):**
+**Reply format (GH-777, GH-52):**
 ```markdown
-Fixed in [`{short_hash}`]({pr_commit_url}) · [permalink]({repo_commit_url}) - {brief explanation}.
+Fixed in [`{short_hash}`]({pr_commit_url}) · [permalink]({permalink}) - {brief explanation}.
 ```
 
-Both links are included because:
-- **PR link** (`/pull/N/commits/HASH`): shows diff within PR
-  context, allows reviewers to comment on the change
-- **Permalink** (`/commit/HASH`): survives grooming (rebase
-  rewrites SHAs, breaking PR-relative links)
+Both links are intentional:
+- The `{short_hash}` link points at the **PR-relative** URL
+  (`/pull/N/commits/HASH`) so a click during review lands inside
+  the PR's inline-diff view — reviewers can comment on the change
+  without navigating away. This URL 404s after groom or squash-
+  merge, but that's after the review is done.
+- The trailing `[permalink]` points at the **absolute repo URL**
+  (`/commit/HASH`) which survives grooming and merge: useful as a
+  long-lived audit trail and the only one that still resolves
+  after the SHA leaves the branch tip.
 
 **When reusing a fixup for another comment:**
 - Reference the same commit
@@ -243,7 +290,13 @@ Both links are included because:
 ### Fix Causes Test Failure
 
 If the fix breaks tests:
-1. Revert: `git checkout -- {file_path}`
+1. Revert the attempted fix. `git checkout -- {file_path}` is commonly
+   denied by a standing rail against agents discarding uncommitted work
+   (GH-972 F4), and re-spelling it as `git restore` is explicitly the
+   wrong instinct — see
+   `skills/diag-friction/references/deny-rail-vs-approval-gate.md`. If
+   the revert is refused, hand the exact command to the supervisor and
+   continue with step 2; the reply below is the actual deliverable.
 2. Reply asking for clarification:
    ```
    The suggested change causes test failures in `test_xyz`.

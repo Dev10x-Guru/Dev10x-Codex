@@ -48,6 +48,14 @@ git rebase -i $(git merge-base develop HEAD)
 - Create backup before complex rewrites: `git branch backup-before-rewrite`
 - Use `--force-with-lease` not `--force` when pushing rewrites
 - Coordinate with teammates before force-pushing shared branches
+- On a **protected** branch (`main`, `develop`, …) a lease is not
+  enough: `push_safe` fetches the branch first and refuses unless the
+  remote tip is already an ancestor of what you are pushing (GH-1270).
+  A lease only compares the remote against your local remote-tracking
+  ref, so a `develop` fetched hours ago leases cleanly against its own
+  stale copy and silently drops every merge landed since. Rebase onto
+  `origin/<base>` and push again — the refusal names the commits at
+  risk.
 
 ## Pull Request Guidelines
 
@@ -95,9 +103,11 @@ The body should be **compact** to avoid cluttering Slack previews.
 
 ### Examples
 
-**VOICE REQUIREMENT**: Job Stories must name the actor and beneficiary in
-third person. Never use first-person voice like "I want to" or "so I can".
-See `references/git-jtbd.md` § Voice Requirement.
+**VOICE REQUIREMENT**: Third-person domain-actor voice is mandatory — name a
+concrete actor and beneficiary (`**the service writer wants to** … **so the
+dealer can** …`). Never use first-person ("I want to") or a faceless "the user
+wants to". See `references/git-jtbd.md` § Voice Requirement and
+§ Choosing the Actor.
 
 **LANGUAGE REQUIREMENT**: Write the Job Story and any user-story prose in
 the project or ticket language. When PR text includes BDD or
@@ -108,7 +118,7 @@ https://cucumber.io/docs/gherkin/languages/
 ```markdown
 ## Summary
 
-**When** reviewing code, **the reviewer wants to** have automated checks, **so the reviewer can** catch issues.
+**When** reviewing code, **the admin wants to** have automated checks, **so the team can** catch issues.
 
 [Details...]
 
@@ -117,7 +127,7 @@ Fixes: ...
 
 **CORRECT** — JTBD as absolute first element:
 ```markdown
-**When** reviewing code, **the reviewer wants to** have automated checks, **so the reviewer can** catch issues.
+**When** reviewing code, **the admin wants to** have automated checks, **so the team can** catch issues.
 
 [Details or commit list — optional...]
 
@@ -127,9 +137,8 @@ Fixes: ...
 ### Proper Format
 
 ```markdown
-**When** reviewing PRs without automated checks, **the reviewer wants to**
-have Claude review code quality, **so the reviewer can** catch issues
-before merging.
+**When** reviewing PRs without automated checks, **the admin wants to** have
+Claude review code quality, **so the team can** catch issues before merging.
 
 [`b3a015a`](REPO_URL/commit/HASH) ✨ GH-7 Enable code review
 [`fec4999`](REPO_URL/commit/HASH) 📝 GH-7 Document review agents
@@ -182,6 +191,11 @@ Detailed context for reviewers without bloating the Slack preview.
    ```
 
 For commit format and branch naming, see `git-commits.md`.
+
+### Backlog Items and Deferred Findings
+
+For deferring non-blocking review findings, see
+[`pr-backlog-deferral.md`](pr-backlog-deferral.md).
 
 ## Consolidation PRs
 

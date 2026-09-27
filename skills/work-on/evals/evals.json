@@ -138,6 +138,12 @@
           "signals": ["AskUserQuestion", "Approve"]
         },
         {
+          "id": "plan-rendered-as-box-drawing-tree",
+          "text": "Renders the Proposed plan block as a box-drawing tree (phases nest subtasks with box-drawing glyphs) per the GH-730 hybrid display convention; the flat Session mode summary keeps bullet-indent",
+          "check": "output_contains",
+          "signals": ["├─", "└─"]
+        },
+        {
           "id": "plan-adapts-to-feature",
           "text": "Plan follows feature template (Design+Implement+Verify+PR+Fixups+Groom+Review+Acceptance)",
           "check": "task_exists",
@@ -489,10 +495,22 @@
           "signals": ["auto-advance", "no pause"]
         },
         {
+          "id": "no-checkpoints-in-shipping-pipeline",
+          "text": "Runs the shipping pipeline as a no-checkpoints sequence — no trailing 'Ready to proceed?' between commit, PR, CI, groom, update, ready, merge; only a gate whose resolve_gate effect is ask may interrupt",
+          "check": "behavioral",
+          "signals": ["no checkpoints", "resolve_gate ask", "shipping pipeline atomic"]
+        },
+        {
           "id": "acceptance-verified-last",
           "text": "Acceptance criteria verification is the final action in the execution",
           "check": "behavioral",
           "signals": ["last subtask", "acceptance criteria", "CI", "fixup", "groom", "review"]
+        },
+        {
+          "id": "terminal-task-not-auto-closed",
+          "text": "Does not mark the terminal 'Verify acceptance criteria' task completed/deleted without explicit supervisor sign-off; the empty-task-list invariant (GH-149) keeps at least one open task until the supervisor confirms, and closing the terminal task after confirmation carries metadata.supervisor_confirmed=true (enforced by the GH-681 task-guard hook)",
+          "check": "behavioral",
+          "signals": ["supervisor_confirmed", "empty-task-list invariant", "GH-149", "no auto-complete"]
         }
       ]
     },
@@ -646,35 +664,45 @@
     ,
     {
       "id": 14,
-      "name": "phase0-friction-gate",
+      "name": "phase0-posture-delegation",
       "prompt": "/Dev10x:work-on https://github.com/example-org/app-pos/issues/300",
-      "description": "Tests that Phase 0 friction level gate fires via AskUserQuestion (not plain text) before Phase 1, and persists the choice to session.yaml.",
-      "expected_output": "AskUserQuestion is called with friction level options (Guided, Adaptive, Strict) before any Phase 1 work begins. Choice is persisted to ~/.claude/Dev10x/session.yaml.",
+      "description": "Tests that Phase 0 settles review posture through supervisor_review_status and delegates the ask to Dev10x:friction-setup (ADR-0022), rather than offering a strict/guided/adaptive picker or writing friction.yaml itself.",
+      "setup": {
+        "cwd_is_worktree": true,
+        "note": "CWD is worktree <repo>-3 with no matching friction.yaml projects[] entry"
+      },
+      "expected_output": "supervisor_review_status is called before Phase 1; because pinned is false, Dev10x:friction-setup is invoked to ask and persist. No friction-level options are offered and no session file is written.",
       "dimensions": ["orchestration-guardrails"],
       "assertions": [
         {
-          "id": "phase0-uses-askuserquestion",
-          "text": "Phase 0 friction level prompt uses AskUserQuestion tool call, not plain text",
-          "check": "tool_called",
-          "signals": ["AskUserQuestion", "friction", "Guided"]
-        },
-        {
-          "id": "phase0-fires-before-phase1",
-          "text": "AskUserQuestion for friction level fires before Phase 1 classification begins",
+          "id": "phase0-reads-posture-via-tool",
+          "text": "supervisor_review_status is called before Phase 1 classification, rather than reading friction.yaml directly",
           "check": "tool_called_before",
-          "signals": ["AskUserQuestion", "Phase 1"]
+          "signals": ["supervisor_review_status", "Phase 1"]
         },
         {
-          "id": "phase0-offers-three-levels",
-          "text": "Gate presents all three friction levels: Guided, Adaptive, Strict",
-          "check": "output_contains",
-          "signals": ["Guided", "Adaptive", "Strict"]
-        },
-        {
-          "id": "phase0-persists-choice",
-          "text": "After user selects a level, the choice is persisted to ~/.claude/Dev10x/session.yaml via Write tool",
+          "id": "phase0-delegates-when-unpinned",
+          "text": "When pinned is false, the ask is delegated to Dev10x:friction-setup instead of being asked inline",
           "check": "tool_called",
-          "signals": ["Write", "session.yaml", "friction_level"]
+          "signals": ["Skill", "Dev10x:friction-setup"]
+        },
+        {
+          "id": "phase0-silent-when-already-pinned",
+          "text": "When supervisor_review_status returns pinned:true, the resolved posture is adopted silently — no AskUserQuestion, no delegation, no write",
+          "check": "behavioral",
+          "signals": ["pinned true", "no re-ask", "no write"]
+        },
+        {
+          "id": "phase0-offers-no-preset-picker",
+          "text": "No strict/guided/adaptive friction-level picker is offered — adaptive is the sole shipped baseline (ADR-0022 D-1)",
+          "check": "behavioral",
+          "signals": ["no preset picker", "adaptive baseline", "ADR-0022"]
+        },
+        {
+          "id": "phase0-writes-no-config",
+          "text": "work-on writes no friction.yaml or session file itself; persistence belongs to the pin tools invoked by Dev10x:friction-setup",
+          "check": "behavioral",
+          "signals": ["no Write", "no Edit", "pin tool"]
         },
         {
           "id": "phase0-skips-when-nested",

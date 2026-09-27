@@ -1,55 +1,67 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.12"
-# dependencies = ["pyyaml"]
-# ///
 """Merge permissions from worktree settings back into the main project.
 
 Worktrees accumulate session-specific allow rules that the main project
-never sees. This script collects stable, reusable permissions from all
+never sees. This module collects stable, reusable permissions from all
 worktrees of a project and merges them into the main project's
 settings.local.json.
 
 Session-specific entries (temp file hashes, specific ticket numbers,
 one-off inline commands) are filtered out automatically.
+
+CLI entry point: ``dev10x permission merge-worktree``.
 """
 
 import json
 import re
-import sys
 from pathlib import Path
 
-import yaml
+from dev10x import subprocess_utils
+from dev10x.domain.common.allow_rule import AllowRule
+from dev10x.domain.common.mktmp_path import MKTMP_GENERALIZE_PATTERN, MKTMP_PATH_PATTERN
+from dev10x.domain.common.policy import Policy, PolicySource
+from dev10x.domain.common.result import Result
+from dev10x.domain.common.ticket_id import TICKET_ID_PATTERN
+from dev10x.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.skills.permission.catalog_paths import shipped_projects_catalog
+from dev10x.skills.permission.config import parse_config, resolve_config
+from dev10x.skills.permission.policy_authoring import policy_from_accepted_prompt
 
-USERSPACE_CONFIG = (
-    Path.home() / ".codex" / "skills" / "Dev10x:permission-maintenance" / "projects.yaml"
-)
-PLUGIN_CONFIG = (
-    Path(__file__).resolve().parents[4] / "skills" / "permission-maintenance" / "projects.yaml"
-)
+MEMORY_CONFIG = Dev10xConfigDir.projects_yaml()
+USERSPACE_CONFIG = Dev10xConfigDir.upgrade_cleanup_projects_yaml()
+PLUGIN_CONFIG = shipped_projects_catalog()
 
 NOISE_PATTERNS = [
     re.compile(r"\.[A-Za-z0-9]{8,}\.(txt|md|json)"),
-    re.compile(r"/tmp/claude/[^/]+/[^/]+\.[A-Za-z0-9]{6,}"),
-    re.compile(r"Bash\(if \["),
-    re.compile(r"Bash\(then "),
-    re.compile(r"Bash\(else "),
-    re.compile(r"Bash\(fi\b"),
+    re.compile(MKTMP_PATH_PATTERN),
     re.compile(r"GROOM_SEQ_FILE="),
-    re.compile(r'"[A-Z]+-\d+"'),
+    re.compile(rf'"{TICKET_ID_PATTERN}"'),
     re.compile(r"detect-tracker\.sh\s+\S"),
     re.compile(r"gh-issue-get\.sh\s+\d"),
     re.compile(r"gh-pr-detect\.sh\s+\d"),
     re.compile(r"generate-commit-list\.sh\s+\d"),
     re.compile(r"generate-commit-list\.sh\s+PLACEHOLDER"),
     re.compile(r"extract-session\.sh\s+"),
-    re.compile(r"Bash\(bash -[nc] "),
-    re.compile(r"Bash\(bash -c '"),
     re.compile(r"\.local/.*\.py\s+/tmp/"),
     re.compile(r"\s+2>&1"),
     re.compile(r'\.sh\)"?\s*$'),
     re.compile(r"git-push-safe\.sh\s+-u\s+origin\s+\S+/"),
-    re.compile(r"Bash\(find "),
+    # Source-line references (e.g. features/foo.feature:60, bar.py:42)
+    re.compile(r"\.(?:feature|py|js|ts|tsx|sh|md):\d+"),
+]
+
+# Bash-inner noise patterns (moved off the raw string, GH-841): each used to
+# be anchored on the literal ``Bash(`` prefix; now matched against
+# ``AllowRule.parse(entry).inner`` so the Bash-wrapper handling lives in one
+# place. Anchored with ``^`` since the ``Bash(`` prefix guaranteed the match
+# started at the beginning of the parenthesized body.
+BASH_INNER_NOISE_PATTERNS = [
+    re.compile(r"^if \["),
+    re.compile(r"^then "),
+    re.compile(r"^else "),
+    re.compile(r"^fi\b"),
+    re.compile(r"^bash -[nc] "),
+    re.compile(r"^bash -c '"),
+    re.compile(r"^find "),
 ]
 
 GENERALIZE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -58,10 +70,17 @@ GENERALIZE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(gh-pr-detect\.sh)\s+[^:)]+"), r"\1"),
     (re.compile(r"(generate-commit-list\.sh)\s+[^:)]+"), r"\1"),
     (re.compile(r"(extract-session\.sh)\s+[^:)]+"), r"\1"),
-    (re.compile(r"(/tmp/claude/[^/]+/)[^/]+\.[A-Za-z0-9]{6,}\.(txt|md|json)"), r"\1**"),
+    (re.compile(MKTMP_GENERALIZE_PATTERN), r"\1**"),
     (re.compile(r"(\.[A-Za-z0-9]{8,})\.(txt|md|json)"), r"**"),
     (re.compile(r"(git reset --hard) origin/\S+"), r"\1"),
     (re.compile(r"(git reset --soft) [A-Fa-f0-9]{6,}"), r"\1"),
+    # Re-anchor worktree-absolute project paths to the project root so a
+    # script approved inside a worktree (e.g. ``/work/dx/.worktrees/wt/bin/
+    # release.sh``) syncs to the main project (``/work/dx/bin/release.sh``)
+    # instead of being dropped as stale. Default anchor is project-root
+    # absolute (GH-594, D12). Residual noise (temp hashes, source-line refs)
+    # is still caught by NOISE_PATTERNS after re-anchoring.
+    (re.compile(r"/\.worktrees/[^/]+/"), "/"),
 ]
 
 
@@ -71,22 +90,41 @@ def generalize_permission(entry: str) -> str:
     return entry
 
 
-def find_config() -> Path:
-    if USERSPACE_CONFIG.is_file():
-        return USERSPACE_CONFIG
-    if PLUGIN_CONFIG.is_file():
-        return PLUGIN_CONFIG
-    print("ERROR: No config found.", file=sys.stderr)
-    sys.exit(1)
+def find_config() -> Result[Path]:
+    candidates = [MEMORY_CONFIG, USERSPACE_CONFIG]
+    if PLUGIN_CONFIG is not None:
+        candidates.append(PLUGIN_CONFIG)
+    return resolve_config(candidates=candidates)
 
 
 def load_config(config_path: Path) -> dict:
-    with open(config_path) as f:
-        return yaml.safe_load(f)
+    return parse_config(config_path)
 
 
 def is_noise(entry: str) -> bool:
-    return any(p.search(entry) for p in NOISE_PATTERNS)
+    if any(p.search(entry) for p in NOISE_PATTERNS):
+        return True
+    parsed = AllowRule.parse(entry)
+    return parsed.tool == "Bash" and any(p.search(parsed.inner) for p in BASH_INNER_NOISE_PATTERNS)
+
+
+def sync_candidates_as_policies(*, entries: list[str]) -> list[Policy]:
+    """Wrap stable worktree rules as candidate Policies (PAP-4, GH-801).
+
+    The worktree→main sync is an accepted-prompt persistence flow: each
+    stable entry becomes a ``project-local`` candidate Policy so the
+    merge carries provenance instead of bare strings. Noise entries are
+    dropped here, operating on the policy set rather than the raw list.
+    """
+    candidates = [
+        policy_from_accepted_prompt(
+            rule=entry,
+            source=PolicySource.PROJECT_LOCAL,
+            rationale="worktree sync (GH-603)",
+        )
+        for entry in entries
+    ]
+    return [policy for policy in candidates if not is_noise(policy.signature)]
 
 
 def resolve_main_project(worktree_dir: Path) -> Path | None:
@@ -104,23 +142,66 @@ def resolve_main_project(worktree_dir: Path) -> Path | None:
     return main_git_dir.parent
 
 
+def git_registered_worktrees(root_path: Path) -> list[Path]:
+    """Worktree paths git has registered for the repo at ``root_path``.
+
+    Uses ``git worktree list --porcelain`` so worktrees registered *outside*
+    the conventional ``<root>/.worktrees/`` layout are discovered too — the
+    glob-only scan silently skipped them, and a whole project could be
+    missed if it kept its worktrees elsewhere (GH-813 Finding 2). Returns
+    ``[]`` when ``root_path`` is not a git repo or git is unavailable, so a
+    non-repo root degrades to the directory glob rather than erroring.
+    """
+    result = subprocess_utils.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=str(root_path),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    return [
+        Path(line[len("worktree ") :].strip())
+        for line in result.stdout.splitlines()
+        if line.startswith("worktree ")
+    ]
+
+
 def find_worktree_groups(roots: list[str]) -> dict[Path, list[Path]]:
+    """Group each root's worktrees under their main project.
+
+    Discovery unions two sources (GH-813 Finding 2): the conventional
+    ``<root>/.worktrees/*`` glob (back-compat) and every worktree git has
+    registered for the root via ``git worktree list`` (captures worktrees
+    living anywhere). The main worktree is filtered out by
+    ``resolve_main_project`` (its ``.git`` is a directory, not a linked
+    ``gitdir:`` file), and only worktrees carrying a
+    ``.claude/settings.local.json`` are grouped.
+    """
     groups: dict[Path, list[Path]] = {}
     for root in roots:
         root_path = Path(root).expanduser()
+        # Preserve insertion order while de-duplicating across the two
+        # discovery sources (a worktree under .worktrees/ is also
+        # git-registered).
+        candidates: dict[Path, None] = {}
         worktrees_dir = root_path / ".worktrees"
-        if not worktrees_dir.is_dir():
-            continue
-        for wt_dir in sorted(worktrees_dir.iterdir()):
-            if not wt_dir.is_dir():
-                continue
-            settings = wt_dir / ".codex" / "settings.local.json"
+        if worktrees_dir.is_dir():
+            for wt_dir in sorted(worktrees_dir.iterdir()):
+                if wt_dir.is_dir():
+                    candidates[wt_dir] = None
+        for wt_dir in git_registered_worktrees(root_path):
+            candidates[wt_dir] = None
+        for wt_dir in sorted(candidates):
+            settings = wt_dir / ".claude" / "settings.local.json"
             if not settings.exists():
                 continue
             main_project = resolve_main_project(wt_dir)
             if main_project is None:
                 continue
-            groups.setdefault(main_project, []).append(wt_dir)
+            if wt_dir not in groups.setdefault(main_project, []):
+                groups[main_project].append(wt_dir)
     return groups
 
 
@@ -141,99 +222,66 @@ def merge_permissions(
     worktree_dirs: list[Path],
     dry_run: bool = False,
 ) -> tuple[int, list[str]]:
-    main_settings = main_project / ".codex" / "settings.local.json"
+    main_settings = main_project / ".claude" / "settings.local.json"
     main_data = load_permissions(main_settings)
     main_allow = extract_allow_set(main_data)
 
     new_entries: set[str] = set()
+    source_map: dict[str, list[Path]] = {}
     for wt_dir in worktree_dirs:
-        wt_settings = wt_dir / ".codex" / "settings.local.json"
+        wt_settings = wt_dir / ".claude" / "settings.local.json"
         wt_data = load_permissions(wt_settings)
         wt_allow = extract_allow_set(wt_data)
-        new_entries |= wt_allow - main_allow
+        for entry in wt_allow - main_allow:
+            new_entries.add(entry)
+            source_map.setdefault(entry, []).append(wt_settings)
 
     generalized = {generalize_permission(e) for e in new_entries}
     generalized -= main_allow
-    stable_entries = sorted(e for e in generalized if not is_noise(e))
+    candidates = sync_candidates_as_policies(entries=sorted(generalized))
+    stable_entries = [policy.signature for policy in candidates]
 
     if not stable_entries:
         return 0, []
 
-    messages = [f"  +{len(stable_entries)} permissions from {len(worktree_dirs)} worktrees"]
+    messages = [
+        f"  target: {main_settings}",
+        f"  +{len(stable_entries)} permissions from {len(worktree_dirs)} worktrees",
+    ]
     for entry in stable_entries:
-        messages.append(f"    + {entry}")
+        sources = source_map.get(entry, [])
+        if sources:
+            source_paths = ", ".join(str(s) for s in sources)
+            messages.append(f"    + {entry}")
+            messages.append(f"      from: {source_paths}")
+        else:
+            messages.append(f"    + {entry}")
 
     if not dry_run:
-        if "permissions" not in main_data:
-            main_data["permissions"] = {}
-        if "allow" not in main_data["permissions"]:
-            main_data["permissions"]["allow"] = []
+        from dev10x.skills.permission.backup import create_backup
+        from dev10x.skills.permission.file_lock import locked_json_update
 
-        allow_list = main_data["permissions"]["allow"]
-        allow_list.extend(stable_entries)
-
-        main_settings.parent.mkdir(parents=True, exist_ok=True)
-        main_settings.write_text(json.dumps(main_data, indent=2) + "\n")
+        create_backup(main_settings)
+        with locked_json_update(path=main_settings) as live_data:
+            if "permissions" not in live_data:
+                live_data["permissions"] = {}
+            if "allow" not in live_data["permissions"]:
+                live_data["permissions"]["allow"] = []
+            existing = set(live_data["permissions"]["allow"])
+            live_data["permissions"]["allow"].extend(
+                e for e in stable_entries if e not in existing
+            )
 
     return len(stable_entries), messages
 
 
-def main() -> int:
-    import argparse
+def _restore(*, config_path: Path) -> int:
+    from dev10x.skills.permission.backup import restore_report
 
-    parser = argparse.ArgumentParser(
-        description="Merge worktree permissions back into main project settings",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be merged without modifying files",
-    )
-    args = parser.parse_args()
-
-    config_path = find_config()
-    print(f"Config: {config_path}")
     config = load_config(config_path)
-
     roots = config.get("roots", [])
-    if not roots:
-        print("No roots configured. Run update-paths.py --init first.")
-        return 0
-
     groups = find_worktree_groups(roots)
-    if not groups:
-        print("No worktree groups found.")
-        return 0
-
-    if args.dry_run:
-        print("(dry run — no files will be modified)\n")
-
-    total_merged = 0
-    projects_changed = 0
-
-    for main_project, worktree_dirs in sorted(groups.items()):
-        count, messages = merge_permissions(
-            main_project=main_project,
-            worktree_dirs=worktree_dirs,
-            dry_run=args.dry_run,
-        )
-        if count > 0:
-            print(f"\n{main_project}")
-            for msg in messages:
-                print(msg)
-            total_merged += count
-            projects_changed += 1
-        else:
-            print(f"\n{main_project} — up to date ({len(worktree_dirs)} worktrees)")
-
-    if total_merged == 0:
-        print("\nAll projects up to date.")
-    else:
-        verb = "Would merge" if args.dry_run else "Merged"
-        print(f"\n{verb} {total_merged} permissions into {projects_changed} projects.")
-
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    main_settings = [main_project / ".claude" / "settings.local.json" for main_project in groups]
+    code, report = restore_report(paths=main_settings)
+    print(report)
+    return code

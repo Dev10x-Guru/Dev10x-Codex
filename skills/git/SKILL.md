@@ -11,13 +11,13 @@ user-invocable: true
 invocation-name: Dev10x:git
 allowed-tools:
   - mcp__plugin_Dev10x_cli__push_safe
-  - Bash(${CLAUDE_PLUGIN_ROOT}/skills/git/scripts/git-push-safe.sh:*)
+  - Skill(Dev10x:gh-pr-monitor)
   - Bash(${CLAUDE_PLUGIN_ROOT}/skills/git/scripts/git-rebase-groom.sh:*)
   - Bash(${CLAUDE_PLUGIN_ROOT}/skills/git/scripts/git-seq-editor.sh:*)
   - Bash(git reset --soft:*)
   - Bash(git push --force-with-lease:*)
-  - Bash(/tmp/claude/bin/mktmp.sh:*)
-  - Write(/tmp/claude/git/**)
+  - Bash(/tmp/Dev10x/bin/mktmp.sh:*)
+  - Edit(/tmp/Dev10x/git/**)
 ---
 
 **Announce:** "Using Dev10x:git to [push / groom commits]."
@@ -44,33 +44,155 @@ Mark completed when done: `TaskUpdate(taskId, status="completed")`
 **Primary: MCP tool call** (no permission friction):
 
 ```
-mcp__plugin_Dev10x_cli__push_safe(flags="[flags]", remote="origin", refspec="branch")
+mcp__plugin_Dev10x_cli__push_safe(args=["origin", "branch"])
 ```
 
 MCP calls avoid `Bash()` allow-rule matching and provide
 structured responses. Use the MCP tool as the default for
 all push operations.
 
-**Fallback: wrapper script** (when MCP server is unavailable):
+### Configuring `protected_branches`
 
-```bash
-${CLAUDE_PLUGIN_ROOT}/skills/git/scripts/git-push-safe.sh [flags] [remote] [refspec]
-# Do NOT pass "push" — the script runs `git push` itself.
-# Example: git-push-safe.sh -u origin feature-branch
+`push_safe` blocks **`--force`** to a protected branch, and an ordinary
+push is always allowed. A `--force-with-lease` is allowed on any branch
+too, with one condition on a protected one: the remote tip must already
+be an ancestor of what you are pushing (GH-1270). Protection resolves in
+three tiers (GH-1031):
+
+1. The `protected_branches` call parameter, when non-empty.
+2. Else the project's durable `protected_branches` key in the
+   matching `projects[]` entry of `~/.config/Dev10x/friction.yaml`.
+3. Else `git-push-safe.sh`'s own default set:
+   `main master develop development staging trunk`.
+
+Each tier REPLACES the one below it rather than adding to it, so a
+list that names `release/*` must re-list the integration branches it
+still wants covered. Glob patterns are supported at every tier.
+
+Prefer tier 2 for anything durable: an unattended agent never passes
+a per-call list, which is exactly when an unprotected force-push
+costs the most.
+
+```yaml
+# ~/.config/Dev10x/friction.yaml
+projects:
+  - match: ["*/my-repo", "*/my-repo-*"]
+    protected_branches: [main, release/*, staging]
 ```
 
-Default protected branches: `main master`
+| Recipe | Call | When |
+|---|---|---|
+| Default (any workflow) | `push_safe(args=["origin","feature"])` | Feature branches; the six-branch default set applies |
+| Protect only `main` for this call | `push_safe(args=["origin","develop"], protected_branches=["main"])` | Solo flow that force-pushes `develop` as integration |
+| Add a release branch | `push_safe(args=["origin","feature"], protected_branches=["main","develop","release/*"])` | Long-lived release branches that must never be force-pushed |
+| Protect a non-standard branch everywhere | durable `protected_branches` (above) | The project's integration branch is not in the default set |
 
-To extend the list, set `GIT_PROTECTED_BRANCHES` before calling:
+**`protected_branches=[]` does NOT disable protection.** An empty
+list reads as "no override" and falls through to the tiers below, so
+the default set still applies. To force-push a branch in the default
+set, pass a list that omits it (`protected_branches=["main"]` to
+force-push `develop`). Turning protection off entirely is
+deliberately not expressible — the shell layer has no such flag.
 
-```bash
-GIT_PROTECTED_BRANCHES="main master staging" \
-  ${CLAUDE_PLUGIN_ROOT}/skills/git/scripts/git-push-safe.sh --force-with-lease
+**Solo-maintainer rule of thumb:** when a hook denial says
+`Skill: Dev10x:git`, the fix is almost always to re-invoke
+`push_safe` with the right `protected_branches` list. Reach for
+the skill's documented escape paths — not env-level bypasses —
+when the wrapper itself blocks: hook overrides live in the hook
+layer (see `.claude/rules/hook-patterns.md`), not at the caller.
+
+If the call still blocks after adjusting `protected_branches`,
+read the returned `blocked_reason` field — it names the exact
+flag (`--force` on a protected branch, divergent ref, etc.) so
+you can adjust the call rather than escalating.
+
+**MCP server unavailable.** If `mcp__plugin_Dev10x_cli__push_safe`
+is listed as "no longer available" in system-reminders, STOP and
+ask the user to reconnect via `/mcp` or a session restart. Do NOT
+fall back to the wrapper script (blocked by
+`validate-bash-command.py`) or env-level bypasses — see
+`references/mcp-unavailable-escape-hatch.md` for the documented
+recovery path.
+
+### Post-push CI monitoring (GH-117 #2)
+
+**On successful push to a branch with an open PR, the next
+action is `Skill(Dev10x:gh-pr-monitor)` — not "wait and see".**
+A push to a PR branch retriggers CI; failing to monitor it
+turns a deviation into an oversight.
+
+### `push_safe` return shape
+
+On success, `push_safe` returns a structured payload:
+
+```json
+{
+  "pushed": true,
+  "ref": "<branch>",
+  "remote": "origin",
+  "sha": "<short-sha>",
+  "tracking": "origin/<branch>",
+  "ci_run_url": null
+}
 ```
 
-`--force-with-lease` is always allowed (verifies the remote has not
-diverged before overwriting). `--force` and `-f` are blocked on
-protected branches.
+On a blocked or failed push, `pushed` is `false` and `blocked_reason`
+names the cause (`protected_branch_force_push`, `push_failed`, …).
+A returned `{"error": "..."}` payload signals an MCP-level failure
+distinct from `pushed: false`.
+
+> **Historical note (GH-188):** earlier versions returned `{}` on
+> success and required a separate `git ls-remote` round-trip to
+> confirm the remote accepted the ref. New callers should branch on
+> the `pushed` field; existing callers tolerating `{}` continue to
+> work because the new payload is strictly additive.
+
+After `push_safe` returns:
+
+1. Resolve PR state for the pushed branch via
+   `mcp__plugin_Dev10x_cli__pr_detect`.
+2. If a PR exists and is OPEN, immediately invoke
+   `Skill(Dev10x:gh-pr-monitor)` so the supervisor's CI-poll
+   micro-agent dispatches before the user has to ask.
+3. If no PR exists (push is the first push of a new branch),
+   skip this auto-chain — the next step is `Dev10x:gh-pr-create`
+   in the work-on plan.
+
+When this skill is invoked from inside `Dev10x:work-on`,
+work-on's pr-continuation play moves `Monitor CI` to
+`in_progress` automatically (see work-on instructions §
+Post-push auto-advance). When invoked standalone, the user is
+responsible for the chain, but this skill's success message
+should still surface a "Next: `Skill(Dev10x:gh-pr-monitor)`"
+hint so the next move is unambiguous.
+
+**There is no wrapper-script fallback (GH-1025).** Earlier versions of
+this skill documented
+`${CLAUDE_PLUGIN_ROOT}/skills/git/scripts/git-push-safe.sh` as a
+fallback, but the `git-push-safe-script` rule in
+`command-skill-map.yaml` hard-blocks that path with "use the MCP tool
+instead" — so following the instruction produced a guaranteed block.
+A skill must never instruct an action its own guardrail forbids. The
+script still ships (other tooling shells out to it); it is not an
+agent-facing entry point.
+
+`push_safe` blocks bare `--force` / `-f` on protected branches. The
+resolved protected set is the one documented above — the shell script's
+own default is the last tier, not a separate list.
+
+`--force-with-lease` is allowed everywhere else, but a **protected**
+target is fetched first and refused with `blocked_reason:
+"base_behind_remote"` unless its remote tip is already an ancestor of
+the pushed ref (GH-1270). A lease is not the protection it reads as
+here: it compares the remote against the local remote-tracking ref, so
+a `develop` last fetched hours ago leases cleanly against its own stale
+copy and overwrites every merge landed since — seven PRs were erased
+that way in eleven minutes, with git reporting success and `git diff`
+showing nothing, because the two tips shared a tree. The refusal names
+the commits that would be dropped; rebase onto `origin/<base>` and push
+again. When the fetch itself fails the push is refused as
+`base_fetch_failed` rather than attempted blind — unless the branch
+does not exist on the remote yet, which has nothing to lose.
 
 ## Non-Interactive Rebase
 
@@ -87,10 +209,10 @@ Two scripts power fully automated rebases:
 1. Create a unique temp file for the rebase sequence:
 
 ```bash
-/tmp/claude/bin/mktmp.sh git rebase-seq .txt
+/tmp/Dev10x/bin/mktmp.sh git rebase-seq .txt
 ```
 
-Store the returned path (e.g., `/tmp/claude/git/rebase-seq.a7b3c9.txt`).
+Store the returned path (e.g., `/tmp/Dev10x/git/rebase-seq.a7b3c9.txt`).
 
 2. Write the rebase todo (oldest commit first) to that file using
    the Write tool:
@@ -147,6 +269,15 @@ needed (e.g., `trunk`), add a parallel set: `trunk-log`, `trunk-diff`,
 
 **Never use `$(git merge-base ...)` inline** — always use the alias.
 
+`{base}-rebase` grooms `fixup!` commits back to the merge-base. It is
+interactive and resolves the merge-base against the **local** `{base}`
+ref, so it is unusable by an unattended agent — it hangs without an
+editor, and a stale local ref makes it report success without moving
+HEAD (GH-964). Groom non-interactively with `rebase_groom`. To catch
+up with a base that moved, no alias applies: run `git fetch origin`,
+then `git rebase origin/<base>`, then assert
+`git merge-base --is-ancestor origin/<base> HEAD` exits 0.
+
 ## settings.local.json wiring
 
 Add to your project's `.claude/settings.local.json`:
@@ -155,13 +286,12 @@ Add to your project's `.claude/settings.local.json`:
 {
   "permissions": {
     "allow": [
-      "Bash(${CLAUDE_PLUGIN_ROOT}/skills/git/scripts/git-push-safe.sh:*)",
       "Bash(${CLAUDE_PLUGIN_ROOT}/skills/git/scripts/git-rebase-groom.sh:*)",
       "Bash(${CLAUDE_PLUGIN_ROOT}/skills/git/scripts/git-seq-editor.sh:*)",
       "Bash(git reset --soft:*)",
       "Bash(git push --force-with-lease:*)",
-      "Bash(/tmp/claude/bin/mktmp.sh:*)",
-      "Write(/tmp/claude/git/**)"
+      "Bash(/tmp/Dev10x/bin/mktmp.sh:*)",
+      "Edit(/tmp/Dev10x/git/**)"
     ]
   }
 }

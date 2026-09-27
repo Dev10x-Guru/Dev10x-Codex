@@ -1,0 +1,408 @@
+---
+name: Dev10x:diag-friction
+description: >
+  Diagnose permission friction. Guide the agent toward pre-approved
+  commands, simplify complex command chains, and (when no safe local
+  rule fits) file an upstream issue to improve the permission
+  friction hooks. Replaces the former Dev10x:skill-reinforcement
+  skill — reinforcement of skill usage is still part of the job,
+  but the broader goal is reducing the friction supervisors see.
+  Reads conversation context to identify the offending command,
+  matches it against a command-to-skill map, audits local + global
+  settings for simpler pre-approved forms, and outputs a firm
+  reinforcement message pointing to the correct skill or pre-approved
+  command.
+  TRIGGER when: user sees agent using CLI instead of a skill, user
+  rejects a command that should have been a skill, supervisor is
+  bothered by repeated permission prompts, or user says "use the
+  skills" / "diag friction" / "skill reinforcement".
+  DO NOT TRIGGER when: agent is already using skills correctly,
+  or the CLI command has no skill equivalent and no friction is
+  observed.
+user-invocable: true
+invocation-name: Dev10x:diag-friction
+allowed-tools:
+  - AskUserQuestion
+  - Read(~/.claude/SKILLS.md)
+  - Read(~/.claude/settings.json)
+  - Read(~/.claude/settings.local.json)
+  - Read(.claude/settings.json)
+  - Read(.claude/settings.local.json)
+  - Read(${CLAUDE_PLUGIN_ROOT}/skills/diag-friction/references/*)
+  - Read(${CLAUDE_PLUGIN_ROOT}/src/dev10x/validators/command-skill-map.yaml)
+  - Bash(uvx dev10x permission catalog-gap:*)
+  - Bash(dev10x permission catalog-gap:*)
+  - Bash(uvx dev10x permission ensure-base:*)
+  - Bash(dev10x permission ensure-base:*)
+  - Bash(uvx dev10x permission seed-worktree:*)
+  - Bash(dev10x permission seed-worktree:*)
+  - mcp__plugin_Dev10x_cli__audit_analyze_permissions
+  - mcp__plugin_Dev10x_cli__permission_catalog_gap
+---
+
+# Dev10x:diag-friction
+
+Diagnose and reduce permission friction. Guides the agent toward
+pre-approved commands, simplifies command chains that defeat
+allow-rule matching, and points to upstream issue filing when the
+friction is structural (the hook itself needs updating).
+
+> Formerly `Dev10x:skill-reinforcement`. The skill-reinforcement
+> behavior (firm nudge toward the right Dev10x skill or MCP tool)
+> is still core to this skill — it is one slice of the broader job
+> of diagnosing why the supervisor saw a permission prompt in the
+> first place. If you're looking for the old `skill-reinforcement`
+> invocation, you're in the right place.
+
+## When to Use
+
+Invoke this skill when:
+- The agent ran a CLI command that a skill already handles
+- You rejected a command and want the agent to use a skill instead
+- You approved a command but want to reinforce the skill habit
+- You want to say "use the skills" with a structured response
+
+## Orchestration
+
+**REQUIRED: Create a task at invocation.** Execute at startup:
+
+1. `TaskCreate(subject="Reinforce skill usage", activeForm="Reinforcing")`
+
+Mark completed when done: `TaskUpdate(taskId, status="completed")`
+
+## Instructions
+
+### Step 1: Identify the offending command
+
+Scan the recent conversation for the CLI command that triggered
+this invocation. Look for:
+- The most recent `Bash` tool call that was rejected or approved
+- Any command the user flagged as wrong
+- If the user provided arguments (e.g., `/Dev10x:diag-friction kubectl`),
+  use that as the command identifier
+
+Store the command string for matching.
+
+### Step 2: Match against command-skill map
+
+**REQUIRED — `Read` the canonical map first (GH-181 F9).** Do
+NOT inline knowledge from the parent skill's SKILL.md or
+recall mappings from training. The hook's YAML is authoritative
+and ships updates ahead of skill docs; skipping the Read is a
+documented Step 2 violation.
+
+1. `Read(file_path="${CLAUDE_PLUGIN_ROOT}/src/dev10x/validators/command-skill-map.yaml")`
+
+The YAML in `skills/diag-friction/references/command-skill-map.yaml`
+is a legacy copy — prefer the hook's YAML which is the single
+source of truth.
+
+Match the identified command against the `patterns` list in each
+mapping entry. Use prefix matching — if the command starts with
+any pattern in the list, it matches that entry.
+
+If no match is found in the map, fall back to Step 3.
+
+### Step 2b: Check workflow context
+
+If a pattern match is found but the command appears to be a valid
+part of the currently active skill's documented workflow, check
+whether the skill says to **delegate** for this case:
+
+- Read the active skill's SKILL.md (if identifiable from context)
+- Check if the command matches a delegation point marked with
+  `REQUIRED: Skill()` — a command can be valid syntax within
+  a skill but still a violation if the skill mandates delegation
+  to a sub-skill for that operation
+- Example: `gh api --method POST .../replies` is documented in
+  `gh-pr-respond` but the skill requires VALID comments to go
+  through `Dev10x:gh-pr-fixup` — using the raw API is a violation
+
+If the command is a delegation bypass, treat it as a match and
+output the reinforcement pointing to the correct sub-skill.
+
+### Step 3: Fall back to SKILLS.md
+
+If no direct mapping exists, read `~/.claude/SKILLS.md` and scan
+skill descriptions from the system-reminder context to find the
+best match based on the command's purpose.
+
+### Step 3a: Effective-file coverage (GH-1139)
+
+**Run this BEFORE the shape audit.** The most common cause of a
+prompt on a seeded machine is not a missing rule — it is a rule
+that exists in the catalog and in global but not in the file the
+engine actually reads (GH-1136). Diagnosing the individual command
+first hides that layer, which is how a worktree stayed "constantly
+stuck on basic actions" while every diag-friction run answered a
+different question.
+
+1. Resolve the effective settings file for the CWD: the worktree's
+   `.claude/settings.local.json`, else the project's, else global.
+2. Run the catalog-gap check and read the counts by family:
+
+```
+mcp__plugin_Dev10x_cli__permission_catalog_gap()
+```
+
+   Returns `total_missing`, `files_checked`, `clean`, and the
+   per-family `messages`. Pass `verbose=true` to list every missing
+   rule rather than the counts.
+
+   **Fallback — Bash** (only when the MCP server is unavailable):
+
+```bash
+uvx dev10x permission catalog-gap
+```
+
+   The Bash form was primary until GH-1175, which made the *first*
+   diagnostic step of the friction-diagnosis skill a source of
+   permission friction: without a `Bash(uvx:*)` rule it prompts, and
+   in an unattended background agent a pending prompt is neither a
+   block nor a denial — so the coverage check silently never ran and
+   the three-outcome routing below was unreachable. `uvx` also
+   re-resolves from the network on every call even though the plugin
+   is installed locally.
+
+3. If the offending command's generalized rule (Step 3d) is in the
+   catalog but absent from the effective file, say so **first**:
+   the diagnosis is a **propagation gap**, not a missing rule.
+
+**Backfill proposal gate — REQUIRED: Call `AskUserQuestion`** (do
+NOT use plain text) whenever the gap is non-empty. Options:
+
+- **Backfill this checkout (Recommended)** — run `ensure-base` /
+  `seed-worktree` for this checkout only
+- **Backfill every checkout under roots** — the full maintenance run
+- **Report only** — write nothing
+
+Never write without this gate, never write a git-tracked
+`settings.json`, and always write through the backup + atomic path
+(`ensure_base` already does both).
+
+**Three-outcome routing for Step 4.** Distinguish these — they have
+different fixes, and conflating (a) with (b) patches per-repo while
+hiding the propagation defect:
+
+| Outcome | Condition | Fix |
+|---------|-----------|-----|
+| (a) propagation gap | rule in catalog, missing from effective file | backfill (gate above) |
+| (b) missing default | rule absent from catalog, generally safe | propose a plugin-default addition (upstream issue, Step 3c) |
+| (c) project-specific | safe only for this project | user-private synced catalog entry |
+
+See [`references/audit-procedure.md`](references/audit-procedure.md)
+§ Effective-file coverage for the resolution order and the two
+sanctioned settings-read surfaces.
+
+### Step 3b: Permission friction audit
+
+Audit project + user settings for a simpler, pre-approved
+alternative to the offending command. Most rejections happen
+because chaining shifts the effective prefix away from any
+allow-rule.
+
+See [`references/audit-procedure.md`](references/audit-procedure.md)
+for sources, allow-rule shapes, and the four-step audit procedure.
+The audit output feeds Step 4 — surface findings even when a
+skill match was also found.
+
+### Step 3c-pre: Inline-code structured-alternatives (GH-282)
+
+When the offending command starts with an inline-code prefix
+(`python -c`, `python3 -c`, `sh -c`, `bash -c`, `perl -e`,
+`ruby -e`, `node -e`, `deno eval`), the right recommendation is
+almost never "extract to `~/.claude/tools/`" — it's the canonical
+structured tool that already exists for the use case (jq, yq,
+yamllint, actionlint, curl, etc.).
+
+**Procedure:**
+
+1. `Read(file_path="${CLAUDE_PLUGIN_ROOT}/skills/diag-friction/references/structured-alternatives.yaml")`
+2. Check the offending command against `inline_code_prefixes`. If
+   no prefix matches, skip this step and proceed to Step 3c.
+3. Extract the inline code body (text between the quotes after the
+   `-c` / `-e` flag).
+4. Match the body against each entry's `detection_keywords`
+   (substring match; first hit wins).
+5. Surface the matched `tool` and `example` as the **primary**
+   recommendation in the "Use instead" section of Step 4.
+6. Fall back to the "Multi-step logic (fallback)" entry only when
+   no keyword matches across all other entries.
+
+Example match for `python -c "import yaml; yaml.safe_load(...)"`:
+the `yaml.safe_load` keyword hits the YAML-parsing entry, so the
+reinforcement names `yq` as the canonical alternative — not a
+tools-directory extraction.
+
+### Step 3c: Detect structural friction (file upstream)
+
+When the hook itself is too aggressive, the command-skill map is
+missing an entry, or no safe targeted allow-rule fits, point the
+user at the upstream issue tracker so the hooks can be improved
+for everyone — not patched locally over and over.
+
+See [`references/upstream-friction.md`](references/upstream-friction.md)
+for the signals that suggest structural friction and the
+"Upstream issue" section template (problem statement, suggested
+resolution, pre-filled `gh issue create` invocation). Do NOT
+auto-file — the user approves first.
+
+### Step 3d: Generalize the suggested rule shape (GH-597)
+
+When the audit (Step 3b) or upstream path (Step 3c) lands on
+proposing a **targeted allow-rule**, do not echo the harness's
+suggested shape — it is wrong in one of three directions. Surface
+the generalized shape produced by
+`dev10x.skills.permission.generalize.generalize_rule_shape`:
+
+| Failure mode | Harness suggests | Generalized shape |
+|--------------|------------------|-------------------|
+| over-broad (verb-blind) | `Bash(ip route *)` | `Bash(ip route get:*)` |
+| over-narrow (session arg) | `Bash(persist.sh <id> *)` | `Bash(persist.sh:*)` |
+| too-literal (no wildcard) | `Bash(yarn build:x)` | `Bash(yarn build:*)` |
+
+Apply the generalized rule in the "Pre-approved alternatives" /
+"Upstream issue" sections so the rule the user accepts is reusable
+and safe — never the dead-on-arrival or over-granting default.
+Only Bash command rules are generalized; `mcp__*`, `WebFetch(...)`,
+and `Read(...)` rules pass through unchanged.
+
+### Step 3e: Background-dispatch pre-seed over auto-mode (GH-610)
+
+When the friction arose inside a **background subagent** (workflow /
+monitor / loop / fanout child) — or the only "fix" on offer is the
+harness's "switch to auto mode" / disable-prompts nudge (the GH-310
+footgun) — do NOT recommend blanket `bypassPermissions`. The correct
+remedy is to fix the **dispatcher**, not to silence prompts:
+
+1. Prepend the canonical friction-avoidance preamble to the subagent
+   prompt (fetch via `mcp__plugin_Dev10x_cli__background_preamble`).
+2. Pre-seed the subagent's `allowed_tools` with the wrappers it needs
+   (`Read`, `Grep`, `Glob`, `mktmp`, `push_safe`, `create_pr`, …) so
+   the preferred tool surface is actually available.
+
+Surface this as the primary recommendation whenever the offending
+command came from a background dispatch path. See
+`references/orchestration/background-preamble.md` and
+`references/orchestration/subagent-dispatch.md` § Background Friction
+Preamble.
+
+### Step 3g: Check the recommended tool exists here (GH-1087)
+
+A `use-tool` compensation names a tool the map assumes is present —
+but the tool surface varies per session. A `find -name` rejection
+routed to `Glob`, and the `Glob` call answered "No such tool available:
+Glob — find files with `find` via the Bash tool instead": the map and
+the harness contradicting each other, producing a friction diagnosis
+that could not be executed. That is the failure mode this skill exists
+to prevent.
+
+Before recommending a `use-tool` compensation:
+
+1. Confirm the named tool is in this session's tool surface (it appears
+   in the available-tools listing, or in the deferred-tool list
+   loadable via `ToolSearch`).
+2. If it is absent, recommend the compensation's `fallback:` instead —
+   for `find-search` that is `rg --files -g '<glob>'` (name discovery)
+   or `rg -l <pattern> -g '<glob>'` (content), both covered by
+   `Bash(rg:*)`.
+3. Never fall back to the offending command itself. The harness's own
+   "use `find` via the Bash tool" suggestion reinstates exactly the
+   friction the rule removes — a pre-approved `rg` shape is available
+   in every session.
+
+State the substitution you verified, so the supervisor can see the
+recommendation was checked rather than recited.
+
+### Step 3f: Approved in-session, denied by a rule (GH-972)
+
+When an `AskUserQuestion` gate returned "yes" and the command was
+STILL refused, the two authorities disagree by design: the gate
+grants intent, a `deny` rule governs the shape. Do NOT search for
+an alternative spelling — the nearest ones (`git restore`,
+`git stash` for a denied `git checkout --`) defeat the rail's whole
+purpose. Hand the exact command to the human to run, and continue
+with what the denial does not block.
+
+See
+[`references/deny-rail-vs-approval-gate.md`](references/deny-rail-vs-approval-gate.md)
+for the full procedure, the substitution anti-patterns, and the
+unattended-run variant.
+
+### Step 4: Output reinforcement message
+
+Output a firm, concise reinforcement message with seven sections:
+command detected, use instead, why, how to invoke, pre-approved
+alternatives (from Step 3b), upstream issue (from Step 3c when
+friction is structural), related skills.
+
+See [`references/audit-output.md`](references/audit-output.md)
+for the per-section schema, MCP invocation example, and ranking
+rules when multiple skills apply.
+
+### Step 4b: Respect user rejection
+
+**If the user explicitly rejected the command** (denied the Bash
+tool call), do NOT conclude "no violation found" and resume the
+rejected workflow. A user rejection overrides documentation
+matching — even if the command appears valid within the skill,
+the user's denial takes precedence. Instead, ask the user what
+they expected if no skill match is found.
+
+### Step 5: Reinforce the general principle
+
+End with a brief reminder:
+
+> Always check if a skill or MCP tool exists before reaching for
+> CLI commands. Skills provide consistent behavior, proper tool
+> declarations, and avoid permission friction.
+>
+> Prefer pre-approved commands. Keep each Bash call to one simple
+> command — no `&&`/`;` chaining, no env-var prefixes, no leading
+> subshells. Packing multiple steps into one call shifts the
+> effective prefix and breaks allow-rule matching, which is the
+> main reason supervisors see avoidable permission prompts. When
+> no pre-approved form fits, propose a narrow targeted allow-rule
+> rather than crafting a more elaborate command.
+
+### Step 6: Offer follow-up action (REQUIRED when command was rejected)
+
+If the triggering command was **rejected** by the user (denied
+the Bash tool call), the reinforcement must actively offer to
+retry the intended action via the recommended skill. Plain text
+offers ("Want me to invoke X?") do NOT block execution and break
+the structured decision flow used across Dev10x skills.
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text).
+
+1. `AskUserQuestion(questions=[{question: "Invoke <recommended-skill> now to complete the intended action?", header: "Retry", options: [{label: "Yes, invoke <skill> now (Recommended)", description: "Re-run the intended action via the correct skill"}, {label: "I'll invoke it manually later", description: "Skip for now — user will handle"}, {label: "Cancel — discard the attempted operation", description: "Do not retry"}], multiSelect: false}])`
+
+Substitute `<recommended-skill>` with the skill identified in
+Step 2 (e.g., `Dev10x:gh-pr-monitor`, `Dev10x:k8s`,
+`Dev10x:git`).
+
+**Skip this gate when:**
+
+- The user invoked the skill informationally (not after a
+  rejection) and no follow-up action is implied
+- No recommended skill was identified (Step 3 fallback with
+  no clear match) — ask the user what they expected instead
+- The triggering command was approved, not rejected — the
+  intended action has already run
+
+On approval, invoke the recommended skill immediately. On
+cancellation, acknowledge and stop — do NOT resume the
+rejected workflow.
+
+## Examples
+
+See [`references/examples.md`](references/examples.md) for five
+walkthroughs:
+
+1. **kubectl usage** — direct CLI match (`Dev10x:k8s`)
+2. **direct git push** — bypassed safety skill (`Dev10x:git`)
+3. **friction from chaining** — Step 3b audit surfaces a
+   pre-approved alternative
+4. **no match found** — fallback to SKILLS.md scan
+5. **structural friction** — no safe local rule fits, file an
+   upstream issue

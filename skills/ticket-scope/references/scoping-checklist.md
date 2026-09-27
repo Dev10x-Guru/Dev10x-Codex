@@ -109,7 +109,7 @@ Use this checklist to ensure comprehensive scoping coverage.
 - [ ] User feedback incorporated
 - [ ] User approval obtained
 - [ ] Linear ticket created/updated (if requested)
-- [ ] Scoping document saved to /tmp/claude/ticket-scope/
+- [ ] Scoping document saved to /tmp/Dev10x/ticket-scope/
 
 ## Quality Checks
 

@@ -10,9 +10,9 @@ the right pattern on the first attempt.
 |---------|------------|-------------|
 | `cmd1 && cmd2` (setup + path-based script) | `&&` shifts prefix, breaks allow rules for path-based commands | Separate Bash tool calls |
 | `cd "$(git rev-parse --show-toplevel)" && ...` | Subshell + chaining, git works from any CWD | Run command directly, or `git rev-parse` then `cd` separately |
-| `ENV=value git ...` (any env prefix) | Env prefix shifts effective prefix, breaks allow rules | Drop prefix or use `git develop-rebase` alias |
+| `ENV=value git ...` (any env prefix) | Env prefix shifts effective prefix, breaks allow rules | Drop the prefix — `git rebase origin/develop` and `git rebase --continue` need none; for autosquash use `git autosquash-develop` or `rebase_groom` |
 | `cat <<'EOF'` / `cat >` / `echo >` | Heredocs/redirects blocked by security hook | Write tool + reference file (`git commit -F`) |
-| `python3 -c "..."` inline code | Inline execution blocked | Extract to `~/.codex/tools/script.py` with uv shebang |
+| `python3 -c "..."` inline code | Inline execution blocked | Extract to `~/.claude/tools/script.py` with uv shebang |
 
 ## Permission-Friction Anti-Patterns (advisory)
 
@@ -21,10 +21,11 @@ prompts or brittle command matching.
 
 | Pattern | Why risky | Use instead |
 |---------|-----------|-------------|
-| `$(git merge-base ...)` inline | Subshell blocked — use aliases | Git aliases: `git develop-log`, `git develop-diff`, `git develop-rebase` |
+| `$(git merge-base ...)` inline | Subshell blocked — use aliases | Git aliases: `git develop-log`, `git develop-diff`. To rebase onto a moved base no subshell is needed at all: `git fetch origin` then `git rebase origin/develop` |
 | `# comment` as first line | Leading `#` can break prefix matching and parser expectations | Use Bash tool `description` parameter |
 | `uv run --script` on executable scripts | Redundant wrapper can miss direct path-based allow rules | Call script directly (shebang handles uv) |
 | `cd /worktree/path && command` | Redundant when CWD is already the worktree; can trigger chaining checks | Run command directly — session switched on worktree creation |
+| `git -C /worktree/path command` | Symmetric to the `cd` form: `-C` shifts the effective command prefix and breaks allow-rule matching when the path is already the CWD (GH-97 caught this 20× in one session) | Drop `-C` — git already operates on the current worktree |
 | `--jq '"\(.x): \(.y)"'` (jq interpolation) | Escaped quotes trigger "consecutive quote characters" obfuscation check | Use jq concatenation: `-q '.x + ": " + .y'` |
 
 ## Preferred Patterns
@@ -32,7 +33,17 @@ prompts or brittle command matching.
 ### Git operations
 - `git develop-log` — commits since diverging from develop
 - `git develop-diff` — diff since diverging from develop
-- `git develop-rebase` — interactive rebase onto develop
+- `git develop-rebase` — **grooming only**: interactive (`-i`)
+  autosquash back to the merge-base against the **local** `develop`
+  ref. Never use it to catch up with a base that moved, and never in
+  an unattended session — it needs an editor, and a stale local ref
+  makes it print "Successfully rebased" without moving HEAD (GH-964).
+  Prefer the non-interactive `rebase_groom` MCP tool.
+- Rebase onto a moved base — two separate Bash calls, then assert:
+  1. `git fetch origin`
+  2. `git rebase origin/develop`
+  3. `git merge-base --is-ancestor origin/develop HEAD` must exit 0 —
+     the rebase success message alone is not proof
 - If aliases are missing, run `/Dev10x:git-alias-setup`
 
 ### Multiline content (commit messages, PR bodies)
@@ -50,8 +61,8 @@ prompts or brittle command matching.
 - Hook validates verb choice automatically
 
 ### Script invocation
-- Scripts in `~/.codex/skills/` and `~/.codex/tools/` are self-executing
-- Call directly: `~/.codex/tools/script.py args`
+- Scripts in `~/.claude/skills/` and `~/.claude/tools/` are self-executing
+- Call directly: `~/.claude/tools/script.py args`
 - Never prefix with `uv run --script` — the shebang handles it
 
 ### Worktrees
@@ -64,7 +75,7 @@ prompts or brittle command matching.
 ### Temporary files
 - **Preferred**: Use MCP tool `mcp__plugin_Dev10x_cli__mktmp`
   with params `namespace`, `prefix`, `ext`, `directory`
-- **Fallback**: `/tmp/claude/bin/mktmp.sh <namespace> <prefix> [.ext]`
+- **Fallback**: `/tmp/Dev10x/bin/mktmp.sh <namespace> <prefix> [.ext]`
   (requires `Bash()` allow rule in skills)
 - Never `mkdir -p && script` — both methods create dirs automatically
 

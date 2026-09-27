@@ -12,6 +12,11 @@
       "description": "Title uses outcome verbs (Enable, Simplify, Resolve), blocks implementation verbs (Add, Update, Remove, Refactor)"
     },
     {
+      "id": "frame-diversity",
+      "name": "Title Frame Diversity and Business Bullseye",
+      "description": "Titles are derived from the ROI bucket and the shape of the change, not by transposing the Job Story clause; across a batch they use several distinct opening frames, name humans not systems, take Hold <contract> only for generated-only diffs with a named counterparty, and never begin with GitHub's default Revert string (GH-1225)"
+    },
+    {
       "id": "extraction",
       "name": "Ticket Extraction",
       "description": "Correctly extracts ticket ID from branch name convention (username/TICKET-ID/[worktree/]description)"
@@ -32,7 +37,7 @@
       "id": 1,
       "name": "standard-feature-commit",
       "prompt": "/Dev10x:git-commit",
-      "description": "Standard feature commit on branch janusz/PAY-310/fix-flaky-tests with staged changes. Tests full happy-path workflow.",
+      "description": "Standard feature commit on branch janusz/PAY-310/fix-flaky-tests with staged changes. Plan-sync tickets list matches the branch, so the branch-drift gate (Step 1.5) is silent. Tests full happy-path workflow.",
       "setup": {
         "branch": "janusz/PAY-310/fix-flaky-tests",
         "staged_changes": true,
@@ -203,6 +208,178 @@
       ]
     },
     {
+      "id": 8,
+      "name": "branch-drift-detection",
+      "prompt": "Skill(Dev10x:git-commit)",
+      "description": "GH-147: plan-sync context expects ticket GH-147 but HEAD has drifted to a different feature branch with no GH-147 segment. Step 1.5 must detect the mismatch and fire AskUserQuestion regardless of session policy (ALWAYS_ASK).",
+      "setup": {
+        "branch": "janusz/GH-200/unrelated-work",
+        "staged_changes": true,
+        "plan_sync_context": {
+          "tickets": ["GH-147"]
+        },
+        "gate_effect": "auto-advance",
+        "orchestrator": "Dev10x:work-on",
+        "active_task_list": true
+      },
+      "dimensions": ["safety", "workflow"],
+      "assertions": [
+        {
+          "id": "reads-plan-sync-context",
+          "text": "Calls mcp__plugin_Dev10x_cli__plan_sync_json_summary to source the expected ticket(s)",
+          "check": "tool_called",
+          "signals": ["mcp__plugin_Dev10x_cli__plan_sync_json_summary"]
+        },
+        {
+          "id": "fires-drift-gate",
+          "text": "Fires AskUserQuestion when branch name does not contain any expected ticket — even when other gates auto-advance (ALWAYS_ASK)",
+          "check": "tool_called",
+          "signals": ["AskUserQuestion", "Branch drift", "drift"]
+        },
+        {
+          "id": "no-auto-select-on-drift",
+          "text": "Does NOT auto-select 'Continue on current branch' or 'Switch back' when other gates auto-advance — the drift gate must block",
+          "check": "behavioral",
+          "signals": ["ALWAYS_ASK", "drift"]
+        },
+        {
+          "id": "no-commit-without-confirmation",
+          "text": "Does NOT execute git commit until the user resolves the drift gate",
+          "check": "behavioral",
+          "signals": ["AskUserQuestion before git commit"]
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "name": "branch-drift-skipped-no-context",
+      "prompt": "/Dev10x:git-commit",
+      "description": "Ad-hoc invocation outside an orchestrator: plan-sync returns no tickets. Step 1.5 must skip the drift check silently and behave identically to pre-GH-147 git-commit.",
+      "setup": {
+        "branch": "janusz/PAY-310/fix-flaky-tests",
+        "staged_changes": true,
+        "plan_sync_context": {}
+      },
+      "dimensions": ["safety"],
+      "assertions": [
+        {
+          "id": "no-drift-prompt",
+          "text": "Does NOT fire branch-drift AskUserQuestion when plan-sync has no tickets list",
+          "check": "output_absent",
+          "signals": ["Branch drift", "drift", "expected ticket"]
+        },
+        {
+          "id": "proceeds-to-extraction",
+          "text": "Proceeds normally to Step 2 (ticket extraction)",
+          "check": "transcript_contains",
+          "signals": ["PAY-310"]
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "name": "batch-title-distinctiveness",
+      "prompt": "/Dev10x:git-commit use Dev10x:jtbd\n\n(Run once per branch, eight branches, each a first feature/bug commit)",
+      "description": "GH-1225: eight tickets spanning Risk, Revenue (new value and leak), Cost (manual step and prevention), Retention, and one generated-types-only diff. The shipped release this reproduces emitted `Let <actor> <verb>` eleven times in seventeen. Titles must be derived from bucket + shape of the truth, not from the story clause, and must read as distinct real-world use cases side by side.",
+      "setup": {
+        "branches": [
+          "janusz/PROJ-401/odometer-required-at-completion",
+          "janusz/PROJ-404/approved-work-drops-off-bill",
+          "janusz/PROJ-248/per-store-tip-toggles",
+          "janusz/PROJ-609/settings-save-without-staff-approval",
+          "janusz/PROJ-730/per-wheel-pressure-on-printout",
+          "janusz/PROJ-725/stale-plan-in-new-worktree",
+          "janusz/PROJ-592/ai-phone-agent-route-guard",
+          "janusz/PROJ-248/pos-tipping-generated-types"
+        ],
+        "staged_changes": true,
+        "note": "The last branch's diff is a generated types file only; ticket descriptions are agent-written and one (PROJ-730) has its only evidence in a QA comment"
+      },
+      "dimensions": ["frame-diversity", "jtbd"],
+      "assertions": [
+        {
+          "id": "five-distinct-openers",
+          "text": "Across the eight suggested titles at least five distinct opening words appear",
+          "check": "behavioral",
+          "signals": ["distinct opening frames", ">= 5"]
+        },
+        {
+          "id": "no-opener-dominates",
+          "text": "No opening word appears in more than three of the eight titles",
+          "check": "behavioral",
+          "signals": ["opener count <= 3"]
+        },
+        {
+          "id": "no-let-monoculture",
+          "text": "At most one title begins with Let, Enable, or Allow (capability-grant frames)",
+          "check": "behavioral",
+          "signals": ["Let", "Enable", "Allow", "<= 1"]
+        },
+        {
+          "id": "no-system-as-actor",
+          "text": "No title names a system as actor or beneficiary (the CRM, the client, the poller, the API, the service)",
+          "check": "output_absent",
+          "signals": ["the CRM", "the client", "the poller", "the API", "the service"]
+        },
+        {
+          "id": "generated-only-takes-hold",
+          "text": "The generated-types-only branch gets a Hold <contract> title with a named counterparty and bucket Platform integrity, not an outcome title",
+          "check": "output_contains",
+          "signals": ["Hold", "contract", "Platform integrity"]
+        },
+        {
+          "id": "leak-not-capture",
+          "text": "The PROJ-404 leak fix is framed as billing what was agreed or stopping a leak, not as capturing new revenue",
+          "check": "behavioral",
+          "signals": ["Bill every", "Stop", "not Capture"]
+        },
+        {
+          "id": "two-frames-offered",
+          "text": "Each suggestion presents two candidates in different frames plus type-your-own, and names the bucket",
+          "check": "output_contains",
+          "signals": ["Suggested titles", "bucket:", "1.", "2."]
+        },
+        {
+          "id": "ticket-only-claims-tagged",
+          "text": "A value claim resting only on agent-written ticket prose is tagged [Verify: ticket-only]",
+          "check": "output_contains",
+          "signals": ["[Verify: ticket-only]"]
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "name": "revert-subject-rejected",
+      "prompt": "/Dev10x:git-commit\n\n(Branch re-lands a reverted feature; git suggests the default subject Revert \"Revert \"✨ EXT-8471 Let shop admins add, deactivate and reactivate employees\"\"\")",
+      "description": "GH-1225: GitHub's default double-revert subject was 83 chars, carried a key from a tracker the release pipeline cannot resolve, and named no outcome. The skill must replace it with the re-land convention.",
+      "setup": {
+        "branch": "janusz/PROJ-725/reland-employee-roster",
+        "staged_changes": true
+      },
+      "dimensions": ["frame-diversity", "format"],
+      "assertions": [
+        {
+          "id": "no-default-revert-string",
+          "text": "Final subject does not begin with Revert \"",
+          "check": "output_not_starts_with",
+          "blocked_verbs": ["Revert \""]
+        },
+        {
+          "id": "reland-marker-after-ticket",
+          "text": "Subject follows ⏩ <TICKET> Reland <noun-phrase outcome>",
+          "check": "output_matches_pattern",
+          "pattern": "^⏩ [A-Z]+-[0-9]+ Reland .+"
+        },
+        {
+          "id": "title-72-chars",
+          "text": "Subject is <= 72 characters",
+          "check": "line_length",
+          "max_chars": 72,
+          "target": "title_line"
+        }
+      ]
+    },
+    {
       "id": 5,
       "name": "long-title-enforcement",
       "prompt": "/Dev10x:git-commit\n\n(User provides description: \"Enable automatic discovery of Square terminal devices across all dealer locations with retry\")",
@@ -315,6 +492,44 @@
           "text": "A commit IS created despite skipping interactive gates",
           "check": "command_contains",
           "signals": ["git commit -F"]
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "name": "jtbd-title-frame-is-chosen-not-transposed",
+      "prompt": "/Dev10x:git-commit use Dev10x:jtbd",
+      "description": "GH-1225: Step 2.5 must pick a title frame rather than transposing the 'so X can' clause word by word. A literal transposition has exactly one output shape, 'Let <beneficiary> <outcome>', which produced 11 of 17 identical-sounding titles in a release bundle. The story's beneficiary here is a system, so the trace-upward rule must also resolve it to a human role.",
+      "setup": {
+        "branch": "janusz/PAY-620/schema-poller-backoff",
+        "staged_changes": true,
+        "prior_context": "Dev10x:jtbd returned: 'When the upstream schema changes mid-sync, the schema poller wants to back off and retry, so the schema poller can avoid hammering the vendor API.'"
+      },
+      "dimensions": ["jtbd"],
+      "assertions": [
+        {
+          "id": "does-not-transpose-to-let-frame",
+          "text": "Title is not a word-by-word transposition of the 'so X can' clause into 'Let <beneficiary> <outcome>'",
+          "check": "output_absent",
+          "signals": ["Let the schema poller"]
+        },
+        {
+          "id": "actor-is-a-human-role",
+          "text": "No system ('the schema poller', 'the CRM', 'the client') appears as the title's actor — traced upward to a human role or a frame with no actor slot",
+          "check": "output_absent",
+          "signals": ["Let the schema poller", "Let the CRM", "Let the client"]
+        },
+        {
+          "id": "title-still-outcome-focused",
+          "text": "Title opens with an outcome verb rather than an implementation verb",
+          "check": "output_matches_pattern",
+          "pattern": "(Enable|Prevent|Stop|Simplify|Resolve|Protect|Stabilize|Streamline|Automate|Harden)\\b"
+        },
+        {
+          "id": "consults-the-title-frames",
+          "text": "References the Title Frames guidance rather than applying a single fixed shape",
+          "check": "transcript_contains",
+          "signals": ["Title Frames"]
         }
       ]
     }

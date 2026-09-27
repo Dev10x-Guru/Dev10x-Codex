@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pyyaml"]
+# dependencies = ["pyyaml>=6.0,<7"]
 # ///
 """
 Slack review request — resolve per-project config and post review
@@ -11,22 +11,22 @@ Subcommands:
     prepare  — Resolve project config, format message, output JSON.
     send     — Post message via slack-notify.py.
 
-Config: ~/.codex/memory/slack-config-code-review-requests.yaml
-Slack config: ~/.codex/memory/slack-config.yaml
+Config: Dev10xConfigDir.slack_review_config_yaml()
+Slack config: Dev10xConfigDir.slack_config_yaml()
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-CONFIG_PATH = Path.home() / ".codex" / "memory" / "slack-config-code-review-requests.yaml"
-SLACK_CONFIG_PATH = Path.home() / ".codex" / "memory" / "slack-config.yaml"
+from dev10x.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.skills.common.jtbd import extract_jtbd, md_to_slack_bold
+from dev10x.skills.notifications._gh import GhCommandError, gh_json
 
 
 def load_yaml(path: Path) -> dict:
@@ -77,8 +77,8 @@ def resolve_mention(
     return mention
 
 
-def md_to_slack_bold(text: str) -> str:
-    return re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
+def _repo_name(repo: str) -> str:
+    return repo.split("/")[-1]
 
 
 def format_review_message(
@@ -89,7 +89,7 @@ def format_review_message(
     jtbd: str | None,
     resolved_mentions: list[str],
 ) -> str:
-    repo_short = repo.split("/")[-1]
+    repo_short = _repo_name(repo)
     link = f"<{pr_url}|{repo_short}#{pr_number}>"
     mentions_prefix = f"{' '.join(resolved_mentions)} " if resolved_mentions else ""
     lines = [f"{mentions_prefix}Please review {link}", pr_title]
@@ -98,35 +98,10 @@ def format_review_message(
     return "\n".join(lines)
 
 
-def extract_jtbd(body: str) -> str | None:
-    for i, line in enumerate(body.splitlines()):
-        if line.strip().startswith("**When**"):
-            jtbd_lines = [line.strip()]
-            for next_line in body.splitlines()[i + 1 :]:
-                if not next_line.strip() or next_line.startswith("#"):
-                    break
-                jtbd_lines.append(next_line.strip())
-            return " ".join(jtbd_lines)
-    return None
-
-
-def gh_json(args: list[str]) -> Any:
-    result = subprocess.run(
-        ["gh", *args],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        print(f"[ERROR] gh {' '.join(args)}: {result.stderr.strip()}", file=sys.stderr)
-        sys.exit(1)
-    return json.loads(result.stdout)
-
-
 def cmd_prepare(args: argparse.Namespace) -> None:
-    config = load_yaml(path=CONFIG_PATH)
-    slack_config = load_yaml(path=SLACK_CONFIG_PATH)
-    repo_name = args.repo.split("/")[-1]
+    config = load_yaml(path=Dev10xConfigDir.slack_review_config_yaml())
+    slack_config = load_yaml(path=Dev10xConfigDir.slack_config_yaml())
+    repo_name = _repo_name(args.repo)
 
     project = resolve_project_config(config=config, repo_name=repo_name)
 
@@ -148,7 +123,10 @@ def cmd_prepare(args: argparse.Namespace) -> None:
                 {
                     "skip": False,
                     "ask": True,
-                    "reason": f"No config found for '{repo_name}'. User should provide channel and mentions.",
+                    "reason": (
+                        f"No config found for '{repo_name}'. "
+                        "User should provide channel and mentions."
+                    ),
                     "channel": None,
                     "mentions": [],
                     "message": None,
@@ -248,7 +226,11 @@ def main() -> None:
 
     parsed = parser.parse_args()
     commands = {"prepare": cmd_prepare, "send": cmd_send}
-    commands[parsed.command](parsed)
+    try:
+        commands[parsed.command](parsed)
+    except GhCommandError as ex:
+        print(f"[ERROR] {ex}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

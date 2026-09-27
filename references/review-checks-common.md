@@ -68,10 +68,17 @@ Before raising any of these, **verify actual code**:
     alongside `name: Dev10x:ticket-foo` is valid. The `Dev10x:` prefix requirement
     applies to `name:` only — do NOT flag `invocation-name:` as a naming
     violation when `name:` is already correct.
-15. **Write-path namespace coverage** — when a `Write(/tmp/claude/<ns>/**)`
+15. **Write-path namespace coverage** — when a `Write(/tmp/Dev10x/<ns>/**)`
     entry is renamed, verify the new namespace matches the first argument of
     every `mktmp.sh` invocation in that SKILL.md. A mismatch causes a
     write-permission rejection at runtime.
+15b. **Bulk path migrations** — when a PR bulk-renames paths (e.g.,
+    `/tmp/claude/` → `/tmp/Dev10x/` across multiple files), verify:
+    (a) All `Bash()` path declarations match the renamed paths,
+    (b) All `Read()` and `Write()` declarations are updated consistently,
+    (c) Documentation files and code comments reference the new paths.
+    Spot-check 3-5 random files in the changed set to catch inconsistent
+    edits. Bulk migrations that miss doc updates are RECOMMENDED fixes.
 16. **Ticket-ID when self-motivated** — if PR body contains
     `Fixes: none — self-motivated`, do not flag missing ticket ID in
     PR title or commit messages. No issue exists to reference.
@@ -93,10 +100,12 @@ Before raising any of these, **verify actual code**:
     the block message but not the Why or How to recover. Do NOT skip the
     docs check.
 21. **JTBD voice violations** — when a PR body, commit message, or issue
-    title contains a Job Story using first-person voice (e.g., "I want to"
-    or "so I can") or omits the actor, flag as REQUIRED. Third-person
-    actor and beneficiary names are required; see `references/git-jtbd.md`
-    § Voice Requirement.
+    title contains a Job Story using first-person ("I want to") or a
+    faceless actor ("the user wants to"), flag as REQUIRED. Third-person
+    domain-actor voice with a concrete role and beneficiary
+    ("the service writer wants to … so the dealer can …") is required.
+    Malformed voice breaks release notes parsing; see
+    `references/git-jtbd.md` § Voice Requirement and § Choosing the Actor.
 22. **Story language violations** — when a PR body, ticket, or acceptance
     criterion writes Job Stories, user stories, or BDD scenarios in the
     wrong project/ticket language, flag as REQUIRED. For BDD and
@@ -112,6 +121,56 @@ Before raising any of these, **verify actual code**:
     risk (users copy stale alias → command fails) → CRITICAL/REQUIRED. Pure
     cosmetic drift (table describes intent, example text outdated) →
     RECOMMENDED. Confirm intent via commit message when unclear.
+24. **MCP tool enumeration consistency** — when a PR adds MCP tool support via
+    new `mcp__plugin_*` declarations in `allowed-tools:`: (a) verify all MCP
+    tools are declared in `.claude-plugin/plugin.json`, (b) verify the tool
+    naming follows `mcp__plugin_Dev10x_<server>__<function>`, (c) when a tool
+    is used in multiple skills, verify each skill's `allowed-tools` includes
+    the full tool name (not a wildcard pattern unless intentional). Spot-check
+    one skill per MCP server. See `.claude/rules/mcp-tools.md` for naming.
+
+## Architecture Checklist (GH-916)
+
+Structural checks for new or substantially modified files. These
+catch violations that surface-level bug hunting misses.
+
+1. **Service layer presence** — new endpoints/views MUST delegate
+   business logic to a service class (View→Service→Repository).
+   Direct repository calls from views are a WARNING.
+2. **Function size** — functions/methods exceeding 50 lines likely
+   violate SRP. Flag as WARNING with extraction suggestion.
+3. **DTO usage** — inline dicts with 4+ keys crossing module
+   boundaries should be DTOs (pydantic dataclasses). Flag as INFO.
+4. **Input validation** — manual `request.data["key"]` parsing
+   without serializer/DTO validation is a WARNING. Validate early.
+5. **God function detection** — a single function performing
+   validation + business logic + persistence + response formatting
+   is a structural violation regardless of line count.
+
+**When to apply:** On every PR that adds or significantly modifies
+endpoint/view/service code. Skip for docs-only, config-only, or
+test-only PRs.
+
+**Independence rule:** Evaluate architecture independently of
+prior review comments. Previous surface-bug fixes do not validate
+structural compliance.
+
+## Cross-Consumer Behavioural Reuse (GH-290)
+
+When a PR reuses an existing data relation (DB row, FK, OneToOne)
+for a new purpose, a sibling repository may already treat row
+presence as an implicit feature flag — populating the relation
+silently activates an unrelated feature. The check fires only
+when the diff dereferences a relation the PR did NOT introduce
+(no sibling `migrations/*.py` in the same PR), then greps
+project-configured sibling repos for boolean/length gating on
+the relation. Severity ladders from INFO (test fixture) →
+WARNING (component visibility) → CRITICAL (route/menu guard).
+
+See [`review-checks/cross-consumer-reuse.md`](review-checks/cross-consumer-reuse.md)
+for trigger details, sibling-repo config schema
+(`.claude/Dev10x/sibling-repos.yaml`), grep patterns, severity
+matrix, reporting format, and silent-skip degradation rules.
 
 ## Parameter Change Analysis
 
@@ -147,7 +206,7 @@ instructions, code examples):
 - **Commands**: Verify they appear in `CLAUDE.md` Development section or
   are known Claude Code CLI built-ins
 - **Files and directories**: Use Glob to verify they exist in the current
-  commit (e.g., `codex-skills/`, `scripts/install-skill.py`)
+  commit (e.g., `scripts/install-skill.py`)
 - **Planned features**: If documenting future features not yet implemented,
   clearly mark as `[PLANNED]` or `[NOT YET IMPLEMENTED]` to prevent
   user confusion when they attempt to use non-existent functionality
@@ -155,9 +214,9 @@ instructions, code examples):
 
 ## Shell Anti-Patterns
 
-- **Hardcoded temp paths**: skills must not hardcode `/tmp/claude/<x>.txt`.
+- **Hardcoded temp paths**: skills must not hardcode `/tmp/Dev10x/<x>.txt`.
   All temp files must be created via
-  `/tmp/claude/bin/mktmp.sh <namespace> <prefix> [.ext]`.
+  `/tmp/Dev10x/bin/mktmp.sh <namespace> <prefix> [.ext]`.
   Hardcoded paths are WARNING; missing `allowed-tools` coverage is also WARNING
   (see rules 8b/8e in `reviewer-skill.md`).
 - **Silent error swallowing**: `|| true` on setup steps and `2>/dev/null`

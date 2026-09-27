@@ -1,0 +1,577 @@
+"""``dev10x github-app setup`` — interactive onboarding for the bot identity.
+
+Walks the engineer through GitHub App registration with install-target
+guidance, picks up the downloaded ``.pem`` from disk, and runs an
+end-to-end verification (App JWT → installations → installation token →
+repo read) before writing config under ``~/.config/Dev10x/github-bot/``.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import click
+
+from dev10x.commands import github_app_api as api
+from dev10x.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.domain.file_locks import atomic_write_text
+from dev10x.github.app_auth import AppConfig
+
+CONFIG_DIR = Dev10xConfigDir.github_bot_dir()
+CONFIG_PATH = Dev10xConfigDir.github_app_yaml()
+KEY_PATH = CONFIG_DIR / "dev10x-bot.pem"
+
+# What the plugin calls, and the capability each one unlocks. Reported
+# against the permissions the INSTALLATION was granted, not the ones the
+# App requests: editing an App's permissions raises a request the
+# installation must accept, and until it does every call runs on the old
+# set (GH-1271).
+NEEDED_PERMISSIONS = {
+    "pull_requests": ("write", "review-thread replies, PR summary comments"),
+    "issues": ("write", "comments on issues — the shared /issues/ endpoint"),
+    "contents": ("write", "repo reads; bot-authored commits"),
+}
+
+# Short of these the bot is degraded, not broken, so status still passes.
+# The setup doc sanctions `Contents: read` for comments-without-commit-
+# identity; failing that configuration would contradict our own guidance.
+OPTIONAL_PERMISSIONS = {"contents": "commit identity unavailable; comments still work"}
+
+_PERMISSION_RANK = {"read": 1, "write": 2, "admin": 3}
+
+PERSONAL_NEW_APP_URL = "https://github.com/settings/apps/new"
+
+INTRO = """\
+Dev10x GitHub App setup
+━━━━━━━━━━━━━━━━━━━━━━━
+
+This walks you through wiring up a GitHub App so agent-generated PR
+review replies post under a `<your-app>[bot]` identity instead of your
+personal account.
+
+You will need to:
+  1. Pick where the App is registered (personal vs. an org)
+  2. Register the App on github.com (one browser visit)
+  3. Install it on the repos you want the bot to comment on
+  4. Point this wizard at the downloaded .pem file
+
+Press Ctrl+C at any time to abort. Nothing is written until
+verification succeeds.
+"""
+
+CREATE_APP_INSTRUCTIONS = """\
+Step 2: Register the GitHub App
+───────────────────────────────
+
+Open this URL:
+
+    {url}
+
+Fill in:
+  Name           dev10x-bot   (or any unique name; appears as
+                              `<name>[bot]` next to comments)
+  Homepage URL   anything (not user-facing)
+  Webhook        UNCHECK "Active" — Dev10x doesn't receive webhooks
+
+Repository permissions:
+  Pull requests       Read and write   (required)
+  Contents            Read-only        (required)
+  All others          No access
+
+{install_scope_hint}
+
+Click "Create GitHub App". On the App settings page:
+  • Note the App ID (numeric)
+  • Click "Generate a private key" — a .pem file downloads to your
+    browser's Downloads folder. Leave it there; the wizard will
+    pick it up next.
+"""
+
+INSTALL_INSTRUCTIONS = """\
+Step 3: Install the App on at least one repo
+────────────────────────────────────────────
+
+On the App settings page, click "Install App" in the left nav.
+Pick the repos you want the bot to comment on. Without an
+installation, the App can't post anywhere.
+"""
+
+
+@dataclass(frozen=True)
+class InstallTarget:
+    """Where the GitHub App is registered: personal, org-owned, or manual."""
+
+    kind: str
+    org: str | None = None
+
+    @property
+    def registration_url(self) -> str:
+        if self.kind == "org":
+            return f"https://github.com/organizations/{self.org}/settings/apps/new"
+        if self.kind == "manual":
+            return "(open the GitHub App settings page yourself)"
+        return PERSONAL_NEW_APP_URL
+
+    @property
+    def install_scope_hint(self) -> str:
+        if self.kind == "org":
+            return (
+                "Where can this GitHub App be installed?\n"
+                "  Scope is implicit — the App is owned by the org and can only\n"
+                "  be installed on it. Leave the default selection."
+            )
+        if self.kind == "manual":
+            return (
+                "Where can this GitHub App be installed?\n"
+                '  Personal multi-target → "Any account".\n'
+                "  Org-owned → leave the default."
+            )
+        return (
+            "Where can this GitHub App be installed?\n"
+            '  Pick "Any account" — lets you install the App on personal\n'
+            '  repos AND any orgs you belong to. The default "Only on this\n'
+            '  account" blocks org installs.'
+        )
+
+
+def _prompt_install_target() -> InstallTarget:
+    """Return the install-target choice: personal, org-owned, or manual."""
+    click.echo("Step 1: Where will the App be registered?")
+    click.echo("─────────────────────────────────────────")
+    click.echo("")
+    click.echo("  1) Personal account — multi-target, can install on any account")
+    click.echo("  2) Organization     — App owned by the org, scope is the org")
+    click.echo("  3) Manual           — I'll open the settings page myself")
+    click.echo("")
+    while True:
+        choice = click.prompt("Choose [1/2/3]", type=str, default="1").strip()
+        if choice == "1":
+            return InstallTarget(kind="personal")
+        if choice == "2":
+            org = click.prompt("Org login (e.g. tiretutorinc)", type=str).strip()
+            if not org:
+                click.echo("  Org login is required for an org-owned App.")
+                continue
+            return InstallTarget(kind="org", org=org)
+        if choice == "3":
+            return InstallTarget(kind="manual")
+        click.echo("  Pick 1, 2, or 3.")
+
+
+def _prompt_app_id() -> str:
+    while True:
+        value = click.prompt("App ID", type=str).strip()
+        if value.isdigit():
+            return value
+        click.echo("  App ID must be numeric (look for it on the App settings page).")
+
+
+def _newest_pem_in_downloads() -> Path | None:
+    downloads = Path.home() / "Downloads"
+    if not downloads.is_dir():
+        return None
+    candidates = sorted(
+        downloads.glob("*.private-key.pem"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def _prompt_private_key_path() -> Path:
+    """Prompt for the path to the downloaded .pem; default to newest in ~/Downloads."""
+    default = _newest_pem_in_downloads()
+    if default is not None:
+        click.echo(f"  Found: {default}")
+    while True:
+        raw = click.prompt(
+            "Path to .pem file",
+            type=str,
+            default=str(default) if default is not None else None,
+        ).strip()
+        if not raw:
+            click.echo("  Path is required.")
+            continue
+        path = Path(raw).expanduser()
+        if not path.is_file():
+            click.echo(f"  No file at {path}.")
+            continue
+        return path
+
+
+def _prompt_private_key_paste() -> str:
+    """Legacy paste flow for headless setups (--paste flag)."""
+    click.echo("")
+    click.echo("Paste the private key contents below.")
+    click.echo("Include the BEGIN/END lines. Finish with a blank line:")
+    click.echo("")
+    lines: list[str] = []
+    saw_end = False
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            break
+        stripped = line.rstrip("\n")
+        if saw_end and stripped == "":
+            break
+        if not stripped and not lines:
+            continue
+        lines.append(stripped)
+        if "END" in stripped and "PRIVATE KEY" in stripped:
+            saw_end = True
+    return "\n".join(lines) + "\n"
+
+
+def _validate_key_locally(*, app_id: str, private_key: str) -> str | None:
+    """Quick offline check: can we sign a JWT with this key?"""
+    try:
+        import jwt
+    except ImportError:
+        return "PyJWT is not installed. Run `uv sync --extra dev`."
+    try:
+        token = jwt.encode(
+            {"iat": 0, "exp": 60, "iss": app_id},
+            private_key,
+            algorithm="RS256",
+        )
+    except Exception as exc:  # noqa: BLE001 — surface the underlying message
+        return f"Private key is not valid for RS256 signing: {exc}"
+    if not token:
+        return "JWT signing produced an empty token."
+    return None
+
+
+@dataclass
+class InstallationInfo:
+    """One entry in the verification report."""
+
+    id: int
+    account: str
+    verified_repo: str | None = None
+    error: str | None = None
+
+
+@dataclass
+class VerificationResult:
+    """End-to-end verification outcome."""
+
+    success: bool
+    error: str | None = None
+    app_slug: str | None = None
+    app_id: int | None = None
+    installations: list[InstallationInfo] = field(default_factory=list)
+
+
+def _verify_setup(*, app_id: str, private_key: str) -> VerificationResult:
+    """Mint JWT, fetch App + installations, exchange a token, read a repo."""
+    try:
+        jwt_token = api.mint_app_jwt(app_id=app_id, private_key=private_key)
+    except Exception as exc:  # noqa: BLE001 — surface to user
+        return VerificationResult(success=False, error=f"Could not mint JWT: {exc}")
+
+    try:
+        app = api.get_app(jwt_token=jwt_token)
+    except api.GitHubAPIError as exc:
+        return VerificationResult(success=False, error=f"GET /app failed: {exc}")
+
+    actual_id = app.get("id")
+    if str(actual_id) != str(app_id):
+        return VerificationResult(
+            success=False,
+            error=(
+                f"App ID mismatch: the key belongs to App {actual_id} "
+                f"({app.get('slug')!r}), but you entered {app_id}. "
+                "Re-download the .pem from the correct App settings page."
+            ),
+        )
+
+    try:
+        installations = api.list_installations(jwt_token=jwt_token)
+    except api.GitHubAPIError as exc:
+        return VerificationResult(
+            success=False,
+            error=f"GET /app/installations failed: {exc}",
+        )
+
+    if not installations:
+        return VerificationResult(
+            success=False,
+            error=(
+                "App has no installations. Click 'Install App' in the App "
+                "settings page, pick at least one repo, then re-run setup."
+            ),
+            app_slug=app.get("slug"),
+            app_id=actual_id,
+        )
+
+    verified = [
+        _verify_one_installation(jwt_token=jwt_token, installation=inst) for inst in installations
+    ]
+
+    if not any(info.verified_repo for info in verified):
+        failures = "\n      ".join(
+            f"{info.account}: {info.error}" for info in verified if info.error
+        )
+        return VerificationResult(
+            success=False,
+            error=f"All installations failed verification:\n      {failures}",
+            app_slug=app.get("slug"),
+            app_id=actual_id,
+            installations=verified,
+        )
+
+    return VerificationResult(
+        success=True,
+        app_slug=app.get("slug"),
+        app_id=actual_id,
+        installations=verified,
+    )
+
+
+def _verify_one_installation(
+    *,
+    jwt_token: str,
+    installation: dict,
+) -> InstallationInfo:
+    info = InstallationInfo(
+        id=installation["id"],
+        account=installation.get("account", {}).get("login", "<unknown>"),
+    )
+    try:
+        token = api.create_installation_token(
+            jwt_token=jwt_token,
+            installation_id=installation["id"],
+        )
+    except api.GitHubAPIError as exc:
+        info.error = f"token exchange failed: {exc}"
+        return info
+
+    try:
+        repos = api.list_installation_repositories(token=token)
+    except api.GitHubAPIError as exc:
+        info.error = f"could not list installation repos: {exc}"
+        return info
+
+    if not repos:
+        info.error = "installation has no accessible repos"
+        return info
+
+    first = repos[0]
+    owner = first["owner"]["login"]
+    name = first["name"]
+    try:
+        api.get_repo(token=token, owner=owner, repo=name)
+    except api.GitHubAPIError as exc:
+        info.error = f"could not read {owner}/{name}: {exc}"
+        return info
+
+    info.verified_repo = f"{owner}/{name}"
+    return info
+
+
+def _install_key_from_path(*, source: Path) -> str:
+    """Move the user-provided .pem into KEY_PATH and chmod 600."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if source.resolve() != KEY_PATH.resolve():
+        shutil.move(str(source), str(KEY_PATH))
+    os.chmod(KEY_PATH, 0o600)
+    return KEY_PATH.read_text()
+
+
+def _write_key_text(*, private_key: str) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(KEY_PATH, private_key)
+    os.chmod(KEY_PATH, 0o600)
+
+
+def _write_config(*, app_id: str) -> None:
+    yaml_lines = [
+        "github_app:",
+        f'  app_id: "{app_id}"',
+        f'  private_key_path: "{KEY_PATH}"',
+        "  enabled: true",
+    ]
+    atomic_write_text(CONFIG_PATH, "\n".join(yaml_lines) + "\n")
+    os.chmod(CONFIG_PATH, 0o600)
+
+
+def _print_verification(result: VerificationResult) -> None:
+    click.echo("")
+    click.echo(f"  ✓ App `{result.app_slug}` (ID {result.app_id})")
+    click.echo(f"  ✓ {len(result.installations)} installation(s):")
+    for info in result.installations:
+        if info.verified_repo:
+            click.echo(f"      • {info.account} — read {info.verified_repo}")
+        else:
+            click.echo(f"      • {info.account} — FAILED: {info.error}")
+
+
+@click.group()
+def github_app() -> None:
+    """Manage the Dev10x GitHub App bot identity."""
+
+
+@github_app.command()
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Overwrite existing config without prompting.",
+)
+@click.option(
+    "--paste",
+    is_flag=True,
+    help="Paste the private key contents instead of pointing at a file.",
+)
+def setup(*, force: bool, paste: bool) -> None:
+    """Interactive setup wizard for the GitHub App bot identity."""
+    click.echo(INTRO)
+
+    if (CONFIG_PATH.exists() or KEY_PATH.exists()) and not force:
+        click.echo(f"Existing config at {CONFIG_DIR} — pass --force to overwrite.")
+        if not click.confirm("Overwrite?", default=False):
+            click.echo("Aborted.")
+            sys.exit(1)
+
+    target = _prompt_install_target()
+    click.echo("")
+    click.echo(
+        CREATE_APP_INSTRUCTIONS.format(
+            url=target.registration_url,
+            install_scope_hint=target.install_scope_hint,
+        )
+    )
+    click.pause(info="Press any key when the App is created and the .pem is downloaded… ")
+    click.echo("")
+    click.echo(INSTALL_INSTRUCTIONS)
+    click.pause(info="Press any key when the App is installed on at least one repo… ")
+    click.echo("")
+    click.echo("Step 4: Provide credentials")
+    click.echo("───────────────────────────")
+    click.echo("")
+
+    app_id = _prompt_app_id()
+
+    if paste:
+        private_key = _prompt_private_key_paste()
+        key_source: Path | None = None
+    else:
+        key_source = _prompt_private_key_path()
+        private_key = key_source.read_text()
+
+    error = _validate_key_locally(app_id=app_id, private_key=private_key)
+    if error is not None:
+        click.echo(f"\n  ✗ {error}")
+        click.echo("  Re-download the .pem from the App settings page and try again.")
+        sys.exit(1)
+
+    click.echo("")
+    click.echo("Step 5: End-to-end verification")
+    click.echo("───────────────────────────────")
+    click.echo("  Calling GitHub API to confirm the App, installations, and repo access…")
+    result = _verify_setup(app_id=app_id, private_key=private_key)
+    if not result.success:
+        click.echo(f"\n  ✗ {result.error}")
+        click.echo("  Config not written. Fix the issue above and re-run setup.")
+        sys.exit(1)
+
+    _print_verification(result)
+
+    if key_source is not None:
+        _install_key_from_path(source=key_source)
+    else:
+        _write_key_text(private_key=private_key)
+    _write_config(app_id=app_id)
+
+    click.echo("")
+    click.echo(f"  ✓ Wrote config: {CONFIG_PATH}")
+    click.echo(f"  ✓ Wrote key:    {KEY_PATH}")
+    click.echo("")
+    click.echo("Done. Agent-generated PR replies will now post under the bot identity.")
+
+
+@github_app.command()
+def status() -> None:
+    """Show GitHub App config status and the permissions actually granted."""
+    if not CONFIG_PATH.exists():
+        click.echo(f"No config at {CONFIG_PATH}")
+        click.echo("Run `dev10x github-app setup` to create one.")
+        sys.exit(1)
+
+    click.echo(f"Config:        {CONFIG_PATH}")
+    click.echo(f"Key:           {KEY_PATH}")
+    click.echo(f"Key readable:  {KEY_PATH.is_file() and os.access(KEY_PATH, os.R_OK)}")
+    if KEY_PATH.is_file():
+        mode = oct(KEY_PATH.stat().st_mode & 0o777)
+        click.echo(f"Key mode:      {mode}")
+        if mode != "0o600":
+            click.echo("  ⚠  Expected 0o600 — fix with: chmod 600 " + str(KEY_PATH))
+
+    click.echo("")
+    if not _report_granted_permissions():
+        sys.exit(1)
+
+
+def _report_granted_permissions() -> bool:
+    """Exercise the credentials and report granted vs needed permissions.
+
+    A status command that reads config and stops is the defect GH-1271
+    names: token resolution falls back to user auth silently, so an
+    unusable App and an absent one look identical from the outside.
+    """
+    config = AppConfig.load(path=CONFIG_PATH)
+    if config is None:
+        click.echo("Token check:   ✗ config is unreadable, disabled, or missing app_id")
+        click.echo("  The bot will fall back to your engineer identity on every call.")
+        return False
+
+    try:
+        jwt_token = api.mint_app_jwt(
+            app_id=config.app_id, private_key=config.private_key_path.read_text()
+        )
+        installations = api.list_installations(jwt_token=jwt_token)
+    except Exception as exc:
+        # Any failure here is a report line, not a traceback: the whole
+        # point is to name what silently falls back (GH-1271).
+        click.echo(f"Token check:   ✗ {exc}")
+        click.echo("  The bot will fall back to your engineer identity on every call.")
+        return False
+
+    if not installations:
+        click.echo("Token check:   ✗ App is registered but not installed anywhere")
+        return False
+
+    # Every installation is reported, not just the first: an App on both
+    # a personal account and an org has independent permission sets, and
+    # picking one is a coin flip on exactly the setup the doc calls a trap.
+    complete = True
+    for installation in installations:
+        complete = _report_one_installation(installation) and complete
+
+    if not complete:
+        click.echo("")
+        click.echo("  A permission you added still needs the INSTALLATION to accept it.")
+        click.echo("  Personal install: https://github.com/settings/installations")
+        click.echo("  Org install:      /organizations/<org>/settings/installations")
+    return complete
+
+
+def _report_one_installation(installation: dict[str, Any]) -> bool:
+    account = (installation.get("account") or {}).get("login", "?")
+    click.echo(f"Installation {installation.get('id')} ({account}):")
+
+    granted = installation.get("permissions") or {}
+    satisfied = True
+    for name, (needed, unlocks) in NEEDED_PERMISSIONS.items():
+        actual = granted.get(name)
+        has_level = _PERMISSION_RANK.get(actual or "", 0) >= _PERMISSION_RANK[needed]
+        optional = name in OPTIONAL_PERMISSIONS
+        mark = "✓" if has_level else ("•" if optional else "✗")
+        suffix = "" if has_level else (f" — {OPTIONAL_PERMISSIONS[name]}" if optional else "")
+        click.echo(f"  {mark} {name}: {actual or 'none'} (need {needed}) — {unlocks}{suffix}")
+        satisfied = satisfied and (has_level or optional)
+    return satisfied
