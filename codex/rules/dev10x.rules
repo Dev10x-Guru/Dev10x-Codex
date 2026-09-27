@@ -87,12 +87,6 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["gh", "api"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(gh api:*)",
-)
-
-prefix_rule(
     pattern = ["gh", "auth"],
     decision = "allow",
     justification = "Dev10x catalog: Bash(gh auth:*)",

@@ -67,6 +67,19 @@ class TestTranslateRule:
     def test_destructive_program_is_never_allowed(self, program: str) -> None:
         assert isinstance(translate_rule(f"Bash({program}:*)", ALLOW), SkippedRule)
 
+    @pytest.mark.parametrize(
+        "source", ["Bash(gh api:*)", "Bash(gh api graphql:*)", "Bash(gh api repos:*)"]
+    )
+    def test_gh_api_is_never_allowed_because_later_flags_can_make_it_a_write(
+        self, source: str
+    ) -> None:
+        assert isinstance(translate_rule(source, ALLOW), SkippedRule)
+
+    def test_gh_api_write_methods_still_prompt(self) -> None:
+        rule = translate_rule("Bash(gh api --method DELETE:*)", PROMPT)
+        assert isinstance(rule, CodexRule)
+        assert rule.decision == PROMPT
+
     def test_rm_may_still_be_forbidden(self) -> None:
         rule = translate_rule("Bash(rm -rf:*)", FORBIDDEN)
         assert isinstance(rule, CodexRule)
@@ -104,6 +117,15 @@ class TestTranslateCatalog:
             Path(rule.pattern[0]).name for rule in translation.rules if rule.decision == ALLOW
         }
         assert not allowed_programs & NEVER_ALLOWED_PROGRAMS
+
+    def test_shipped_catalog_never_allows_a_gh_api_prefix(self) -> None:
+        translation = translate_catalog(parse_config(PROJECTS_YAML))
+        allowed_gh_api = [
+            rule.pattern
+            for rule in translation.rules
+            if rule.decision == ALLOW and rule.pattern[:2] == ("gh", "api")
+        ]
+        assert allowed_gh_api == []
 
     def test_shipped_catalog_forbids_privilege_escalation(self) -> None:
         translation = translate_catalog(parse_config(PROJECTS_YAML))

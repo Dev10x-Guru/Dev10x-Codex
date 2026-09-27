@@ -21,6 +21,8 @@ NEVER_ALLOWED_PROGRAMS: frozenset[str] = frozenset(
     {"rm", "rmdir", "shred", "dd", "mkfs", "sudo", "sudoedit", "doas", "pkexec"}
 )
 
+NEVER_ALLOWED_PREFIXES: tuple[tuple[str, ...], ...] = (("gh", "api"),)
+
 CATALOG_RELPATH = Path("skills") / "upgrade-cleanup" / "projects.yaml"
 RULES_RELPATH = Path("codex") / "rules" / "dev10x.rules"
 
@@ -81,6 +83,13 @@ def translate_rule(source: str, decision: str) -> CodexRule | SkippedRule | None
         )
     if decision == ALLOW and Path(tokens[0]).name in NEVER_ALLOWED_PROGRAMS:
         return skip("destructive or privileged program is never auto-approved")
+    if decision == ALLOW and any(
+        tokens[: len(prefix)] == prefix for prefix in NEVER_ALLOWED_PREFIXES
+    ):
+        return skip(
+            "later flags (-X, --method, -f, --input) turn it into a write that a "
+            "prefix rule cannot see"
+        )
     return CodexRule(pattern=tokens, decision=decision, source=source)
 
 
