@@ -16,7 +16,8 @@
       "args": ["run", "--script", "servers/cli_server.py"],
       "cwd": ".",
       "env": {
-        "PYTHONUNBUFFERED": "1"
+        "PYTHONUNBUFFERED": "1",
+        "DEV10X_HARNESS": "codex"
       }
     },
     "db": {
@@ -24,7 +25,8 @@
       "args": ["run", "--script", "servers/db_server.py"],
       "cwd": ".",
       "env": {
-        "PYTHONUNBUFFERED": "1"
+        "PYTHONUNBUFFERED": "1",
+        "DEV10X_HARNESS": "codex"
       }
     }
   },
