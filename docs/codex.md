@@ -49,6 +49,27 @@ Codex copies the plugin into `~/.codex/plugins/cache/`.
 After changing a local checkout, reinstall it with
 `codex plugin remove Dev10x@Dev10x-Codex` followed by `codex plugin add`.
 
+## Updates and releases
+
+A GitHub install tracks `main`.
+Codex refreshes Git marketplaces in the background when a session
+starts and reinstalls the plugin when `main` has moved, so updates
+arrive on their own.
+To update immediately:
+
+```bash
+codex plugin marketplace upgrade Dev10x-Codex
+```
+
+Releases are tagged `v<upstream version>+codex.<N>` — for example
+`v0.105.0+codex.1` is the first Codex build on top of upstream
+Dev10x 0.105.0; `N` restarts at 1 when a new upstream release is
+merged.
+The same version appears in `.codex-plugin/plugin.json`.
+To stay on one release instead of following `main`, add the
+marketplace with `--ref v0.105.0+codex.1`; move to a newer release by
+removing the marketplace and adding it again with the new tag.
+
 Check the MCP servers are registered:
 
 ```bash
