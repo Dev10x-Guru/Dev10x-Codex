@@ -101,7 +101,10 @@ def session_load_marker(data: dict | None = None) -> None:
     (sessions_dir / session_id).touch()
 
 
-def session_git_aliases() -> None:
+ALIAS_SETUP_HINT = "Run the git-alias-setup skill (/Dev10x:git-alias-setup) to configure them."
+
+
+def session_git_aliases(setup_hint: str = ALIAS_SETUP_HINT) -> None:
     """Check git branch-comparison aliases and report status (SessionStart hook)."""
     missing: list[str] = []
     present: list[str] = []
@@ -124,7 +127,7 @@ def session_git_aliases() -> None:
     print(f"Git aliases missing: {' '.join(missing)}")
     if present:
         print(f"Git aliases available: {' '.join(present)}")
-    print("Run the git-alias-setup skill (/Dev10x:git-alias-setup) to configure them.")
+    print(setup_hint)
 
 
 __all__ = [
@@ -132,4 +135,5 @@ __all__ = [
     "session_load_marker",
     "session_git_aliases",
     "BASE_BRANCH_ALIASES",
+    "ALIAS_SETUP_HINT",
 ]

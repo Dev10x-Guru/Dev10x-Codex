@@ -151,15 +151,12 @@ def _run_session_feature(*, feature: SessionFeature, data: dict, audit_hook) -> 
     return feature.run(data, audit_hook)
 
 
-def main() -> None:
-    data = _load_stdin()
-    s, audit_hook = _import_session_modules()
-
+def build_features(s) -> list[SessionFeature]:
     # Order matters for readability of the merged additionalContext.
     # The load marker runs first (side-effect only) so the userspace
     # plugin-load-guard can detect a successful load as early as
     # possible (GH-874).
-    features = [
+    return [
         capture_feature(
             name="session-load-marker",
             fn=s.session_load_marker,
@@ -184,6 +181,35 @@ def main() -> None:
         capture_feature(name="session-migrate-permissions", fn=s.session_migrate_permissions),
         build_feature(name="session-reload", fn=s.build_reload_context),
     ]
+
+
+def select_harness_features(*, features: list[SessionFeature]) -> list[SessionFeature]:
+    from dev10x.harness import is_codex
+
+    if not is_codex():
+        return features
+
+    from dev10x.hooks import session_codex
+
+    replacements = {
+        "session-git-aliases": capture_feature(
+            name="session-git-aliases", fn=session_codex.session_git_aliases_codex
+        ),
+        "session-guidance": build_feature(
+            name="session-guidance", fn=session_codex.build_codex_guidance_context
+        ),
+    }
+    return [
+        replacements.get(feature.name, feature)
+        for feature in features
+        if feature.name not in session_codex.CODEX_SUPPRESSED_FEATURES
+    ]
+
+
+def main() -> None:
+    data = _load_stdin()
+    s, audit_hook = _import_session_modules()
+    features = select_harness_features(features=build_features(s))
 
     context_parts: list[str] = []
     for feature in features:
