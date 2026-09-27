@@ -308,6 +308,46 @@ def catalog_diff(*, strict: bool) -> None:
         raise SystemExit(1)
 
 
+@permission.command(
+    name="codex-rules",
+    help="Translate the Claude permission catalog into a Codex execpolicy rules file.",
+)
+@click.option("--catalog", "catalog_path", default=None, help="Catalog YAML to translate")
+@click.option("--output", "output_path", default=None, help="Rules file to write")
+@click.option("--check", is_flag=True, help="Exit non-zero when the rules file is stale")
+def codex_rules(*, catalog_path: str | None, output_path: str | None, check: bool) -> None:
+    from dev10x.skills.permission.codex_rules import (
+        CATALOG_RELPATH,
+        RULES_RELPATH,
+        render_rules,
+        translate_catalog,
+    )
+    from dev10x.skills.permission.config import parse_config
+    from dev10x.skills.permission.enumerate_mcp import plugin_root
+
+    root = plugin_root()
+    catalog = Path(catalog_path) if catalog_path else root / CATALOG_RELPATH
+    output = Path(output_path) if output_path else root / RULES_RELPATH
+
+    translation = translate_catalog(parse_config(catalog))
+    rendered = render_rules(translation.rules)
+
+    if check:
+        current = output.read_text() if output.is_file() else None
+        if current != rendered:
+            click.echo(f"STALE: {output} — run `dev10x permission codex-rules`", err=True)
+            raise SystemExit(1)
+        click.echo(f"OK: {output} matches {catalog}")
+        return
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(rendered)
+    click.echo(f"Wrote {len(translation.rules)} rules to {output}")
+    click.echo(f"{len(translation.skipped)} catalog shell rules skipped:")
+    for skipped in translation.skipped:
+        click.echo(f"  - {skipped.source} ({skipped.decision}): {skipped.reason}")
+
+
 @permission.command(name="ensure-safety-keys")
 @click.option("--dry-run", is_flag=True, help="Show changes without modifying files")
 @click.option("--quiet", is_flag=True, help="Suppress per-file details")

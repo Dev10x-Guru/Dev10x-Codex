@@ -70,6 +70,7 @@ command_spellings:
       - dev10x permission ensure-scripts
       - dev10x permission ensure-workspace
       - dev10x permission enumerate-mcp
+      - dev10x permission codex-rules
       - dev10x permission generalize
       - dev10x permission init
       - dev10x permission investigate
