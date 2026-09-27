@@ -1,0 +1,29 @@
+{
+  "description": "Dev10x for Codex: session context and command-safety validators",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "DEV10X_HARNESS=codex $PLUGIN_ROOT/hooks/scripts/audit-wrap session-start $PLUGIN_ROOT/hooks/scripts/session-start.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "DEV10X_HARNESS=codex $PLUGIN_ROOT/hooks/scripts/audit-wrap validate-bash $PLUGIN_ROOT/hooks/scripts/validate-bash-command.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
