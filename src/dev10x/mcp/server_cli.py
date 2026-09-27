@@ -63,6 +63,7 @@ from dev10x.mcp.roots_tools import *  # noqa: E402, F401, F403
 from dev10x.mcp.sampling_tools import *  # noqa: E402, F401, F403
 from dev10x.mcp.strict_args import enforce_strict_arguments  # noqa: E402
 from dev10x.mcp.task_index_tools import *  # noqa: E402, F401, F403
+from dev10x.mcp.tool_annotations import apply_tool_annotations  # noqa: E402
 from dev10x.mcp.usage_tools import *  # noqa: E402, F401, F403
 
 # GH-1122: unknown kwargs are dropped twice over by FastMCP's generated
@@ -70,6 +71,7 @@ from dev10x.mcp.usage_tools import *  # noqa: E402, F401, F403
 # returns success having changed nothing. Run AFTER every tool module is
 # imported — that is the only point where the registry is complete.
 enforce_strict_arguments(server)
+apply_tool_annotations(server)
 
 
 def main() -> None:
