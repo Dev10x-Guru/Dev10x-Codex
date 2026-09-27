@@ -12,13 +12,17 @@
   "keywords": ["git", "commits", "pull-requests", "code-review", "workflow"],
   "mcpServers": {
     "cli": {
-      "command": "$PLUGIN_ROOT/servers/cli_server.py",
+      "command": "uv",
+      "args": ["run", "--script", "servers/cli_server.py"],
+      "cwd": ".",
       "env": {
         "PYTHONUNBUFFERED": "1"
       }
     },
     "db": {
-      "command": "$PLUGIN_ROOT/servers/db_server.py",
+      "command": "uv",
+      "args": ["run", "--script", "servers/db_server.py"],
+      "cwd": ".",
       "env": {
         "PYTHONUNBUFFERED": "1"
       }
