@@ -23,6 +23,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "DEV10X_HARNESS=codex $PLUGIN_ROOT/hooks/scripts/audit-wrap validate-edit-write $PLUGIN_ROOT/hooks/scripts/validate-edit-write.py",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }

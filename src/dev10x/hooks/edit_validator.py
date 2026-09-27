@@ -14,15 +14,28 @@ Two validation passes:
 from __future__ import annotations
 
 import functools
+import logging
+import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from dev10x.domain.events.hook_input import HookInput, HookResult
+from dev10x.domain.events.hook_input import HookAllow, HookAsk, HookInput, HookResult
+from dev10x.hooks.apply_patch_payload import (
+    APPLY_PATCH_TOOL_NAME,
+    MalformedPatchError,
+    to_edit_write_payloads,
+)
 from dev10x.hooks.hook_transport import emit
+from dev10x.subprocess_utils import effective_cwd
 
 if TYPE_CHECKING:
     from dev10x.domain.rules.rule_engine import RuleEngine
+
+HookDecision = HookResult | HookAllow | HookAsk
+
+log = logging.getLogger(__name__)
 
 _YAML_PATH = Path(__file__).parent.parent / "validators" / "command-skill-map.yaml"
 
@@ -60,8 +73,8 @@ def reset_engine_cache() -> None:
     _cached_engine.cache_clear()
 
 
-def _run_python_validators(*, data: dict[str, Any], debug: bool = False) -> None:
-    """Run Python validators that handle Edit|Write tool calls.
+def _first_python_decision(*, data: dict[str, Any], debug: bool = False) -> HookDecision | None:
+    """Return the first decision from Python validators that handle Edit|Write.
 
     Mirrors the dispatch pattern in ``commands/hook.py:_validate_bash_body``
     but filters to validators whose ``should_run`` returns True for the
@@ -73,13 +86,56 @@ def _run_python_validators(*, data: dict[str, Any], debug: bool = False) -> None
     inp = HookInput.from_dict(data=data)
     for result in get_chain().run(inp=inp):
         if debug:
-            import sys as _sys
+            print(f"[DEBUG] Python validator blocked: {result}", file=sys.stderr)
+        return result
+    return None
 
-            print(
-                f"[DEBUG] Python validator blocked: {result}",
-                file=_sys.stderr,
-            )
-        emit(result)
+
+def _first_decision(
+    *, data: dict[str, Any], engine: RuleEngine, debug: bool = False
+) -> HookDecision | None:
+    inp = data.get("tool_input", {})
+    file_path = inp.get("file_path", "")
+    content = inp.get("new_string") or inp.get("content", "")
+
+    match = engine.evaluate(file_path=file_path, content=content)
+    if match:
+        if debug:
+            print(f"[DEBUG] Rule '{match.rule_name}' matched: {file_path}", file=sys.stderr)
+        return HookResult(message=match.message)
+
+    return _first_python_decision(data=data, debug=debug)
+
+
+def _naming_file(decision: HookDecision, *, file_path: str) -> HookDecision:
+    if not isinstance(decision, HookResult) or file_path in decision.message:
+        return decision
+    return replace(decision, message=f"apply_patch touches {file_path}: {decision.message}")
+
+
+def _apply_patch_decision(
+    *, data: dict[str, Any], engine: RuleEngine, debug: bool = False
+) -> HookDecision | None:
+    cwd = data.get("cwd") or effective_cwd() or os.getcwd()
+    try:
+        payloads = to_edit_write_payloads(data=data, cwd=cwd)
+    except MalformedPatchError as exc:
+        log.warning(
+            "apply_patch payload could not be parsed (%s); Edit|Write rules were not applied",
+            exc,
+        )
+        return None
+
+    deferred: HookDecision | None = None
+    for payload in payloads:
+        decision = _first_decision(data=payload, engine=engine, debug=debug)
+        if decision is None:
+            continue
+        named = _naming_file(decision, file_path=payload["tool_input"]["file_path"])
+        if isinstance(named, HookResult):
+            return named
+        deferred = deferred or named
+    return deferred
 
 
 def validate_edit_write(
@@ -89,12 +145,8 @@ def validate_edit_write(
     debug: bool = False,
 ) -> None:
     tool = data.get("tool_name", "")
-    if tool not in ("Edit", "Write"):
+    if tool not in ("Edit", "Write", APPLY_PATCH_TOOL_NAME):
         sys.exit(0)
-
-    inp = data.get("tool_input", {})
-    file_path = inp.get("file_path", "")
-    content = inp.get("new_string") or inp.get("content", "")
 
     resolved_path = yaml_path or _YAML_PATH
     engine = _build_engine(yaml_path=resolved_path)
@@ -102,15 +154,12 @@ def validate_edit_write(
     if debug:
         print(f"[DEBUG] Loaded {len(engine.edit_rules)} Edit|Write rules", file=sys.stderr)
 
-    match = engine.evaluate(file_path=file_path, content=content)
-    if match:
-        if debug:
-            print(
-                f"[DEBUG] Rule '{match.rule_name}' matched: {file_path}",
-                file=sys.stderr,
-            )
-        emit(HookResult(message=match.message))
+    if tool == APPLY_PATCH_TOOL_NAME:
+        decision = _apply_patch_decision(data=data, engine=engine, debug=debug)
+    else:
+        decision = _first_decision(data=data, engine=engine, debug=debug)
 
-    _run_python_validators(data=data, debug=debug)
+    if decision is not None:
+        emit(decision)
 
     sys.exit(0)
