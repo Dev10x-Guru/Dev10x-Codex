@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from dev10x.domain.events.hook_input import HookAllow, HookAsk, HookResult
+from dev10x.domain.events.hook_input import HookAllow, HookAsk, HookResult, HookRetry
 from dev10x.hooks.hook_transport import emit, read_hook_input
 
 
@@ -78,6 +78,96 @@ class TestEmitHookAsk:
             emit(HookAsk(reason="reason only"))
         output = json.loads(capsys.readouterr().err)
         assert "systemMessage" not in output
+
+
+CODEX_TOP_LEVEL_KEYS = {
+    "continue",
+    "decision",
+    "hookSpecificOutput",
+    "reason",
+    "stopReason",
+    "suppressOutput",
+    "systemMessage",
+}
+CODEX_HOOK_SPECIFIC_KEYS = {
+    "additionalContext",
+    "hookEventName",
+    "permissionDecision",
+    "permissionDecisionReason",
+    "updatedInput",
+}
+
+
+@pytest.fixture
+def codex_harness(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEV10X_HARNESS", "codex")
+
+
+@pytest.mark.usefixtures("codex_harness")
+class TestEmitUnderCodex:
+    def test_deny_exits_2_with_plain_reason_on_stderr(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as exc_info:
+            emit(HookResult(message="blocked by DX005"))
+        captured = capsys.readouterr()
+        assert exc_info.value.code == 2
+        assert captured.err.strip() == "blocked by DX005"
+        assert captured.out == ""
+
+    def test_allow_writes_stdout_envelope_with_event_name(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as exc_info:
+            emit(HookAllow(message="auto-approved"))
+        captured = capsys.readouterr()
+        output = json.loads(captured.out)
+        assert exc_info.value.code == 0
+        assert output["hookSpecificOutput"] == {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+        }
+        assert output["systemMessage"] == "auto-approved"
+        assert captured.err == ""
+
+    def test_ask_writes_stdout_envelope_with_reason(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as exc_info:
+            emit(HookAsk(message="sensitive probe", reason="DX014 INFRA target"))
+        output = json.loads(capsys.readouterr().out)
+        assert exc_info.value.code == 0
+        assert output["hookSpecificOutput"] == {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "ask",
+            "permissionDecisionReason": "DX014 INFRA target",
+        }
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            HookAllow(),
+            HookAllow(message="m"),
+            HookAsk(message="m", reason="r"),
+            HookAsk(reason="r"),
+        ],
+    )
+    def test_envelope_stays_within_codex_output_schema(
+        self, result: HookAllow | HookAsk, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit):
+            emit(result)
+        output = json.loads(capsys.readouterr().out)
+        assert set(output) <= CODEX_TOP_LEVEL_KEYS
+        assert set(output["hookSpecificOutput"]) <= CODEX_HOOK_SPECIFIC_KEYS
+
+    def test_retry_is_a_silent_no_op(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit) as exc_info:
+            emit(HookRetry(message="retry"))
+        captured = capsys.readouterr()
+        assert exc_info.value.code == 0
+        assert captured.out == ""
+        assert captured.err == ""
 
 
 class TestReadHookInput:

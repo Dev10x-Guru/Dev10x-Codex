@@ -20,6 +20,7 @@ from typing import NoReturn
 
 from dev10x.domain.events.hook_event import HookEventName
 from dev10x.domain.events.hook_input import HookAllow, HookAsk, HookInput, HookResult, HookRetry
+from dev10x.harness import is_codex
 from dev10x.subprocess_utils import effective_cwd
 
 
@@ -63,6 +64,30 @@ def _record_attribution(*, rule_id: str, reason: str) -> None:
         )
 
 
+def _emit_codex(result: HookResult | HookAllow | HookAsk | HookRetry) -> NoReturn:
+    if isinstance(result, HookResult):
+        _record_attribution(rule_id=result.rule_id, reason=result.message)
+        print(result.message, file=sys.stderr)
+        sys.exit(2)
+
+    if isinstance(result, HookRetry):
+        sys.exit(0)
+
+    hook_output: dict[str, str] = {"hookEventName": HookEventName.PRE_TOOL_USE}
+    if isinstance(result, HookAsk):
+        _record_attribution(rule_id=result.rule_id, reason=result.reason or result.message)
+        hook_output["permissionDecision"] = "ask"
+        hook_output["permissionDecisionReason"] = result.reason or result.message
+    else:
+        hook_output["permissionDecision"] = "allow"
+
+    payload: dict[str, object] = {"hookSpecificOutput": hook_output}
+    if result.message:
+        payload["systemMessage"] = result.message
+    print(json.dumps(payload))
+    sys.exit(0)
+
+
 def emit(result: HookResult | HookAllow | HookAsk | HookRetry) -> NoReturn:
     """Write the Claude Code hook envelope for ``result`` and exit.
 
@@ -73,6 +98,9 @@ def emit(result: HookResult | HookAllow | HookAsk | HookRetry) -> NoReturn:
     approval dialog (GH-604) — exit 0, not 2, since the decision is
     carried in the JSON rather than the exit code.
     """
+    if is_codex():
+        _emit_codex(result)
+
     if isinstance(result, HookResult):
         _record_attribution(rule_id=result.rule_id, reason=result.message)
         payload: dict[str, object] = {
