@@ -16,6 +16,7 @@ from dev10x.skills.codex.translate import (
     PLUGIN_ROOT_PLACEHOLDER,
     TOOL_EQUIVALENTS_RELPATH,
     VERIFIED_SKILLS,
+    InvalidSkillFile,
     InvalidSkillName,
     codex_description,
     codex_skill_name,
@@ -314,6 +315,23 @@ class TestTranslateSkills:
     def test_invalid_upstream_directory_name_fails_loudly(self, plugin: Path) -> None:
         write(plugin / "skills" / "Bad_Name" / "SKILL.md", "---\nname: x\n---\n")
         with pytest.raises(InvalidSkillName):
+            translate_skills(plugin)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "# No front matter\n",
+            "---\n- a list\n---\nbody\n",
+            "---\nname: Dev10x:broken\n---\nbody\n",
+            "---\nname: Dev10x:broken\ndescription: '   '\n---\nbody\n",
+            "---\nname: Dev10x:broken\ndescription: [a, b]\n---\nbody\n",
+        ],
+    )
+    def test_skill_without_a_usable_description_fails_naming_the_file(
+        self, plugin: Path, text: str
+    ) -> None:
+        write(plugin / "skills" / "broken" / "SKILL.md", text)
+        with pytest.raises(InvalidSkillFile, match="skills/broken/SKILL.md"):
             translate_skills(plugin)
 
 

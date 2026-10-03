@@ -62,6 +62,10 @@ class InvalidSkillName(ValueError):
     pass
 
 
+class InvalidSkillFile(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class CodexSkillTree:
     files: dict[PurePosixPath, str]
@@ -245,10 +249,16 @@ def translate_skills(root: Path) -> CodexSkillTree:
                 warnings.append(f"{source}: mentions Dev10x:{unknown}, which has no skill")
             if source.name == SKILL_FILE and source.parent.name == name:
                 front_matter, body = split_front_matter(text)
+                description = front_matter.get("description")
+                if not isinstance(description, str) or not description.strip():
+                    raise InvalidSkillFile(
+                        f"{source}: front matter must be a YAML mapping with a non-empty "
+                        "description — Codex lists a skill by its description"
+                    )
                 files[target] = (
                     render_front_matter(
                         name=name,
-                        description=codex_description(front_matter.get("description")),
+                        description=codex_description(description),
                         upstream=source,
                     )
                     + "\n"
