@@ -362,6 +362,15 @@ class TestStalePaths:
     def test_read_tree_of_absent_output_is_empty(self, tmp_path: Path) -> None:
         assert read_tree(tmp_path) == {}
 
+    def test_finder_metadata_and_other_dotfiles_are_ignored(self, plugin: Path) -> None:
+        tree = translate_skills(plugin)
+        for relative, content in tree.files.items():
+            write(plugin / relative, content)
+        (plugin / CODEX_SKILLS_RELPATH / ".DS_Store").write_bytes(b"\x00\x01\xff\xfe")
+        (plugin / CODEX_SKILLS_RELPATH / "git" / ".cache").mkdir(parents=True)
+        (plugin / CODEX_SKILLS_RELPATH / "git" / ".cache" / "x").write_bytes(b"\xff")
+        assert stale_paths(plugin, tree) == []
+
 
 class TestCodexSkillsCommand:
     def test_check_fails_on_stale_output_and_passes_after_writing(self, plugin: Path) -> None:

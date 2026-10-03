@@ -286,6 +286,7 @@ def read_tree(root: Path) -> dict[PurePosixPath, str]:
         )
         for path in sorted(codex_root.rglob("*"))
         if path.is_file()
+        and not any(part.startswith(".") for part in path.relative_to(codex_root).parts)
     }
 
 
