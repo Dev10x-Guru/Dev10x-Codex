@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import posixpath
 import re
-import shutil
-import tempfile
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 import yaml
 
-from dev10x.skills.codex.catalog import VERIFIED_SKILLS
+from dev10x.skills.codex.catalog import DEFERRED_SKILLS, SKILL_CAVEATS, VERIFIED_SKILLS
+from dev10x.skills.codex.tree import GeneratedTree, is_hidden
 
 UPSTREAM_SKILLS_RELPATH = PurePosixPath("skills")
 CODEX_SKILLS_RELPATH = PurePosixPath("codex") / "skills"
@@ -72,10 +70,8 @@ class InvalidPluginRoot(ValueError):
     pass
 
 
-@dataclass(frozen=True)
-class CodexSkillTree:
-    files: dict[PurePosixPath, str]
-    warnings: list[str] = field(default_factory=list)
+class InvalidFrontMatter(ValueError):
+    pass
 
 
 def codex_skill_name(directory: str) -> str:
@@ -91,11 +87,14 @@ def display_name(directory: str) -> str:
     return " ".join(DISPLAY_ACRONYMS.get(word, word.capitalize()) for word in directory.split("-"))
 
 
-def split_front_matter(text: str) -> tuple[dict, str]:
+def split_front_matter(text: str, *, source: PurePosixPath) -> tuple[dict, str]:
     match = _FRONT_MATTER_RE.match(text)
     if not match:
         return {}, text
-    data = yaml.safe_load(match.group(1)) or {}
+    try:
+        data = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError as ex:
+        raise InvalidFrontMatter(f"{source}: front matter is not valid YAML: {ex}") from ex
     if not isinstance(data, dict):
         return {}, text
     return data, text[match.end() :]
@@ -186,7 +185,14 @@ def render_front_matter(*, name: str, description: str, upstream: PurePosixPath)
     return f"---\n{dumped}---\n"
 
 
-def render_preamble(*, directory: str, target: PurePosixPath, verified: bool) -> str:
+def render_preamble(
+    *,
+    directory: str,
+    target: PurePosixPath,
+    verified: bool,
+    deferred_issue: int | None = None,
+    caveat: str | None = None,
+) -> str:
     equivalents = _relative(TOOL_EQUIVALENTS_RELPATH, target.parent)
     upstream_dir = (UPSTREAM_SKILLS_RELPATH / directory).as_posix()
     lines = [
@@ -198,11 +204,19 @@ def render_preamble(*, directory: str, target: PurePosixPath, verified: bool) ->
         f"`.codex-plugin/`); this skill's `scripts/` and `templates/` stay in "
         f"`{PLUGIN_ROOT_PLACEHOLDER}/{upstream_dir}/`.",
     ]
-    if not verified:
+    if deferred_issue is not None:
         lines.append(
-            "> Not yet verified in Codex (tracked in Dev10x-Codex#24): expect gaps and "
-            "confirm before any step that writes to GitHub or rewrites history."
+            "> **Not supported in Codex yet**: this skill depends on Claude Code features "
+            f"Codex lacks (Dev10x-Codex#{deferred_issue}). Use it from Claude Code; Codex "
+            "runs it only when invoked by name."
         )
+    elif not verified:
+        lines.append(
+            "> Reviewed for Codex but not yet run end to end in it: confirm before any step "
+            "that writes to GitHub or rewrites history."
+        )
+    if caveat:
+        lines.append(f"> **In Codex:** {caveat}")
     return "\n".join(lines) + "\n"
 
 
@@ -219,7 +233,7 @@ def _copied_files(skill_dir: Path, upstream_dir: PurePosixPath) -> list[PurePosi
     files: list[PurePosixPath] = []
     for path in sorted(skill_dir.rglob("*")):
         relative = PurePosixPath(path.relative_to(skill_dir).as_posix())
-        if not path.is_file() or path.suffix not in COPIED_SUFFIXES or _is_hidden(relative):
+        if not path.is_file() or path.suffix not in COPIED_SUFFIXES or is_hidden(relative):
             continue
         if relative.parts[0] in UPSTREAM_ONLY_DIRS or "__pycache__" in relative.parts:
             continue
@@ -246,7 +260,7 @@ def _skill_directories(root: Path) -> list[Path]:
     return directories
 
 
-def translate_skills(root: Path) -> CodexSkillTree:
+def translate_skills(root: Path) -> GeneratedTree:
     directories = _skill_directories(root)
     known = [directory.name for directory in directories]
     sources: dict[str, list[PurePosixPath]] = {
@@ -269,13 +283,14 @@ def translate_skills(root: Path) -> CodexSkillTree:
     for directory in directories:
         name = codex_skill_name(directory.name)
         verified = name in VERIFIED_SKILLS
+        deferred_issue = DEFERRED_SKILLS.get(name)
         for source in sources[name]:
             target = codex_path_for(source)
             text = (root / source).read_text(encoding="utf-8")
             for unknown in unknown_skill_mentions(text, known):
                 warnings.append(f"{source}: mentions Dev10x:{unknown}, which has no skill")
             if source.name == SKILL_FILE and source.parent.name == name:
-                front_matter, body = split_front_matter(text)
+                front_matter, body = split_front_matter(text, source=source)
                 files[target] = (
                     render_front_matter(
                         name=name,
@@ -285,7 +300,13 @@ def translate_skills(root: Path) -> CodexSkillTree:
                         upstream=source,
                     )
                     + "\n"
-                    + render_preamble(directory=name, target=target, verified=verified)
+                    + render_preamble(
+                        directory=name,
+                        target=target,
+                        verified=verified,
+                        deferred_issue=deferred_issue,
+                        caveat=SKILL_CAVEATS.get(name),
+                    )
                     + relink(body, source=source, target=target)
                 )
             elif source.suffix == ".md":
@@ -293,51 +314,7 @@ def translate_skills(root: Path) -> CodexSkillTree:
             else:
                 files[target] = rewrite_text(text)
         files[CODEX_SKILLS_RELPATH / name / OPENAI_YAML_RELPATH] = render_openai_yaml(
-            directory=name, implicit=verified
+            directory=name, implicit=deferred_issue is None
         )
 
-    return CodexSkillTree(files=files, warnings=warnings)
-
-
-def _is_hidden(relative: PurePosixPath) -> bool:
-    return any(part.startswith(".") for part in relative.parts)
-
-
-def read_tree(root: Path) -> dict[PurePosixPath, str]:
-    codex_root = root / CODEX_SKILLS_RELPATH
-    if not codex_root.is_dir():
-        return {}
-    tree: dict[PurePosixPath, str] = {}
-    for path in sorted(codex_root.rglob("*")):
-        relative = PurePosixPath(path.relative_to(codex_root).as_posix())
-        if path.is_file() and not _is_hidden(relative):
-            tree[CODEX_SKILLS_RELPATH / relative] = path.read_text(encoding="utf-8")
-    return tree
-
-
-def write_tree(root: Path, tree: CodexSkillTree) -> Path:
-    output = root / CODEX_SKILLS_RELPATH
-    output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=".skills-", dir=output.parent))
-    try:
-        for relative, content in sorted(tree.files.items()):
-            destination = staging / relative.relative_to(CODEX_SKILLS_RELPATH)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_text(content, encoding="utf-8")
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-    staging.chmod(0o755)
-    if output.exists():
-        shutil.rmtree(output)
-    staging.rename(output)
-    return output
-
-
-def stale_paths(root: Path, tree: CodexSkillTree) -> list[PurePosixPath]:
-    current = read_tree(root)
-    return sorted(
-        path
-        for path in current.keys() | tree.files.keys()
-        if current.get(path) != tree.files.get(path)
-    )
+    return GeneratedTree(output=CODEX_SKILLS_RELPATH, files=files, warnings=warnings)

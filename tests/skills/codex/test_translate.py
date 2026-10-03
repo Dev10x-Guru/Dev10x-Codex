@@ -10,27 +10,27 @@ from click.testing import CliRunner
 
 import dev10x.skills.codex as codex_pkg
 from dev10x.commands.skill import codex_skills
+from dev10x.skills.codex.catalog import DEFERRED_SKILLS, SKILL_CAVEATS
 from dev10x.skills.codex.translate import (
     CODEX_SKILLS_RELPATH,
     DESCRIPTION_MAX_LENGTH,
     PLUGIN_ROOT_PLACEHOLDER,
     TOOL_EQUIVALENTS_RELPATH,
     VERIFIED_SKILLS,
+    InvalidFrontMatter,
     InvalidPluginRoot,
     InvalidSkillFile,
     InvalidSkillName,
     codex_description,
     codex_skill_name,
     display_name,
-    read_tree,
     rewrite_links,
     rewrite_text,
     split_front_matter,
-    stale_paths,
     translate_skills,
     unknown_skill_mentions,
-    write_tree,
 )
+from dev10x.skills.codex.tree import read_tree, stale_paths, write_tree
 
 REPO_ROOT = Path(codex_pkg.__file__).resolve().parents[4]
 CODEX_VALIDATOR_KEYS = {"name", "description", "license", "allowed-tools", "metadata"}
@@ -118,17 +118,23 @@ class TestDisplayName:
 
 
 class TestSplitFrontMatter:
+    source = PurePosixPath("skills/x/SKILL.md")
+
     def test_returns_mapping_and_body(self) -> None:
-        data, body = split_front_matter("---\nname: x\n---\n\n# Body\n")
+        data, body = split_front_matter("---\nname: x\n---\n\n# Body\n", source=self.source)
         assert data == {"name": "x"}
         assert body == "\n# Body\n"
 
     def test_text_without_front_matter_is_all_body(self) -> None:
-        assert split_front_matter("# Body\n") == ({}, "# Body\n")
+        assert split_front_matter("# Body\n", source=self.source) == ({}, "# Body\n")
 
     def test_non_mapping_front_matter_is_treated_as_body(self) -> None:
         text = "---\n- a\n---\nbody\n"
-        assert split_front_matter(text) == ({}, text)
+        assert split_front_matter(text, source=self.source) == ({}, text)
+
+    def test_invalid_yaml_names_the_file(self) -> None:
+        with pytest.raises(InvalidFrontMatter, match="skills/x/SKILL.md: front matter is not"):
+            split_front_matter("---\ndescription: a: b: c\n---\n\nBody.\n", source=self.source)
 
 
 class TestRewriteText:
@@ -284,7 +290,7 @@ class TestTranslateSkills:
 
     def test_skill_file_gets_codex_front_matter_and_preamble(self, plugin: Path) -> None:
         text = translate_skills(plugin).files[CODEX_SKILLS_RELPATH / "git-commit" / "SKILL.md"]
-        front_matter, body = split_front_matter(text)
+        front_matter, body = split_front_matter(text, source=PurePosixPath("SKILL.md"))
         assert front_matter == {
             "name": "git-commit",
             "description": (
@@ -307,14 +313,35 @@ class TestTranslateSkills:
         assert instructions == "See [fixup](../git-fixup/SKILL.md) and `$Dev10x:py-test`.\n"
         assert defaults == "tool: mcp__cli__mktmp\n"
 
-    def test_unverified_skills_are_explicit_only_and_flagged(self, plugin: Path) -> None:
+    def test_deferred_skills_are_explicit_only_and_name_their_issue(self, plugin: Path) -> None:
         files = translate_skills(plugin).files
         policy = yaml.safe_load(files[CODEX_SKILLS_RELPATH / "foreman" / "agents" / "openai.yaml"])
         assert policy == {
             "interface": {"display_name": "Foreman"},
             "policy": {"allow_implicit_invocation": False},
         }
-        assert "Not yet verified in Codex" in files[CODEX_SKILLS_RELPATH / "foreman" / "SKILL.md"]
+        text = files[CODEX_SKILLS_RELPATH / "foreman" / "SKILL.md"]
+        assert "Not supported in Codex yet" in text
+        assert f"Dev10x-Codex#{DEFERRED_SKILLS['foreman']}" in text
+        assert "Reviewed for Codex" not in text
+
+    def test_reviewed_skills_join_the_catalog_with_a_review_note(self, plugin: Path) -> None:
+        write(
+            plugin / "skills" / "linear" / "SKILL.md",
+            "---\nname: Dev10x:linear\ndescription: Talk to Linear.\n---\n\nBody.\n",
+        )
+        files = translate_skills(plugin).files
+        policy = yaml.safe_load(files[CODEX_SKILLS_RELPATH / "linear" / "agents" / "openai.yaml"])
+        assert policy["policy"]["allow_implicit_invocation"] is True
+        text = files[CODEX_SKILLS_RELPATH / "linear" / "SKILL.md"]
+        assert "Reviewed for Codex but not yet run end to end" in text
+        assert f"> **In Codex:** {SKILL_CAVEATS['linear']}" in text
+
+    def test_verified_skills_carry_no_review_note(self, plugin: Path) -> None:
+        text = translate_skills(plugin).files[CODEX_SKILLS_RELPATH / "git-commit" / "SKILL.md"]
+        assert "Reviewed for Codex" not in text
+        assert "Not supported in Codex" not in text
+        assert "**In Codex:**" not in text
 
     def test_verified_skills_stay_in_the_catalog(self, plugin: Path) -> None:
         files = translate_skills(plugin).files
@@ -327,6 +354,12 @@ class TestTranslateSkills:
         assert translate_skills(plugin).warnings == [
             "skills/foreman/SKILL.md: mentions Dev10x:retired-skill, which has no skill"
         ]
+
+    def test_malformed_front_matter_is_reported_by_the_command(self, plugin: Path) -> None:
+        write(plugin / "skills" / "bad" / "SKILL.md", "---\ndescription: a: b: c\n---\n\nBody.\n")
+        result = CliRunner().invoke(codex_skills, ["--root", str(plugin), "--check"])
+        assert result.exit_code == 2
+        assert "ERROR: skills/bad/SKILL.md: front matter is not valid YAML" in result.output
 
     def test_invalid_upstream_directory_name_fails_loudly(self, plugin: Path) -> None:
         write(plugin / "skills" / "Bad_Name" / "SKILL.md", "---\nname: x\n---\n")
@@ -373,7 +406,7 @@ class TestStalePaths:
         assert stale_paths(plugin, tree) == [CODEX_SKILLS_RELPATH / "orphan" / "SKILL.md"]
 
     def test_read_tree_of_absent_output_is_empty(self, tmp_path: Path) -> None:
-        assert read_tree(tmp_path) == {}
+        assert read_tree(tmp_path, CODEX_SKILLS_RELPATH) == {}
 
     def test_hidden_upstream_files_are_neither_translated_nor_reported_stale(
         self, plugin: Path
@@ -454,15 +487,29 @@ class TestWriteTree:
 class TestCommittedCodexSkills:
     @pytest.fixture(scope="class")
     def committed(self) -> dict[PurePosixPath, str]:
-        return read_tree(REPO_ROOT)
+        return read_tree(REPO_ROOT, CODEX_SKILLS_RELPATH)
 
     def test_committed_tree_matches_upstream_skills(self) -> None:
         stale = stale_paths(REPO_ROOT, translate_skills(REPO_ROOT))
         assert stale == [], "run `dev10x skill codex-skills` and commit codex/skills/"
 
-    def test_every_verified_skill_is_generated(self, committed: dict[PurePosixPath, str]) -> None:
+    def test_every_catalogued_skill_is_generated(
+        self, committed: dict[PurePosixPath, str]
+    ) -> None:
         generated = {path.parts[2] for path in committed}
         assert VERIFIED_SKILLS <= generated
+        assert set(DEFERRED_SKILLS) <= generated
+        assert set(SKILL_CAVEATS) <= generated
+
+    def test_only_deferred_skills_are_kept_out_of_the_catalog(
+        self, committed: dict[PurePosixPath, str]
+    ) -> None:
+        explicit_only = {
+            path.parts[2]
+            for path, text in committed.items()
+            if path.name == "openai.yaml" and "allow_implicit_invocation: false" in text
+        }
+        assert explicit_only == set(DEFERRED_SKILLS)
 
     def test_skill_files_pass_codex_validator_rules(
         self, committed: dict[PurePosixPath, str]
@@ -472,7 +519,7 @@ class TestCommittedCodexSkills:
         }
         assert skill_files
         for path, text in skill_files.items():
-            front_matter, _ = split_front_matter(text)
+            front_matter, _ = split_front_matter(text, source=path)
             assert set(front_matter) <= CODEX_VALIDATOR_KEYS, path
             assert front_matter["name"] == path.parts[2], path
             assert CODEX_NAME_RE.match(front_matter["name"]), path

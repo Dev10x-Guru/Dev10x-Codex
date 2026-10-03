@@ -12,12 +12,13 @@ It tracks upstream Dev10x (Claude) and currently corresponds to v0.105.
 | PreToolUse guardrails | Every shell command runs through the DX001–DX017 validators; file edits (`apply_patch`) run through the sensitive-file and edit rules |
 | SessionStart briefing | Git alias status, scratch directory setup, and a short guide to the Dev10x MCP tools and skills |
 | Approval baseline | `codex/rules/dev10x.rules` — routine read-only commands pre-approved, privilege escalation forbidden |
-| Dev10x skills | The branch-to-merge pipeline as Codex skills (`$Dev10x:git-commit`, `$Dev10x:gh-pr-create`, …) |
+| Dev10x skills | 75 Dev10x skills in Codex's skill list (`$Dev10x:git-commit`, `$Dev10x:work-on`, …) |
+| Dev10x agents | 21 reviewer, architect and investigator agents as Codex agent roles (`Dev10x:code-reviewer`, …) — installed with one symlink |
 
 ## Using the Dev10x skills
 
-Fifteen skills cover a ticket from branch to merge and appear in
-Codex's skill list:
+Fifteen skills cover a ticket from branch to merge and have been run
+end to end in Codex:
 
 | Step | Skill |
 |------|-------|
@@ -35,10 +36,24 @@ Codex's skill list:
 Type the name (for example `$Dev10x:git-commit`) or describe the
 outcome and let Codex pick the skill.
 
-Every other Dev10x skill (`$Dev10x:work-on`, `$Dev10x:park`, …) is
-installed too, but runs only when you invoke it by name and is not yet
-verified in Codex
-([#24](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/24)).
+Sixty more — `$Dev10x:work-on`, `$Dev10x:review`, `$Dev10x:park`,
+`$Dev10x:ticket-create`, … — are in the skill list too.
+Each was reviewed against Codex but not yet run end to end in it, and
+says so at the top; eight also carry a one-line **In Codex** note, for
+example that `$Dev10x:linear` needs a Linear MCP server configured in
+Codex.
+
+Sixteen skills are not supported in Codex yet, because they depend on
+Claude Code features Codex lacks.
+They stay installed but run only when invoked by name:
+
+| Skills | Tracked in |
+|--------|------------|
+| `foreman` | [#11](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/11) |
+| `afk`, `diag-friction`, `friction-setup`, `permission-investigator`, `plugin-doctor`, `plugin-maintenance`, `session-config-seed`, `upgrade-cleanup` | [#10](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/10) |
+| `plan-sync` | [#13](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/13) |
+| `audit-file`, `context-audit`, `project-audit`, `skill-audit`, `skill-audit-queue` | [#17](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/17) |
+| `ide-normalize` | [#18](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/18) |
 
 The skills are written for Claude Code.
 Each one opens with a short Codex note linking
@@ -49,6 +64,35 @@ Code tools a skill names — `AskUserQuestion`, `TaskCreate`, `Agent`,
 Where a skill asks you to choose, Codex uses `request_user_input`
 when it offers that tool and otherwise asks in plain text with
 numbered options, so no Codex feature flag needs enabling.
+
+## Using the Dev10x agents
+
+Review and design skills hand work to named agents —
+`$Dev10x:review` to `Dev10x:code-reviewer` and the `Dev10x:reviewer-*`
+domain reviewers, `$Dev10x:adr-evaluate` to the `Dev10x:architect-*`
+panel.
+In Codex these are agent roles that `spawn_agent` offers by name.
+
+A Codex plugin cannot ship agent roles, so link them in once:
+
+```bash
+mkdir -p ~/.codex/agents
+ln -s /path/to/Dev10x-Codex/codex/agents ~/.codex/agents/dev10x
+```
+
+Link a local checkout, as for the approval baseline: a link into the
+plugin cache points at a versioned folder and breaks on the next
+update.
+Start a new Codex session and ask "which agent roles can you spawn?" —
+the answer lists the 21 `Dev10x:` roles.
+
+Each role sets its reasoning effort (high for the architecture
+advisor, code reviewer and issue investigator, medium for the rest) and
+keeps your configured model.
+Reviewer roles are told they are read-only; Codex has no per-role
+tool restrictions, so that is an instruction, not a sandbox.
+`permission-auditor` is not shipped while permission tooling is
+deferred.
 
 ## Prerequisites
 
@@ -180,28 +224,37 @@ Keep any `dev10x-*` folder you created yourself.
 codex plugin remove Dev10x@Dev10x-Codex
 codex plugin marketplace remove Dev10x-Codex
 rm ~/.codex/rules/dev10x.rules
+rm ~/.codex/agents/dev10x
 ```
 
-## Maintaining the Codex skills
+## Maintaining the Codex artefacts
 
-`codex/skills/` is generated from upstream `skills/` — never edit it
-by hand.
-After `git merge upstream/main`, regenerate both Codex artefacts:
+`codex/skills/`, `codex/agents/` and `codex/rules/dev10x.rules` are
+generated from upstream `skills/`, `agents/` and the command catalog —
+never edit them by hand.
+Regenerate all three after any upstream change:
 
 ```bash
 uv run dev10x skill codex-skills
+uv run dev10x skill codex-agents
 uv run dev10x permission codex-rules
 ```
 
-Add `--check` to either command to fail on a stale file without
-writing; the test suite runs the same check.
-The verified set lives in `src/dev10x/skills/codex/catalog.py`.
+Add `--check` to any of them to fail on a stale file without writing;
+the test suite runs the same check.
+Skill status (run end to end, deferred, caveats) lives in
+`src/dev10x/skills/codex/catalog.py`.
+[`codex-upstream-merge.md`](codex-upstream-merge.md) walks through a
+full upstream merge, from `git merge` to a tagged Codex build.
 
 ## Known limitations
 
-- Only the fifteen pipeline skills are verified in Codex; the others
-  are translated mechanically and may name Claude Code tools Codex does
-  not have ([#24](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/24)).
+- Fifteen skills have been run end to end in Codex; sixty more were
+  reviewed but not run, so confirm before a step that writes to GitHub
+  or rewrites history.
+- Codex shortens each skill's description in its skill list (to about
+  250 characters with 75 skills listed), so a skill is easiest to pick
+  by name.
 - Skills that rely on Claude Code's Stop, SessionEnd or PreCompact
   hooks lose that step in Codex
   ([#12](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/12)).
