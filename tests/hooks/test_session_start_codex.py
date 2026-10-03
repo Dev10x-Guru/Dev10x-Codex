@@ -113,6 +113,11 @@ class TestCodexGuidance:
     def test_names_the_guardrail_hooks(self) -> None:
         assert "PreToolUse" in build_codex_guidance_context()
 
+    def test_points_at_the_codex_skills(self) -> None:
+        guidance = build_codex_guidance_context()
+        for skill in ("$Dev10x:git-commit", "$Dev10x:gh-pr-create", "$Dev10x:gh-pr-merge"):
+            assert skill in guidance
+
     def test_carries_no_claude_only_vocabulary(self) -> None:
         guidance = build_codex_guidance_context()
         for claude_only in (

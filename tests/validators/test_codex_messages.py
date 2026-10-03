@@ -103,26 +103,45 @@ class TestAdaptMessageForCodex:
         assert CODEX_ISSUE_REPO in adapted
         assert CLAUDE_ISSUE_REPO not in adapted
 
-    def test_skill_call_with_equivalent_names_the_tool(self) -> None:
+    def test_skill_call_with_codex_skill_names_the_skill(self) -> None:
         adapted = adapt_message_for_codex("Invoke `Skill(Dev10x:gh-pr-monitor)`.")
-        assert adapted == "Call the MCP tool `mcp__cli__ci_check_status`."
+        assert adapted == "Use the `$Dev10x:gh-pr-monitor` skill."
+
+    def test_skill_call_with_only_a_tool_equivalent_names_the_tool(self) -> None:
+        adapted = adapt_message_for_codex("Invoke `Skill(Dev10x:git-alias-setup)`.")
+        assert adapted == "Call the MCP tool `mcp__cli__setup_aliases`."
 
     def test_skill_call_without_equivalent_says_not_available(self) -> None:
         adapted = adapt_message_for_codex("Invoke `Skill(Dev10x:k8s)`.")
         assert "not yet available in Codex" in adapted
         assert "Skill(" not in adapted
 
-    def test_if_skill_fails_prefix_is_dropped_when_no_equivalent(self) -> None:
+    def test_if_skill_fails_prefix_names_the_codex_skill(self) -> None:
         adapted = adapt_message_for_codex(
             "If Skill(Dev10x:git-commit) fails, apply guardrails manually: (1) gitmoji"
         )
-        assert adapted == "Apply guardrails manually: (1) gitmoji"
+        assert adapted == "If `$Dev10x:git-commit` fails, apply guardrails manually: (1) gitmoji"
 
-    def test_if_skill_fails_prefix_names_the_tool_when_equivalent(self) -> None:
+    def test_if_skill_fails_prefix_is_dropped_when_no_equivalent(self) -> None:
         adapted = adapt_message_for_codex(
-            "If Skill(Dev10x:git-groom) fails, run rebase manually with X"
+            "If Skill(Dev10x:k8s) fails, apply guardrails manually: (1) context"
         )
-        assert adapted == "If `mcp__cli__rebase_groom` fails, run rebase manually with X"
+        assert adapted == "Apply guardrails manually: (1) context"
+
+    def test_if_skill_fails_prefix_names_the_tool_when_only_a_tool_exists(self) -> None:
+        adapted = adapt_message_for_codex(
+            "If Skill(Dev10x:git-alias-setup) fails, add the aliases manually"
+        )
+        assert adapted == "If `mcp__cli__setup_aliases` fails, add the aliases manually"
+
+    def test_bare_skill_call_names_the_codex_skill(self) -> None:
+        assert (
+            adapt_message_for_codex("then Skill(Dev10x:git-groom)") == "then `$Dev10x:git-groom`"
+        )
+
+    def test_slash_skill_with_codex_skill_names_the_skill(self) -> None:
+        adapted = adapt_message_for_codex("Run: /Dev10x:git-groom")
+        assert adapted == "Run: the `$Dev10x:git-groom` skill"
 
     def test_slash_skill_with_equivalent_names_the_tool(self) -> None:
         adapted = adapt_message_for_codex("Run: /Dev10x:git-alias-setup")
@@ -150,7 +169,7 @@ class TestAdaptMessageForCodex:
 
 
 class TestFormatCodexSkillBlock:
-    def test_equivalent_skill_steers_to_the_tool(self) -> None:
+    def test_codex_skill_with_a_tool_names_both(self) -> None:
         message = format_codex_skill_block(
             label="git push",
             comp=Compensation(
@@ -160,12 +179,13 @@ class TestFormatCodexSkillBlock:
                 fallback="use --force-with-lease",
             ),
         )
-        assert "Tool: `mcp__cli__push_safe`" in message
+        assert "Skill: `$Dev10x:git`" in message
+        assert "Or call the MCP tool `mcp__cli__push_safe` directly." in message
         assert "use --force-with-lease" in message
         assert CODEX_ISSUE_REPO in message
         _assert_no_claude_vocabulary(message)
 
-    def test_skill_without_equivalent_gives_manual_guardrails(self) -> None:
+    def test_codex_skill_without_a_tool_steers_to_the_skill(self) -> None:
         message = format_codex_skill_block(
             label="git commit",
             comp=Compensation(
@@ -175,8 +195,37 @@ class TestFormatCodexSkillBlock:
                 fallback="(1) prefix with gitmoji",
             ),
         )
-        assert "not yet available in Codex" in message
+        assert "Skill: `$Dev10x:git-commit`" in message
+        assert "Or call the MCP tool" not in message
+        assert "not yet available in Codex" not in message
         assert "(1) prefix with gitmoji" in message
+        _assert_no_claude_vocabulary(message)
+
+    def test_tool_only_skill_steers_to_the_tool(self) -> None:
+        message = format_codex_skill_block(
+            label="git config alias",
+            comp=Compensation(
+                type="use-skill",
+                skill="Dev10x:git-alias-setup",
+                guardrails="alias names",
+                fallback="(1) add aliases",
+            ),
+        )
+        assert "Tool: `mcp__cli__setup_aliases`" in message
+        _assert_no_claude_vocabulary(message)
+
+    def test_skill_without_equivalent_gives_manual_guardrails(self) -> None:
+        message = format_codex_skill_block(
+            label="release notes",
+            comp=Compensation(
+                type="use-skill",
+                skill="Dev10x:release-notes",
+                guardrails="PR attribution",
+                fallback="(1) list merged PRs",
+            ),
+        )
+        assert "not yet available in Codex" in message
+        assert "(1) list merged PRs" in message
         _assert_no_claude_vocabulary(message)
 
     def test_skill_without_fallback_asks_the_user(self) -> None:
@@ -196,11 +245,12 @@ class TestSkillRedirectUnderCodex:
         assert CODEX_ISSUE_REPO in message
         _assert_no_claude_vocabulary(message)
 
-    def test_commit_says_workflow_unavailable_and_keeps_guardrails(
+    def test_commit_steers_to_the_codex_skill_and_keeps_guardrails(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         message = _emitted_block("git commit -m wip", capsys)
-        assert "not yet available in Codex" in message
+        assert "$Dev10x:git-commit" in message
+        assert "not yet available in Codex" not in message
         assert "gitmoji" in message
         assert "mktmp" in message
         _assert_no_claude_vocabulary(message)
