@@ -1,4 +1,4 @@
 interface:
   display_name: "Project Scope"
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true

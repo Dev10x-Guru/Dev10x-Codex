@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 import dev10x.skills.codex as codex_pkg
 from dev10x.commands.skill import codex_skills
+from dev10x.skills.codex.catalog import DEFERRED_SKILLS, SKILL_CAVEATS
 from dev10x.skills.codex.translate import (
     CODEX_SKILLS_RELPATH,
     DESCRIPTION_MAX_LENGTH,
@@ -305,14 +306,35 @@ class TestTranslateSkills:
         assert instructions == "See [fixup](../git-fixup/SKILL.md) and `$Dev10x:py-test`.\n"
         assert defaults == "tool: mcp__cli__mktmp\n"
 
-    def test_unverified_skills_are_explicit_only_and_flagged(self, plugin: Path) -> None:
+    def test_deferred_skills_are_explicit_only_and_name_their_issue(self, plugin: Path) -> None:
         files = translate_skills(plugin).files
         policy = yaml.safe_load(files[CODEX_SKILLS_RELPATH / "foreman" / "agents" / "openai.yaml"])
         assert policy == {
             "interface": {"display_name": "Foreman"},
             "policy": {"allow_implicit_invocation": False},
         }
-        assert "Not yet verified in Codex" in files[CODEX_SKILLS_RELPATH / "foreman" / "SKILL.md"]
+        text = files[CODEX_SKILLS_RELPATH / "foreman" / "SKILL.md"]
+        assert "Not supported in Codex yet" in text
+        assert f"Dev10x-Codex#{DEFERRED_SKILLS['foreman']}" in text
+        assert "Reviewed for Codex" not in text
+
+    def test_reviewed_skills_join_the_catalog_with_a_review_note(self, plugin: Path) -> None:
+        write(
+            plugin / "skills" / "linear" / "SKILL.md",
+            "---\nname: Dev10x:linear\ndescription: Talk to Linear.\n---\n\nBody.\n",
+        )
+        files = translate_skills(plugin).files
+        policy = yaml.safe_load(files[CODEX_SKILLS_RELPATH / "linear" / "agents" / "openai.yaml"])
+        assert policy["policy"]["allow_implicit_invocation"] is True
+        text = files[CODEX_SKILLS_RELPATH / "linear" / "SKILL.md"]
+        assert "Reviewed for Codex but not yet run end to end" in text
+        assert f"> **In Codex:** {SKILL_CAVEATS['linear']}" in text
+
+    def test_verified_skills_carry_no_review_note(self, plugin: Path) -> None:
+        text = translate_skills(plugin).files[CODEX_SKILLS_RELPATH / "git-commit" / "SKILL.md"]
+        assert "Reviewed for Codex" not in text
+        assert "Not supported in Codex" not in text
+        assert "**In Codex:**" not in text
 
     def test_verified_skills_stay_in_the_catalog(self, plugin: Path) -> None:
         files = translate_skills(plugin).files
@@ -458,9 +480,23 @@ class TestCommittedCodexSkills:
         stale = stale_paths(REPO_ROOT, translate_skills(REPO_ROOT))
         assert stale == [], "run `dev10x skill codex-skills` and commit codex/skills/"
 
-    def test_every_verified_skill_is_generated(self, committed: dict[PurePosixPath, str]) -> None:
+    def test_every_catalogued_skill_is_generated(
+        self, committed: dict[PurePosixPath, str]
+    ) -> None:
         generated = {path.parts[2] for path in committed}
         assert VERIFIED_SKILLS <= generated
+        assert set(DEFERRED_SKILLS) <= generated
+        assert set(SKILL_CAVEATS) <= generated
+
+    def test_only_deferred_skills_are_kept_out_of_the_catalog(
+        self, committed: dict[PurePosixPath, str]
+    ) -> None:
+        explicit_only = {
+            path.parts[2]
+            for path, text in committed.items()
+            if path.name == "openai.yaml" and "allow_implicit_invocation: false" in text
+        }
+        assert explicit_only == set(DEFERRED_SKILLS)
 
     def test_skill_files_pass_codex_validator_rules(
         self, committed: dict[PurePosixPath, str]

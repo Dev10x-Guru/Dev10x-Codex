@@ -69,6 +69,14 @@ Use `spawn_agent` and collect the result with `wait_agent`.
 
 When spawning is not available, do the work yourself, in order.
 
+## Reading the task list back
+
+`update_plan` is write-only, and Codex has no hook that mirrors the
+plan into Dev10x plan-sync (Dev10x-Codex#13).
+Where a skill reads the task list (`TaskList`, `TaskGet`, a resumed
+plan), use the checklist you keep in your own replies;
+`mcp__cli__plan_sync_json_summary` will show no tasks.
+
 ## Waiting and polling — `Monitor`, `ScheduleWakeup`, `CronCreate`
 
 There is no equivalent.
@@ -83,12 +91,74 @@ Codex cannot switch a running session into another directory.
 Create the worktree with `mcp__cli__create_worktree`, then ask the user
 to start a new Codex session inside it.
 
-## Files — `Read`, `Edit`, `Write`
+## Files and search — `Read`, `Edit`, `Write`, `Grep`, `Glob`, `WebFetch`
 
 Read files with the shell (`sed -n`, `cat`, `rg`) and change them with
 `apply_patch`.
 The Dev10x guardrails check `apply_patch` the same way they check
 Claude Code edits.
+
+- `Grep` → `rg <pattern>`; `Glob` → `rg --files -g '<glob>'`.
+- `WebFetch` / `WebSearch` → the `web_search` tool when Codex runs
+  with `--search`; otherwise ask the user for the page.
+- `ToolSearch` is not needed: Codex lists every available tool.
+
+## Shell commands
+
+Run one simple command per shell call.
+The Dev10x guardrails deny `for` and `while` loops, `$(…)`
+substitution, heredocs, `&&` / `;` chains and environment-variable
+prefixes, as they do in Claude Code.
+Where a skill shows such a shape, run the commands one at a time and
+write multi-line content with `apply_patch` instead.
+
+Raw `gh` commands that Dev10x routes to its MCP tools:
+
+| Command | Use |
+|---------|-----|
+| `gh pr view` | `mcp__cli__pr_get` |
+| `gh pr edit` | `mcp__cli__update_pr` |
+| `gh pr ready` | `mcp__cli__pr_ready` |
+| `gh pr create` | `$Dev10x:gh-pr-create` |
+| `gh pr merge` | `$Dev10x:gh-pr-merge` |
+| `gh issue view` / `create` / `edit` / `close` | `mcp__cli__issue_get` / `issue_create` / `issue_edit` / `issue_close` |
+
+`/tmp/Dev10x/bin/mktmp.sh <ns> <prefix> <ext>` is
+`mcp__cli__mktmp(namespace, prefix, ext)`.
+
+## Skill scripts and the `dev10x` command
+
+Scripts under `<plugin-root>/skills/<skill>/scripts/` run in Codex,
+but Codex asks for approval each time (Dev10x-Codex#32).
+When `dev10x` is not on your `PATH`, run
+`uv run --project <plugin-root> dev10x <command>`.
+
+## Other MCP servers — Linear, Jira, Slack, Sentry
+
+Dev10x renames only its own tools.
+Names such as `mcp__claude_ai_Linear__save_issue`,
+`mcp__plugin_linear_linear__…` or `mcp__sentry__…` are the user's
+Claude Code servers: in Codex the same server appears as
+`mcp__<server>__<tool>`, under whatever name the user gave it in
+`~/.codex/config.toml`.
+Find the matching tool in your tool list.
+When no such server is configured, say which step you are skipping
+and why, or ask the user to paste the content, then carry on.
+
+## Paths written in skill text
+
+Skills were written in the upstream layout, so a path in prose (not
+a link) is relative to `<plugin-root>/skills/<skill>/`:
+`../../references/X` means `<plugin-root>/references/X`.
+Paths under `~/.claude/` (memory, `SKILLS.md`, `skills/`, `tools/`)
+and repository `.claude/rules/` files belong to Claude Code and may
+not exist.
+
+## Slash commands and sessions
+
+- `/Dev10x:<skill>` means `$Dev10x:<skill>`.
+- `/clear` or `/compact` → start a new Codex session.
+- `claude --resume <id>` → `codex resume` (or `codex resume --last`).
 
 ## Permissions — `allowed-tools`, allow rules, `settings.local.json`
 

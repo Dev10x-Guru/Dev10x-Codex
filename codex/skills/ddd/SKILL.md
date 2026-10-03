@@ -8,7 +8,7 @@ metadata:
 > **Running in Codex.** Generated from `skills/ddd/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
 > `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/ddd/`.
-> Not yet verified in Codex (tracked in Dev10x-Codex#24): expect gaps and confirm before any step that writes to GitHub or rewrites history.
+> Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # DDD Event Storming Workshop
 
