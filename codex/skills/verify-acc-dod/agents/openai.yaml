@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify AC DoD"
+policy:
+  allow_implicit_invocation: false

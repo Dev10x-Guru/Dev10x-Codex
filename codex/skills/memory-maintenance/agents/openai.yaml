@@ -1,0 +1,4 @@
+interface:
+  display_name: "Memory Maintenance"
+policy:
+  allow_implicit_invocation: false

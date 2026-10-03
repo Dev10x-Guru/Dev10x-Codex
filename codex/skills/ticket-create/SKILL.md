@@ -1,0 +1,392 @@
+---
+name: ticket-create
+description: 'Create an issue tracker ticket (GitHub issue, Linear, or JIRA) with proper formatting, description structure, and labels. Accepts title, description content, and optional labels. Automatically formats the description with Root Cause, Solution, and Files Changed sections. Returns the created ticket ID. TRIGGER when: a new ticket needs to be created for tracking work. DO NOT TRIGGER when: ticket already exists (use Dev10x:ticket-scope to enrich it), or user wants to update an existing ticket.'
+metadata:
+  upstream: skills/ticket-create/SKILL.md
+---
+
+> **Running in Codex.** Generated from `skills/ticket-create/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/ticket-create/`.
+> Not yet verified in Codex (tracked in Dev10x-Codex#24): expect gaps and confirm before any step that writes to GitHub or rewrites history.
+
+# Create Issue Tracker Ticket
+
+## Overview
+
+This skill creates a well-structured ticket in GitHub Issues, Linear, or JIRA with proper formatting, comprehensive description, and appropriate labels. It ensures consistent ticket quality across all creation contexts.
+
+## Orchestration
+
+This skill follows `references/task-orchestration.md` patterns.
+Create a task at invocation, mark completed when done:
+
+**REQUIRED: Create a task at invocation.** Execute at startup:
+
+1. `TaskCreate(subject="Create issue tracker ticket", activeForm="Creating ticket")`
+
+Mark completed when done: `TaskUpdate(taskId, status="completed")`
+
+## Prerequisites Check
+
+Determine which tracker to use. Priority:
+
+1. **Explicit argument** — user specifies `--github`, `--linear`, or `--jira`
+2. **detect_tracker MCP tool** — if a ticket prefix is available (from branch
+   name), call `mcp__cli__detect_tracker` to match the project's
+   tracker
+3. **Repo default** — if no prefix, check autolinks to determine project's
+   primary tracker. GitHub Issues if no autolinks exist.
+
+**Fast-fail rule:** Make ONE attempt at the `detect_tracker` MCP call.
+If the tool is unavailable, returns an error, or `ToolSearch` does not
+surface it on the first lookup, fall through to step 3 (repo default)
+immediately. Do NOT retry `ToolSearch` for Linear, JIRA, or
+`detect_tracker` MCP names. Repeated retries block the skill for
+many minutes and produce no new information — the absence of a tool
+on the first lookup means it is not registered in this session.
+
+| Tracker | Required | Creation method |
+|---------|----------|----------------|
+| GitHub | `gh` CLI | `gh issue create` |
+| Linear | Linear MCP | `mcp__claude_ai_Linear__save_issue` |
+| JIRA | Atlassian MCP | `mcp__claude_ai_Atlassian__createJiraIssue` |
+
+## When to Use This Skill
+
+Use this skill when:
+- Creating a ticket for tech debt that needs tracking
+- Converting an untracked change into a formal ticket
+- Creating a bug report ticket
+- Documenting an improvement or enhancement
+- Need a properly structured ticket with consistent formatting
+
+### Anti-pattern: Bypassing the wrapper (GH-156)
+
+**Do NOT call `mcp__cli__issue_create` (or any
+tracker MCP `save_issue` / `gh issue create`) directly when
+creating a new ticket.** Audit GH-156 caught 5 follow-up tickets
+created via raw `issue_create` calls; the resulting tickets
+lacked the Root Cause / Solution / Files Changed scaffolding
+that this skill enforces.
+
+The raw MCP tool is a low-level primitive — this skill is the
+project wrapper that adds structured description formatting,
+milestone/label triage, and tracker-detection. Always reach for
+`$Dev10x:ticket-create` first; the skill's Step 5 will
+dispatch the appropriate MCP tool internally.
+
+**This binds every filing path (GH-1102).** `Dev10x:audit-file`,
+`Dev10x:work-on` follow-up filing, `Dev10x:diag-friction` upstream
+filing, and `Dev10x:foreman` crew filing all route here rather than
+calling `issue_create` bare — otherwise each one re-invents (or
+skips) Step 4 and the backlog goes back to needing sweeps. A caller
+that already knows the milestone and labels still routes through
+this skill and passes them; it does not become its own filing path.
+
+## Input Requirements
+
+This skill requires:
+1. **Context** - Information about the problem/improvement (can be from a commit, code analysis, or user description)
+2. **Optional: Title** - If not provided, generate from context.
+   When `--body-file` is used without `--title`, the first line
+   of the file is used as the title (separated from the body by
+   a blank line). This avoids permission friction from special
+   characters in args strings.
+3. **Optional: Labels** - If not provided, infer from context
+
+## Workflow
+
+### Step 1: Analyze Context
+
+Understand what the ticket is about from the provided context:
+
+**Context can come from:**
+- Git commit diff and message (`git show <commit-hash>`)
+- Code files that need improvement
+- User description of the problem
+- Bug report or issue description
+
+**Extract:**
+- What problem is being solved?
+- Why did the issue exist?
+- What changes were/will be made?
+- What files are affected?
+
+### Step 2: Generate Ticket Title
+
+Create a descriptive, concise title following these patterns:
+
+**Title Format Patterns:**
+
+| Context | Pattern | Example |
+|---------|---------|---------|
+| Tech debt | "Fix tech debt in..." | "Fix tech debt in TestAddTireService flaky tests" |
+| Bug fix | "Fix bug in..." | "Fix bug in payment processing timeout handling" |
+| Enhancement | "Improve..." | "Improve customer search performance" |
+| Refactoring | "Refactor..." | "Refactor invoice generation service" |
+| Test improvement | "Fix flaky test in..." | "Fix flaky test in work order creation" |
+| Missing feature | "Add..." | "Add retry mechanism for Square API" |
+
+**Title Rules:**
+- Keep concise but descriptive (aim for < 80 characters)
+- Start with action verb (Fix, Improve, Add, Refactor, etc.)
+- Be specific about the component/area affected
+- Avoid vague terms like "issue" or "problem" without context
+- **Describe the user-facing outcome, not the implementation detail.** E.g., `Enable automatic terminal discovery` not `Add DEVICES_READ to Square OAuth scopes`
+
+### Step 3: Generate Description
+
+Create a comprehensive description using this structure:
+
+**Structure:**
+```markdown
+<Brief 1-2 sentence summary of the problem/improvement>
+
+## Root Cause
+- <Primary reason the issue existed>
+- <Contributing factors>
+- <Technical details about why this happened>
+
+## Solution
+- <First key change or improvement>
+- <Second key change or improvement>
+- <Third key change or improvement>
+- <Additional changes as needed>
+
+## Files Changed
+- <file path 1> - <what changed>
+- <file path 2> - <what changed>
+- <file path 3> - <what changed>
+```
+
+### Step 4: Triage Milestone and Labels (GH-1102)
+
+**REQUIRED — never file bare.** The filing tools accept `milestone`
+and `labels`, but until GH-1102 no filing flow populated them: a
+2026-08-30 sweep found 11 of 16 open issues unmilestoned and 10 of 13
+unlabeled, every one filed through these wrappers. The taxonomy and
+the milestone convention both exist; filing simply ignored them, and
+the cost landed on periodic manual restructure sweeps.
+
+**Step 4a — read the live roster.** Call
+`mcp__cli__triage_roster(repo="$REPO")`. It returns
+`milestones` (open only, with descriptions) and `labels` (name +
+description). Do NOT work from a hardcoded list — a stale table is
+how the taxonomy drifted out of use in the first place.
+
+**Step 4b — propose labels.** Match the ticket's title and body
+against the returned roster:
+
+| Signal in the ticket | Label to propose |
+|----------------------|------------------|
+| Names a skill (`Dev10x:fanout`, `gh-pr-create`, …) | the matching `skill:*` label |
+| Permission prompt / allow-rule gap | `permission-friction` |
+| Error swallowed or surfaced without diagnostics | `silent-failure` |
+| Raw git/gh used where a wrapper is required | `routing-bypass` |
+| Umbrella issue spanning milestones | `tracker` |
+| New capability | `enhancement` |
+| Incorrect behavior | `bug` |
+
+Propose every label whose signal is present — labels are not
+exclusive. When the roster contains a label this table does not
+mention, prefer the roster: its description states its purpose.
+
+**Step 4c — propose a milestone.** Match the ticket's theme against
+the open milestones' titles and descriptions, respecting the
+initiative prefixes and close-at-zero lifecycle in
+[`references/milestone-naming.md`](../../../references/milestone-naming.md).
+A milestone whose description already names this ticket's theme is a
+direct hit.
+
+**Step 4d — when nothing fits, say so explicitly.** If no open
+milestone is a confident match, file with the `needs-triage` label
+rather than silently unmilestoned, so a later sweep can find strays
+with one query instead of reading every bare issue. Never leave BOTH
+milestone and labels empty — that is the state this step exists to
+prevent.
+
+**Attended mode:** present the proposal at the Step 5 confirmation
+so the user can adjust it. **Unattended mode:** apply the best match
+and proceed — filing bare is not the safe default here, it is the
+defect.
+
+### Step 5: Create the Ticket
+
+**REQUIRED: Dispatch a background haiku agent to create the ticket.**
+Execute this `Agent` call (do NOT inline ticket creation in the main
+session). This prevents raw API responses (full issue JSON, project
+lookups) from consuming main session context — the agent returns only
+the ticket ID and URL.
+
+1. `Agent(subagent_type="general-purpose", model="haiku", description="Create {tracker} ticket: {short_title}", prompt="<see template below>", run_in_background=true)`
+
+The agent prompt template (substitute placeholders before dispatching):
+
+```
+Create a ticket with the following details:
+
+Tracker: {tracker_type}
+Title: {title}
+Description: {description}
+Labels: {labels}
+Milestone: {milestone}
+{tracker-specific config: team UUID, project UUID, repo}
+
+The Labels and Milestone above come from the Step 4 triage and are
+part of the creation call — do NOT file without them and leave
+triage to a later sweep (GH-1102).
+
+{include the tracker-specific instructions below}
+
+Return ONLY:
+- Tracker: {GitHub Issues | Linear | JIRA}
+- ID: {ticket ID}
+- URL: {ticket URL}
+Do NOT return full API response bodies.
+```
+
+The main session waits for the agent result and passes it to
+Step 6. The tracker-specific instructions below describe what
+the agent executes — include the relevant section in the agent's
+prompt (the fenced blocks under each tracker are reference material
+for the dispatched agent, not instructions for the main session).
+
+**Exception — inline creation is acceptable** when follow-on calls
+need the returned ticket key immediately (e.g. a small batch where
+`createIssueLink` needs the just-created issues' keys). Create the
+ticket directly in the main session instead of dispatching the
+background agent, so the key is available for the next call without
+a round trip.
+
+**Secondary fallback:** if JIRA writes are prompting for approval
+because the `mcp-atlassian-write` baseline group has not synced to
+your `settings.json` (see the troubleshooting note under the JIRA
+section below), create inline too — a background agent cannot
+answer that prompt. Prefer fixing the sync gap via
+`Dev10x:plugin-maintenance` over leaning on this fallback long-term.
+
+**Nested invocation:** When invoked from a background agent
+(e.g., from `project-scope`'s Phase 3 agent), skip the
+delegation wrapper and execute creation directly. Detection:
+if the skill is running as a Skill() call within an Agent()
+prompt (vs. in main session), this SKILL.md is your read
+context — your caller (the agent prompt) already optimizes
+the session context, so you execute creation directly per
+tracker-specific instructions below without wrapping in
+Agent().
+
+**Tracker-specific creation instructions:**
+
+Dispatch to the detected tracker:
+
+**GitHub Issues:**
+
+Write the description to a temp file first (inline `--body` strings
+break shell quoting on markdown tables and long descriptions):
+```bash
+# Generate temp path via mktmp.sh, then write body via Write tool
+BODY_FILE=$(/tmp/Dev10x/bin/mktmp.sh gh-issue body .md)
+# Write description content to $BODY_FILE via the Write tool
+gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE" --label "$LABELS" --milestone "$MILESTONE"
+```
+
+Omit `--milestone` only when Step 4d found no confident match — in
+which case `$LABELS` carries `needs-triage`.
+
+**Title-in-file convention:** When the caller provides
+`--body-file` without `--title`, use the wrapper script that
+reads line 1 as the title and creates the issue in one call
+(like `git commit -F`):
+```bash
+<plugin-root>/skills/ticket-create/scripts/create-github-issue.sh "$BODY_FILE" "$REPO" "$LABELS"
+```
+This avoids passing titles with special characters in args
+strings, which can cause permission friction.
+
+**Linear:**
+
+If a `project` parameter was provided by the caller, resolve the
+project UUID first via `list_projects(team: "TEAM_UUID")` — never
+pass a display name (name matching is exact and fails silently).
+After creation, verify linkage with `get_issue(id)` and confirm
+`projectId` matches the expected UUID. See `Dev10x:linear`
+§ Project Assignment.
+
+```
+mcp__claude_ai_Linear__save_issue(
+    team: "TEAM_UUID",
+    title: TITLE,
+    description: DESCRIPTION,
+    labels: [LABELS],
+    project: "PROJECT_UUID"  # optional — resolved UUID only
+)
+```
+
+**JIRA:**
+
+Create via the Atlassian MCP `createJiraIssue` tool, mirroring the
+GitHub/Linear branches above. The `Dev10x:jira` skill ships only
+read / search / update / comment / link scripts — it has **no create
+path** — so the Atlassian MCP is the JIRA-creation surface (GH-631):
+
+```
+mcp__claude_ai_Atlassian__createJiraIssue(
+    cloudId: <from getAccessibleAtlassianResources>,
+    projectKey: <from getVisibleJiraProjects>,
+    issueTypeName: <Task | Bug — from getJiraProjectIssueTypesMetadata>,
+    summary: TITLE,
+    description: DESCRIPTION,
+)
+```
+
+Resolve `cloudId`, `projectKey`, and the issue-type name via the
+read-only Atlassian tools (all pre-approved) before the create call;
+use the live tool schema for exact field names.
+
+The Atlassian ticket-management **write** tools (`createJiraIssue`,
+`editJiraIssue`, `addCommentToJiraIssue`, `transitionJiraIssue`,
+`createIssueLink`, …) **are** pre-approved via the
+`mcp-atlassian-write` baseline permission group (GH-631). This
+deliberately overrides the GH-593 write-precedence default, so the
+Step 5 background creation agent can call `createJiraIssue`
+unattended without stalling on a permission prompt.
+
+**Troubleshooting (GH-899):** if these writes still prompt for
+approval, the `mcp-atlassian-write` baseline group has not reached
+your live `settings.json` yet — that is a seed/sync gap, not the
+intended design. Re-apply base permissions with
+`Dev10x:plugin-maintenance` (or run `Dev10x:upgrade-cleanup`, which
+invokes it in full mode), then retry. See Step 5's inline-creation
+exception for a stopgap while the sync gap persists.
+
+> Team-specific IDs are documented in the tracker skill (`Dev10x:linear`, `Dev10x:jira`).
+
+### Step 6: Return Ticket Information
+
+Extract and return the ticket details:
+
+```
+Ticket Created
+
+Tracker: {GitHub Issues | Linear | JIRA}
+ID: {GH-42 | PAY-519 | JIRA-1234}
+Title: {title}
+URL: {tracker-specific URL}
+```
+
+## Important Notes
+
+- Keep titles concise but descriptive
+- Always include Root Cause, Solution, and Files Changed sections
+- Apply relevant labels to improve discoverability
+- Return the ticket ID for use in subsequent workflows
+- Don't modify ticket after creation unless explicitly asked
+
+## Integration with Other Skills
+
+This skill is designed to be used by other skills:
+
+- **commit:to-new-ticket**: Uses this skill in Step 3 to create ticket from commit
+- **test:fix-flaky**: Uses this skill in Step 3 to create tech debt ticket
+- **Standalone usage**: User manually creates ticket with provided context

@@ -1,0 +1,2670 @@
+# Dev10x:work-on — Adaptive Work Orchestrator (Instructions)
+
+## Overview
+
+This skill turns any combination of inputs into a structured,
+supervisor-approved work plan. It runs in four phases:
+
+1. **Parse & Classify** — identify what each input is
+2. **Gather** — fetch context from all sources in parallel
+3. **Plan** — build a task list for supervisor approval
+4. **Execute** — work through tasks, expanding epics on demand
+
+The supervisor sees progress via `TaskList`, can approve/edit
+the plan, and can pause at any point with `Dev10x:session-wrap-up`.
+
+**Rule: ALWAYS use `TaskCreate`** — even for single-task work.
+The visible task list is the supervisor's interface for adding
+new tasks mid-session. Skipping it removes that capability.
+
+**Invariant: never leave the session with an empty task list
+(GH-149).** Until the supervisor explicitly closes the session
+(`Dev10x:session-wrap-up` or session restart), the task list MUST
+contain at least one open task. The terminal task is always
+`Verify acceptance criteria` — it is the last task in every play
+and it MUST NOT be marked `completed` or `deleted` until the
+supervisor confirms the work is shippable (PR linked, CI green,
+no unresolved review comments, AC satisfied). When new
+instructions arrive mid-session, the new TODOs land **before**
+the Verify-AC task — they do not replace it. An empty task list
+at the moment of a new prompt creates competition for attention
+and is a Phase 4 violation.
+
+**REQUIRED: Create phase tasks before ANY work.** At session
+start, create exactly 4 top-level tasks — one per phase:
+
+1. `TaskCreate(subject="Phase 1: Parse & Classify inputs", activeForm="Classifying inputs")`
+2. `TaskCreate(subject="Phase 2: Gather context", activeForm="Gathering context")`
+3. `TaskCreate(subject="Phase 3: Build work plan", activeForm="Building plan")`
+4. `TaskCreate(subject="Phase 4: Execute plan", activeForm="Executing")`
+
+Set sequential dependencies (each phase blocked by the previous).
+During each phase, create subtasks for the concrete work items
+discovered — e.g., Phase 2 creates one subtask per source being
+fetched, Phase 4 creates subtasks per plan step.
+
+## Phase 0: Session Posture (GH-689, ADR-0022)
+
+**At the very start** — before Phase 1 — make sure this project has a
+review posture, so the gates downstream have a policy to resolve
+against.
+
+**Skip this entirely when:** running as a nested invocation from
+`Dev10x:fanout` (fanout settles posture once for the entire
+session).
+
+**Otherwise, resolve the session-adoption gate first.** Call
+`mcp__cli__resolve_gate(gate="session_adoption",
+context={})`. The tool determines on its own whether the persisted
+session is stale (`session_stale`) — computed from the plan-sync
+`branch`/`tickets` identity (ADR-0018), not a `.claude/Dev10x`
+file — so do not read or hand-compare any config yourself.
+
+- `effect == "auto-advance"` — a valid, non-stale session exists;
+  adopt it silently and skip the write below (the resolved prefs are
+  authoritative). Surface the returned `record` line in the
+  transcript so a present supervisor can veto.
+- `effect == "ask"` — no valid session config exists (or it is
+  stale). Fall through to the posture check below.
+- `effect == "skip"` — skip the check entirely, no config change.
+- Response has an `error` key — fail safe: fall through to the
+  posture check below.
+
+### Settle the review posture (ADR-0022)
+
+There is no friction-level question here any more. `adaptive` is the
+sole shipped baseline (ADR-0022 D-1) — there is no `strict` /
+`guided` / `adaptive` picker to offer, and this skill must not
+reintroduce one. The one durable question ("does the supervisor read
+the PR before the next step is allowed?") belongs to
+`Dev10x:friction-setup`, which owns both the ask and the write.
+
+1. Call `mcp__cli__supervisor_review_status()`.
+2. `pinned: true` — a `projects[]` entry already answers this for the
+   repo. Adopt the resolved `supervisor_review` silently, persist
+   nothing, and continue to Phase 1.
+3. `pinned: false` — this project is unconfigured. Delegate:
+   `$Dev10x:friction-setup`. It fires the blocking review-policy
+   gate, collects any overlays / per-gate deviations, and persists
+   them through the locked writers. Continue to Phase 1 when it
+   returns, whatever the supervisor answered — a dismissal simply
+   leaves the safe unset default (`supervisor_review: required`) in
+   place.
+
+**Never write `friction.yaml` from this skill.** No Write/Edit of
+`friction_level`, `active_modes`, or a hand-built `projects[]` entry:
+the pin tools lock and atomically write (GH-827 / ADR-0011), and
+nothing durable is written under a repo's `.claude/` at all
+(ADR-0018), so Claude Code's self-settings consent gate never fires
+(GH-812). When no `friction.yaml` exists yet, `Dev10x:friction-setup`
+seeds it; `$Dev10x:session-config-seed` (or `dev10x session
+seed`) is the standalone idempotent equivalent.
+
+**Session identity is NOT written here (ADR-0018).** The
+`session_adoption` gate keys on `session_stale`, which the resolver
+computes from the plan-sync `branch`/`tickets` (persisted at Persist
+Plan Context via `plan_sync_set_context` — both MCP-written and
+gate-free). The retired `.claude/Dev10x/session.yaml` no longer
+stores identity: do **not** Write/Edit it, and no per-project
+`.gitignore` edit for session state is needed — nothing durable is
+written under the repo's `.claude/` anymore.
+
+**How this skill consumes the posture:** it does not. Every gate
+below calls `mcp__cli__resolve_gate(gate=…, context=…)`
+and branches on the returned `effect` (`ask` / `auto-advance` /
+`skip`). The resolver reads the preset, the overlays, the project
+pin, and `supervisor_review` itself, and applies the floors that
+protect an irreversible step. Never re-derive a gate's behaviour from
+a config value in prose — a skill that reads policy keys can only
+disagree with the resolver. `references/friction-levels.md` documents
+the resulting behaviour matrix.
+
+## Phase 0.5: Resumed-Plan Task-List Reconstruction (GH-861)
+
+On a process restart mid-work-on, the SessionStart hook rehydrates
+the plan-sync **context** banner but CANNOT repopulate the visible
+**TaskList** — a hook only mirrors Claude's `TaskCreate`/`TaskUpdate`
+calls into `plan.yaml` (PostToolUse), it cannot issue them. So after
+a resume the task tree is empty even though the persisted plan still
+holds every task. Left unhandled, the empty-task-list invariant
+(GH-149) is silently violated across the resume boundary and the
+terminal Verify-AC / Monitor gate is lost.
+
+**REQUIRED before creating the fresh 4 phase tasks:** detect and
+reconstruct a resumed plan. Execute these steps at startup:
+
+1. Call `mcp__cli__plan_sync_json_summary()`.
+2. If the response has `plan.status == "in_progress"` AND
+   `plan.tasks` is non-empty AND the current `TaskList` is empty
+   (the resume signature), do NOT create the fresh 4 phase tasks.
+   Instead, for each persisted task re-issue `TaskCreate` (subject
+   from `task.subject`, description/metadata carried over) and then
+   `TaskUpdate` to restore its `status`, oldest first so ordering is
+   preserved. This rebuilds the supervisor's visible tree from the
+   persisted plan rather than from conversation memory.
+3. Confirm the reconstructed list ends with the terminal Verify-AC
+   (or "Monitor PR") task; if the persisted plan lacks one, append it
+   so the invariant holds.
+4. If any condition in step 2 is false (fresh session, no persisted
+   plan, or TaskList already populated), skip reconstruction and
+   proceed to Phase 1's normal 4-phase-task creation.
+
+The banner's `Plan branch` now reflects the persisted branch (the
+`branch` reserved key mirrors to the plan's top-level metadata), so
+a resumed session shows the real feature branch, not the base.
+
+## Prerequisites
+
+| Capability | Required for | Tool |
+|------------|-------------|------|
+| GitHub CLI | GitHub issues, PRs | `gh` CLI |
+| Linear MCP | Linear tickets | `mcp__claude_ai_Linear__*` |
+| JIRA | JIRA tickets | `Dev10x:jira` plugin + `JIRA_TENANT` env var + keyring |
+| Sentry MCP | Sentry issues | `mcp__sentry__*` |
+| Slack MCP | Slack threads | `mcp__claude_ai_Slack__*` |
+
+Not all are required — only those matching the input types.
+
+## When to Use
+
+- User provides any combination of: ticket URL/ID, PR link, Slack
+  thread, Sentry link, or free text description
+- User wants to start structured work with progress tracking
+- User wants comprehensive context before starting
+
+---
+
+## Phase 1: Parse & Classify
+
+Accept the user's arguments as a space-separated list. Each
+argument is classified independently:
+
+| Pattern | Type | Action |
+|---------|------|--------|
+| `https://github.com/.../issues/N` | `github-issue` | Extract repo + issue number |
+| `https://github.com/.../pull/N` | `github-pr` | Extract repo + PR number |
+| `https://linear.app/.../issue/XXX-N/...` | `linear-ticket` | Extract ticket ID (e.g., `TEAM-133`) |
+| `https://.*slack.com/archives/C.../p...` | `slack-thread` | Store channel + timestamp |
+| `https://sentry.io/.../issues/N` | `sentry-issue` | Extract issue ID |
+| `https://*.sentry.io/issues/N` | `sentry-issue` | Extract issue ID |
+| `https://...atlassian.net/browse/XX-N` | `jira-ticket` | Extract ticket ID |
+| `GH-N` | `github-issue` | Route to `mcp__cli__detect_tracker` |
+| `TEAM-N` (Linear prefix) | `linear-ticket` | Route to `mcp__cli__detect_tracker` |
+| `JIRA-N` | `jira-ticket` | Route to `mcp__cli__detect_tracker` |
+| `#N` (bare number) | `github-pr` | Resolve against current repo |
+| Anything else | `note` | Store as free-text context |
+
+For ticket IDs, call the tracker detector MCP tool:
+`mcp__cli__detect_tracker(ticket_id="$TICKET_ID")`
+Parse `tracker`, `ticket_number`, and `fixes_url` from the response.
+
+Each classified input becomes a **source** entry with its type and
+extracted identifiers. Collect all sources into a list for Phase 2.
+
+### Embedded Questions Are Side Quests (GH-865)
+
+`Dev10x:work-on` delivers a **real artifact** — a merged PR, a
+committed fix, a shipped change — in ~99% of invocations.
+Answering a question or "just investigating" is almost never the
+terminal goal. When the input mixes an artifact target (a ticket
+URL, PR link, or issue/ticket ID) with an inline question (e.g.
+`work-on <PR-URL> what does ignore_conflicts=True do?`), the
+question is **supplementary context**, not the goal.
+
+**Classification rule:**
+
+- A free-text question or investigation ask that accompanies at
+  least one recognized artifact target is folded into that
+  target's context — it feeds Phase 2 (Gather) and Phase 3
+  (Plan). It does NOT become a standalone `note` that supersedes
+  task-list creation. **The work-on workflow always wins:**
+  instantiate the full Phase 1–4 task list and answer the
+  question inline as part of the work.
+- Flag such notes as `context_only = true` in the Phase 1 output
+  so Phase 3 never routes them into a `local-only` "answer the
+  question" play.
+
+**Edge case — pure question, no artifact target:** Only when
+**every** input classifies as `note` and reads as a question (no
+ticket, PR, or URL present) is answering plausibly the intent.
+Handle it as the exception via the Ambiguous Input Fallback below
+(the pure-question confirmation), not the default. When any
+artifact target is present, skip the confirmation and default to
+the full workflow.
+
+**Anti-pattern (GH-865):** `work-on <PR-URL> what does
+ignore_conflicts=True do?` handled as a Q&A turn — the Phase 1–4
+task list was never created until the supervisor asked "where is
+the work-on task list?". The question displaced the workflow
+instead of feeding it.
+
+### Multi-Ticket Detection (GH-196)
+
+After classification, count sources whose type is a ticket or
+GitHub issue (`github-issue`, `linear-ticket`, `jira-ticket`).
+When the count is **≥ 2**, set `bundling_candidate = true` on the
+Phase 1 output. This flag is the trigger that surfaces the Phase 3
+Multi-Issue Strategy gate (see § Multi-Issue Execution) instead of
+auto-routing into a single-ticket play.
+
+`github-pr` inputs do NOT count toward the bundling-candidate
+threshold — a PR is the unit of shipping, so combining a ticket
+with its own PR is PR-continuation, not a bundle. Mixed input
+where multiple tickets accompany one PR is still PR-continuation
+on the PR, with the tickets used as additional context.
+
+The flag is a *candidate* marker — it does not commit the session
+to bundling. Phase 3 resolves the actual strategy (separate PRs vs
+single bundled PR with batches) using the Same-Milestone Heuristic
+and, if needed, the explicit strategy gate.
+
+### Structured-Spec Suitability Gate (GH-174)
+
+After classification, decide whether the ticket is a good fit for
+the SPDD-style `structured-spec` play. Run this gate per ticket
+source (not per session) — a session bundling several tickets may
+route some through `structured-spec` and others through `feature`.
+
+**Poor fit (skip the gate, fall back to default play):**
+
+- Single-file tweaks, config-only changes, dependency bumps
+- Exploratory spikes or research tickets
+- One-off scripts that won't be reused
+- Doc-only changes
+- Bug fixes whose root cause is named in the ticket body
+
+**Good fit (offer `structured-spec` at Phase 3):**
+
+- New features touching ≥ 3 modules
+- API additions (REST, GraphQL, gRPC)
+- Cross-layer changes (model + service + serializer + API)
+- Tickets that already have `docs/specs/<TICKET-ID>.md` —
+  treat this as a strong signal SPDD is in use for this project
+
+**Detection heuristics (apply in order):**
+
+1. If `docs/specs/<TICKET-ID>.md` exists for any source ticket,
+   set `structured_spec_candidate = true`.
+2. Else, count `## Files Changed` (or `Implementation Steps`)
+   entries in the ticket body. If ≥ 3 distinct top-level paths
+   are listed across files in different bounded contexts (e.g.,
+   `src/payments/` AND `src/quotes/` AND `src/api/`), set
+   `structured_spec_candidate = true`.
+3. Else, `structured_spec_candidate = false` — proceed to the
+   default play.
+
+**Phase 3 gate behaviour:**
+
+- When `structured_spec_candidate = true`, call
+  `mcp__cli__resolve_gate(gate="strategy_choice",
+  context={})` in Phase 3 and branch on `effect`:
+  - `ask` — **REQUIRED: Call `AskUserQuestion`** with options:
+    - **Use structured-spec play (Recommended)** — full SPDD pipeline
+      with scope-with-reasons → spec-update gate → implement →
+      spec-sync gate before merge.
+    - **Use the default play** — feature / bugfix / etc.
+  - `auto-advance` — take the **Recommended** option, skip the
+    prompt, and surface the returned `record` line.
+  - `skip` — the default play applies silently.
+- When the candidate flag is false, the gate does not fire — the
+  default play applies silently.
+
+Store the decision in the Phase 1 output as `play_override`. Phase
+3 uses it to resolve which play to instantiate.
+
+### Ambiguous Input Fallback (GH-886)
+
+When ALL inputs classify as `note` (no URLs, ticket IDs, or PR
+numbers matched), the user likely provided natural language
+(e.g., "fix the retry logic", "add dark mode support"). This
+is a valid entry point — do not reject it.
+
+**Pure-question confirmation (GH-865):** If the all-`note` input
+reads as a question or investigation ask (interrogative phrasing —
+"what / why / how does…", "explain…"), **REQUIRED: Call
+`AskUserQuestion`** (do NOT use plain text): "This looks like a
+question, not artifact work — just answer, or start the full
+work-on plan?". Proceed with the fallback path below only when the
+user picks the full plan. This
+edge case applies **only** when no artifact target is present in
+the input — when a ticket / PR / URL is present, the question is
+context and the full workflow runs without asking (see § Embedded
+Questions Are Side Quests).
+
+**Fallback path:**
+
+1. **Search for matching tickets** — use
+   `mcp__cli__detect_tracker` with keywords
+   extracted from the input. If a matching open ticket is found,
+   reclassify the input as that ticket type.
+2. **If no ticket found** — present options via
+   `AskUserQuestion`:
+   - **Work without a ticket (Recommended)** — proceed as
+     `local-only` work type with the note as context
+   - **Create a ticket first** — delegate to
+     `Dev10x:ticket-create` and re-classify
+   - **Search again with different terms** — user provides
+     refined search terms
+
+3. **If ticket found** — confirm with the user:
+   "Found ticket [ID]: [title]. Use this?" and reclassify
+   on confirmation.
+
+**Skip this fallback** when at least one input classified as
+a recognized type (URL, ticket ID, PR number). Mixed inputs
+(ticket + notes) are handled normally — the notes provide
+additional context.
+
+### Early Workspace Decision
+
+After classification, determine whether a branch is needed and
+what workspace state we're in. This decision happens early because
+it affects Phase 3 planning.
+
+**Decision matrix:**
+
+| Work type | Branch required? | Why |
+|-----------|-----------------|-----|
+| Ticket (feature/bugfix) | Yes | PR is the goal |
+| PR continuation | No | Branch already exists |
+| Local-only (free text) | Deferred | Decided in Phase 4 |
+| Investigation only | No | No code changes expected |
+
+**Detect current workspace state** via `Dev10x:gh-context` (GH-55 F5):
+
+Call `$Dev10x:gh-context` and read `worktree`, `current_branch`
+from the response. The skill encapsulates the `.git`-file-vs-directory
+check and branch lookup; calling raw `git symbolic-ref` /
+`git status` here triggers permission friction (chained shell
+patterns, `git -C` rejection) that the wrapper avoids.
+
+Fallback (only when `Dev10x:gh-context` is unavailable):
+- If `.git` is a **file** (not directory) → worktree
+- If `.git` is a **directory** → main repo
+- Current branch: `git symbolic-ref --short HEAD` (single command,
+  no chaining)
+
+**Worktree branch check:** If the CWD is a worktree and the
+current branch is a generic worktree branch (e.g., `wt/<name>`
+or matches the worktree directory name but has no ticket ID),
+flag it for replacement. A work-specific branch must be created
+before any commits:
+
+| Workspace state | Branch pattern | Action |
+|----------------|---------------|--------|
+| Main repo, on develop | Any ticket | Create branch (Phase 4.1) |
+| Main repo, on feature branch | Matching ticket | Reuse branch |
+| Worktree, generic WT branch | Any ticket | Create work-specific branch (Phase 4.1) |
+| Worktree, matching feature branch | Same ticket | Reuse branch |
+
+Store the workspace decision in the Phase 1 output so Phase 3
+can include or skip the workspace setup subtask.
+
+### Self-Check Before Phase 2
+
+**REQUIRED — call `TaskList` now (GH-55 F2).** This is not an
+admonition you can skip "because the tasks were obviously
+created"; the explicit `TaskList` call is the audit trail. After
+calling it, verify exactly 4 phase parents (Phase 1 through
+Phase 4) exist. If fewer than 4 are present, create the missing
+ones before proceeding.
+
+**Anti-pattern (GH-729, GH-928, GH-55 F2):** Skipping the
+`TaskList` call because "I just created the tasks one tool-call
+ago" is exactly the regression the audit caught. Run it.
+
+**When the task tools are absent, run anyway (GH-1055).** They
+ship by default only on Claude 3.x, Opus 4–4.7, Sonnet 4–4.6 and
+Haiku 4.5; a newer or unrecognised model omits them unless the
+user opts in, so this is a supported configuration and not a
+broken one. Stopping there would refuse to run the orchestrator
+on the models it will most often meet. Carry the phase plan as a
+written checklist in the transcript instead and close with an
+explicit `Verify AC` section — the contract, what it costs, and
+what still works are in `.claude/rules/essentials.md` § When the
+task tools are absent. The `TaskList` self-check does not apply
+in that mode: it audits a mechanism this session does not have,
+and an audit of an absent thing can only fail.
+
+**A tool that is present and fails is a different case.** When
+`TaskCreate` is offered and the call errors, nothing about the
+session says the tools were left out — something is broken, and
+degrading past it silently hides a fault the supervisor needs to
+hear about. Report the error and stop, as before. Absence is read
+from the tool not being available at all, never from a failed
+call.
+
+Phase 0.5 needs the same reading. Its resume signature is "the
+persisted plan holds tasks but `TaskList` is empty" — on a model
+without the tools the `TaskCreate|TaskUpdate` hook matchers never
+fire, so `plan.tasks` is always empty and the signature can never
+match. That is correct behaviour, not a failed resume: there is
+no task tree to rebuild. The plan-sync **context** still
+rehydrates, because `plan_sync_*` are MCP tools.
+
+---
+
+## Phase 2: Gather (Quick & Parallel via Subagents)
+
+**Same-session continuity:** If the user already provided rich
+context in the current session (e.g., prior investigation, code
+exploration, or a detailed description that covers the same
+sources), skip redundant API fetches. Re-use context that is
+already in the conversation window. Only fetch sources whose
+data is not yet available in the session.
+
+Fetch context from all sources in parallel using subagents.
+Each subagent receives only its source identifiers and returns
+a structured summary — keeping the main session lean.
+
+See `references/task-orchestration.md` Pattern 4 (Subagent
+Dispatch) for the full pattern.
+
+### Subtask Creation
+
+**REQUIRED before any `Agent(...)` dispatch (GH-55 F3).** Create
+one subtask per source under the Phase 2 parent. The subtasks are
+the supervisor's view of in-flight fetches; if you skip them, the
+parent shows "in progress" with no breakdown of what is running.
+
+```
+TaskCreate(subject="Fetch linear-ticket DEV-42",
+    parentTaskId=phase2TaskId)
+TaskCreate(subject="Fetch sentry-issue #5201839452",
+    parentTaskId=phase2TaskId)
+TaskCreate(subject="Fetch slack-thread #channel",
+    parentTaskId=phase2TaskId)
+```
+
+Mark each subtask `completed` as its subagent returns.
+After cross-reference expansion, create additional subtasks
+for newly discovered sources.
+
+### Subagent Dispatch
+
+Dispatch one subagent per source in a single tool-call block.
+Choose the agent type based on the source's tool requirements:
+
+| Source type | Agent type | Why |
+|-------------|-----------|-----|
+| `github-issue` | `general-purpose` | Needs Bash for `gh` CLI |
+| `github-pr` | `general-purpose` | Needs Bash for `gh` CLI |
+| `linear-ticket` | `general-purpose` | Needs Linear MCP tools |
+| `jira-ticket` | `general-purpose` | Needs Bash for `Dev10x:jira` skill |
+| `slack-thread` | `general-purpose` | Needs Slack MCP tools |
+| `sentry-issue` | `general-purpose` | Needs Sentry MCP tools |
+| `note` | (none) | Pass through as-is |
+
+**Do NOT use Explore agents for source fetches.** Explore agents
+lack access to Bash, MCP tools, and `WebFetch`. Since `gh` CLI
+requires Bash and Linear/Slack/Sentry require MCP tools, all
+source fetches must use `general-purpose` agents.
+
+**Anti-pattern (PROHIBITED, GH-55 F1):**
+```
+Agent(subagent_type=Explore, description="Fetch GH-N", ...)
+```
+This pattern caused a regression where the agent had to be
+interrupted by the user and redirected via
+`$Dev10x:diag-friction` mid-Phase 2. Source fetch agents
+need Bash + MCP — Explore is only for read-only filesystem search.
+
+```
+# Single tool-call block — all launch concurrently
+Agent(subagent_type=source_agent_type,  # see table above
+    model="haiku",                      # Gather tier — context fetch only
+    description=f"Fetch {source.type} {source.id}",
+    prompt=f"""Fetch context for {source.type}: {source.id}
+    {source_specific_instructions}
+    Return a structured summary:
+    - Title/subject
+    - Status (open/closed/merged)
+    - Key details (2-3 sentences)
+    - Cross-references found (URLs, ticket IDs)
+    Do NOT return full body text — summarize.
+
+    Report your final status as the LAST line of your output,
+    with exactly one of these prefixes:
+
+    - DONE                           — fetch complete
+    - DONE_WITH_CONCERNS: <text>     — fetched but flagged (e.g.,
+                                       ticket closed, conflicting info)
+    - NEEDS_CONTEXT: <what>          — missing identifier, ambiguous
+                                       slug, etc.
+    - BLOCKED: <reason>              — permission wall, MCP unavailable,
+                                       auth error
+
+    Do not write anything after the status line.
+
+    Your plain-text output is NOT delivered to the orchestrator when
+    you run in the background — it only sees an idle notification with
+    no content. Deliver your report by calling
+    SendMessage(to="main", summary="<5 words>", message=<full report
+    ending with your status line>). If it exceeds one message, split
+    into labeled parts. Fallback: Write the report to your scratchpad
+    path and send a one-line SendMessage confirming the path.""",
+    run_in_background=true)
+```
+
+**Delivery is mandatory for background dispatch (GH-776).** Because
+these agents run with `run_in_background=true`, their final text is
+never delivered on its own — the trailing status line rides inside a
+`SendMessage(to="main", …)` payload. An `idle_notification` with no
+content means the agent finished WITHOUT delivering; escalate per the
+ladder in `references/orchestration/subagent-status-protocol.md`
+(§ Delivery channel): one nudge → file fallback → `TaskStop`. The
+canonical instruction text is `BACKGROUND_DELIVERY_TEMPLATE` in
+`dev10x.skills.orchestration.subagent_protocol`.
+
+**Recipient addressing (GH-848 F1).** `to="main"` is the default, but
+some harness configs reject it with "Send to a named agent instead".
+If the orchestrator runs under a name, state that name in the dispatch
+prompt so the agent addresses it directly; on rejection the agent must
+retry with the actual orchestrator name/ID, not the literal `"main"`.
+See § Addressing the orchestrator in the protocol reference.
+
+**Parse the trailing status line** per
+`references/orchestration/subagent-status-protocol.md` (GH-69):
+
+- `DONE` → mark the source's subtask `completed`, fold the summary
+  into the Context Summary
+- `DONE_WITH_CONCERNS: <text>` → mark `completed`, queue the
+  concern for the batched decision presentation in Phase 3
+- `NEEDS_CONTEXT: <what>` → re-dispatch once with the requested
+  context inlined (e.g., a corrected ticket ID)
+- `BLOCKED: <reason>` → run the fetch in the main session as a
+  fallback (`gh issue view`, Linear MCP, etc.) and surface the
+  reason to the user; do not silently drop the source
+
+**Inline-context defaults (GH-69):** When the controller already
+holds file content the subagent needs (e.g., a local PR diff, a
+ticket body fetched earlier in this session), prefer inlining
+it under `<file path="...">...</file>` blocks rather than
+instructing the subagent to Read it. Subagents do not inherit
+the controller's `mode: "dontAsk"` permission, so dynamic Reads
+stall on permission prompts that the user cannot answer.
+Inline-context is the default for Gather, Replicate, and
+Analyze tier dispatches (see `.claude/rules/model-selection.md`).
+
+**Web URLs** (documentation, reference pages) should be fetched
+in the main session via `WebFetch`, not dispatched to subagents.
+
+### Source-Specific Instructions
+
+| Source type | Agent type | Subagent instructions |
+|-------------|-----------|----------------------|
+| `github-issue` | general-purpose | Call `mcp__cli__issue_get(issue_number=$NUMBER, repo="$REPO")`. Return title, status, labels, body summary, linked PRs. |
+| `github-pr` | general-purpose | Run `gh pr view --json title,body,headRefName,state,mergedAt,reviews`. Return title, status, branch, review comment count. |
+| `linear-ticket` | general-purpose | Call `mcp__claude_ai_Linear__get_issue(issueId)`. Return title, status, parent ID, relations, comment summaries. |
+| `jira-ticket` | general-purpose | Use `Dev10x:jira` skill to fetch ticket. Return title, status, assignee, linked issues. |
+| `slack-thread` | general-purpose | Call `mcp__claude_ai_Slack__slack_read_thread(channelId, threadTs)`. Return message count, key decisions, action items. |
+| `sentry-issue` | general-purpose | Call `mcp__sentry__get_issue_details(issueId)`. Return error type, frequency, first/last seen, top stack frame. |
+| `note` | (none) | No subagent needed — pass through as-is. |
+
+### Cross-Reference Expansion (One Level)
+
+After the initial fetch, scan all gathered text for references
+to other sources. Add them to the sources list and fetch:
+
+- **PR body** mentions `Fixes: GH-N` or `Fixes: TEAM-N` → fetch that ticket
+- **Ticket body** contains Sentry URL → fetch that Sentry issue
+- **Ticket body** mentions PR `#N` or branch name → fetch that PR
+- **Linear ticket** has parent or relations → fetch related tickets
+- **Ticket comments** contain any of the above patterns → fetch
+
+Do NOT expand beyond one level — keep the gathering phase fast.
+
+### Output: Context Summary
+
+Present a structured summary of everything gathered:
+
+```markdown
+## Context Summary
+
+### Sources (N gathered)
+- [github-issue] GH-15: Title here (OPEN)
+- [slack-thread] #channel-name: 5 messages
+- [sentry-issue] #12345: ErrorType — 145 events in 7 days
+- [note] "check the retry logic"
+
+### Cross-References Found
+- [sentry-issue] #67890 (from ticket body)
+- [github-pr] #42: PR title (merged)
+
+### Key Details
+[Brief synthesis: what the work is about, who reported it,
+severity if applicable, related context from Slack/Sentry]
+```
+
+---
+
+## Phase 3: Plan (Lightweight Steps)
+
+**Phase 3 is a MECHANICAL step, not a creative step.** Read the
+playbook YAML, find the matching play, and convert each step to a
+`TaskCreate` call. Do NOT generate a custom plan. Do NOT use
+`Agent(Plan)` subagents. The playbook IS the plan — your job is
+to instantiate it as tasks.
+
+**REQUIRED: Create exactly one `TaskCreate` per play step.** Do
+not collapse, merge, or abbreviate steps. Each step in the
+approved play template becomes one task — this is the supervisor's
+interface for tracking progress and adding work. Collapsing 14
+steps into 5 makes the remaining 9 invisible and unexecuted.
+
+**This applies at Phase 3 (task creation), not Phase 4
+(execution).** The bugfix play's "Investigate root cause" epic
+prompt says "skip sub-steps if root cause is obvious" — that
+guidance applies when *expanding* the epic in Phase 4. In Phase
+3, ALL play steps MUST become `TaskCreate` calls regardless of
+how obvious the fix seems. The task list is created first; the
+agent adapts during execution.
+
+**Anti-pattern (GH-729, GH-928):** A session collapsed
+"Reproduce the issue", "Investigate root cause", and "Implement
+fix" into a single task "Investigate and implement fix" because
+the root cause seemed obvious. Session `da0d9c73` repeated
+this — creating 12 tasks instead of 14 and skipping the
+TaskList self-check entirely. This is a Phase 3 violation.
+All play steps MUST become tasks even if Phase 4 execution
+skips sub-steps.
+
+The task list is the supervisor's interface for tracking progress
+and adding new tasks during the session.
+
+### Step Types
+
+- **Detailed** — small, immediately executable (2-5 min).
+  Created with `metadata: {"type": "detailed"}`.
+- **Epic** — placeholder for a phase expanded when reached.
+  Created with `metadata: {"type": "epic"}`. Description says
+  what the phase accomplishes, not how.
+
+### Generating the Plan
+
+Play templates are loaded from the `Dev10x:playbook` system.
+Each work type has a default play with parent-child steps
+that can be overridden per project.
+
+**Play source** (resolved in order — see `references/config-resolution.md`):
+1. `.claude/Dev10x/playbooks/work-on.yaml` — project-local override
+2. `~/.config/Dev10x/playbooks/work-on.yaml` — global with repo
+   matching (get repo via `git remote get-url origin`, walk
+   `projects[].match` globs, use first hit's `overrides`/`fragments`);
+   fall back to `~/.claude/memory/Dev10x/playbooks/work-on.yaml` for
+   backwards compatibility when the XDG path is absent.
+3. `<plugin-root>/skills/playbook/references/playbook.yaml`
+
+**Playbook schema:** See the `Dev10x:playbook` skill's
+`references/playbook.yaml` for the full schema with all 5 plays.
+Users can customize plays interactively via
+`$Dev10x:playbook edit work-on <play>`.
+
+Each play has:
+- `prompt` — heuristic guidance for when this play applies and
+  how to adapt it based on gathered context (optional)
+- `steps` — ordered list of play steps
+
+Each step in the play has:
+- `subject` — task title (required)
+- `type` — `detailed` or `epic` (required)
+- `prompt` — expansion guidance for the agent executing this
+  step; describes what to do, what to look for, or how to
+  adapt the step based on context (optional)
+- `agent` — agent name to invoke when executing this step (optional)
+- `skills` — list of skills to delegate to (optional)
+- `steps` — child steps for pre-templated epic expansion (optional)
+- `condition` — hint for conditional execution (optional)
+
+### Self-Check Before Plan Generation
+
+**REQUIRED:** Before generating any tasks, you MUST have read
+a playbook file. Call `Read` on the playbook path and verify
+you received YAML content with a `defaults:` key containing
+play definitions. If you cannot confirm this, STOP.
+
+**Resolution probing — DO NOT use `ls` or `cat` (GH-165):**
+
+```bash
+# ❌ FORBIDDEN — chained probes shift the allow-rule prefix
+ls /work/.../playbooks 2>/dev/null; ls ~/.claude/memory/...
+cat ~/.config/Dev10x/playbooks/work-on.yaml
+
+# ✅ REQUIRED — use Read with absolute paths, one call per tier
+Read(file_path="/abs/path/.claude/Dev10x/playbooks/work-on.yaml")
+Read(file_path="/home/<user>/.config/Dev10x/playbooks/work-on.yaml")
+Read(file_path="<plugin-root>/skills/playbook/references/playbook.yaml")
+```
+
+The `ls; ls` pattern triggers `PREFIX_POISONED_CHAIN` friction
+and the bare `cat` triggers `MISSING_RULE` friction (audit
+GH-165). The `Read` tool returns the file content or a clear
+"File does not exist" error, which is the only signal the
+resolution algorithm needs.
+
+**Loading the play:**
+1. Determine the `work_type` from gathered context (see table below)
+2. Resolve the playbook using the 3-tier resolution order above:
+   a. Try `.claude/Dev10x/playbooks/work-on.yaml` (project-local)
+   b. Try `~/.config/Dev10x/playbooks/work-on.yaml` (global); if
+      absent, fall back to `~/.claude/memory/Dev10x/playbooks/work-on.yaml`
+      for backwards compatibility — if found (either path), get repo
+      via `git remote get-url origin`, walk `projects[].match` globs;
+      use first matching entry's config.
+      Top-level `fragments` are shared across all matched projects.
+   c. Fall back to `<plugin-root>/skills/playbook/references/playbook.yaml`
+3. **VERIFY: Confirm the playbook loaded successfully.** Check that
+   the read returned YAML with play steps present (either under
+   `defaults.<work_type>.steps`, `overrides[].steps`, or
+   `projects[].overrides[].steps`).
+   If ALL paths fail (file missing or unreadable), STOP and report
+   the error to the user. Do NOT fall back to generating an ad-hoc
+   plan. The playbook IS the plan — without it, Phase 3 cannot
+   produce a correct task list.
+   **Unmatched play fallback:** If the playbook loaded successfully
+   but no play matches the detected `work_type`, fall back to the
+   `feature` play (which has the most complete shipping pipeline).
+   Do NOT generate an ad-hoc plan — ad-hoc plans lack `skills:`
+   fields on steps, causing agents to bypass skill wrappers and
+   miss guardrails (gitmoji, JTBD, Fixes links, CI monitoring).
+   Log the mismatch: "No play for work_type='{type}', falling
+   back to 'feature' play."
+4. Resolve: overrides first (same as acceptance-criteria), then
+   defaults, then schema fallback
+5. **Resolve fragment references:** Walk the step list. When a
+   step has `fragment: <name>`, look up the name first in the
+   user override file's `fragments` map, then in the default
+   playbook's `fragments` map (user fragments shadow defaults).
+   Replace the reference with the fragment's steps, applying
+   any `condition` override from the reference to each expanded
+   step. Error on missing fragments; detect circular refs
+   (max depth 3).
+6. **Apply active modes:** Read the resolved `active_modes` — the
+   matching `projects[]` entry of `~/.config/Dev10x/friction.yaml`,
+   falling back to its `defaults:` block (ADR-0018) — and the project
+   playbook file. For each step with a `modes:` mapping:
+   - If any active mode says `skip`, remove the step
+   - Otherwise merge field overrides from active modes
+     (last-listed mode wins on conflicts)
+   - Apply `mode_extensions` from project file on top
+   See `references/execution-modes.md` for precedence rules.
+7. There is no friction pass. A step states its behaviour in its
+   own `prompt`; the one baseline answers gate pacing for every
+   step alike (ADR-0022, GH-1171). A `friction:` mapping on a
+   step is a leftover from the three-preset world — ignore it and
+   report it, rather than resolving it.
+8. For each remaining step, create a `TaskCreate` with the
+   step's `subject`, `type` in metadata, and `agent`/`skills`
+   in metadata if present
+9. If a step has child `steps`, store them in metadata for
+   expansion when the epic is reached (Phase 4)
+10. **VERIFY: Call `TaskList` and count Phase 4 subtasks.** The
+    count must match the number of steps after mode resolution
+    (not the raw play step count). If fewer tasks
+    exist than resolved steps, go back and create the missing
+    ones. **DO NOT mark Phase 3 complete until this count
+    matches.** The VERIFY is not optional — skipping it is a
+    Phase 3 compliance violation (GH-729, GH-928). Example: the
+    bugfix
+    play with `shipping-pipeline-solo` fragment produces 14
+    steps. If `TaskList` shows fewer than 14 Phase 4 subtasks,
+    you skipped or collapsed steps — create them now.
+
+**Work type classification:**
+
+| Context | Work type |
+|---------|-----------|
+| Ticket with implementation | `feature` |
+| Sentry/bug ticket | `bugfix` |
+| PR with review comments | `pr-continuation` |
+| No ticket, no PR | `local-only` |
+| Sentry/Slack only, no fix planned | `investigation` |
+
+**Workspace step adjustment:** If Phase 1 detected a matching
+feature branch already exists, skip the "Set up workspace" step.
+If running in a worktree with a generic branch, keep it.
+
+These plan steps become subtasks of the Phase 4 top-level task.
+The last subtask is always acceptance criteria verification.
+
+### Acceptance Criteria Verification
+
+The **last task** in every plan verifies the work is shippable
+or ready for handover. This task is the session's terminal
+gate — see the empty-task-list invariant above (GH-149). It
+remains `pending` (or `in_progress` while the supervisor is
+reviewing) until the supervisor explicitly confirms closure.
+Never mark Verify-AC `completed` without an explicit supervisor
+"ship it" / "looks good" / "close session" / equivalent
+affirmation; never mark it `deleted` while pending — that
+empties the task list and breaks the invariant.
+
+**Verify-AC summary contents.** When invoked, the verification
+must surface a structured summary so the supervisor can confirm
+closure without re-reading the conversation:
+
+- PR link(s) and merge state
+- Per-ticket: ID, title, link, "addressed by commit(s) …"
+- CI status (green/red/pending; link to failing checks)
+- Open review comments (count + links) — should be zero to ship
+- Working-copy state (clean / staged / uncommitted)
+- Acceptance criteria items, each `[x]` or `[ ]`
+
+The supervisor may extend or modify the AC at this point —
+treat new instructions as additional tasks inserted **before**
+Verify-AC, never as replacements for it.
+
+**REQUIRED:** Delegate to `Dev10x:verify-acc-dod` skill:
+
+1. `$Dev10x:verify-acc-dod (args: "<work_type>")`
+
+The skill handles criteria resolution (YAML file, defaults,
+overrides), automated state checks (CI, PR, working copy),
+and user confirmation. See the `Dev10x:verify-acc-dod` skill
+for the full criteria schema and verification protocol.
+
+**Playbook override note:** Solo-maintainer or project-specific
+playbook overrides may substitute an inline acceptance prompt
+for this delegation. When a playbook step replaces the
+`verify-acc-dod` delegation with its own `prompt:`, the inline
+prompt is a valid substitution — not a compliance violation.
+Skill audits should classify this as COMPLIANT (playbook
+substitution), not SKIPPED_STEP.
+
+**Single terminal Verify-AC — collapse adjacent duplicates
+(GH-781).** A play must instantiate **exactly one** terminal
+`Verify acceptance criteria` task. The bug appears when a play
+both composes a shipping fragment (which ends with its own
+Verify-AC step) *and* appends a play-level Verify-AC — the
+`local-only` play does this, so choosing "create PR" expanded
+the fragment and produced two adjacent Verify-AC tasks. The
+mechanical-instantiation rule (one TaskCreate per resolved step)
+would faithfully create both.
+
+When fragment expansion yields two adjacent Verify-AC steps,
+they are NOT co-equal: the fragment's step is the executable DoD
+delegation *and* the terminal gate on the PR path, while the
+play-level step is the terminal gate on the no-PR path. Collapse
+to one by honoring the play-level step's path condition:
+
+- The play-level Verify-AC carries `condition: if-no-pr` (the
+  inverse of the fragment's `if-pr-decided`). On the PR path the
+  fragment terminates the plan and the play-level duplicate is
+  conditioned out; on the no-PR path the fragment is skipped and
+  the play-level step is the sole terminal gate.
+- If you observe two adjacent Verify-AC tasks after resolution,
+  drop the one whose path condition is not satisfied — do not
+  create both. This is the one sanctioned exception to strict
+  one-TaskCreate-per-step instantiation (GH-729/GH-928), because
+  the two steps describe mutually-exclusive paths.
+
+### Example Plays (Defaults)
+
+These are the built-in default plays. Full YAML definitions
+with pre-templated epic children live in the `Dev10x:playbook`
+skill. Users can customize these via
+`$Dev10x:playbook edit work-on <play>`.
+
+**Feature from ticket** (subtasks of Phase 4):
+```
+4.1  [detailed] Set up workspace          → Dev10x:ticket-branch
+4.2  [detailed] Draft Job Story           → Dev10x:jtbd
+4.3  [epic]     Design implementation approach
+       ├─ Read relevant code
+       ├─ Identify affected components
+       └─ Propose approach
+4.4  [detailed] Plan the commit sequence  → (see below)
+4.5  [epic]     Implement changes
+4.6  [epic]     Verify
+       ├─ Run tests                       → test
+       └─ Run lint
+4.7  [detailed] Code review               → Dev10x:review + Dev10x:review-fix
+4.8  [detailed] Commit outstanding changes → Dev10x:git-commit
+4.9  [detailed] Create draft PR           → Dev10x:gh-pr-create (--unattended)
+4.10 [detailed] Monitor CI                → Dev10x:gh-pr-monitor
+4.11 [epic]     Apply fixups              → Dev10x:gh-pr-respond
+4.12 [detailed] Groom commit history      → Dev10x:git-groom
+4.13 [detailed] Update PR description     → Dev10x:gh-pr-create (update mode)
+4.14 [detailed] Request review            → Dev10x:gh-pr-request-review
+4.15 [detailed] Verify acceptance criteria
+```
+
+**Plan the commit sequence (4.4, GH-904 F1).** Before touching
+code, produce an explicit ordered per-commit plan: for each
+planned commit, note the gitmoji, the ticket ID, the files it
+owns, and which earlier commit(s) it depends on. **Refactor
+commits precede feature commits (GH-904 F2)** — reorder the plan
+so any pure-refactor commit lands before the feature commit that
+depends on it. Implement (4.5) executes this plan; deviations are
+expected but should be reconciled back into the plan, not
+silently improvised.
+
+**Bug fix from Sentry + ticket:**
+
+**Evidence-first rule:** Before selecting files to edit, review
+all gathered evidence (Sentry stack traces, Linear comments,
+Slack context). The error location in the stack trace identifies
+the failing code path — do NOT skip to implementation based on
+the ticket title alone. If Sentry or Linear evidence names a
+specific file/line, that is the starting point for investigation.
+
+```
+4.1  [detailed] Set up workspace          → Dev10x:ticket-branch
+4.2  [detailed] Reproduce the issue
+4.3  [epic]     Investigate root cause
+       ├─ Analyze error traces
+       └─ Identify failing code path
+4.4  [epic]     Implement fix
+4.5  [epic]     Verify fix
+       ├─ Run existing tests              → test
+       └─ Add regression test
+4.6  [detailed] Code review               → Dev10x:review + Dev10x:review-fix
+4.7  [detailed] Commit outstanding changes → Dev10x:git-commit
+4.8  [detailed] Create draft PR           → Dev10x:gh-pr-create (--unattended)
+4.9  [detailed] Monitor CI                → Dev10x:gh-pr-monitor
+4.10 [epic]     Apply fixups              → Dev10x:gh-pr-respond
+4.11 [detailed] Groom commit history      → Dev10x:git-groom
+4.12 [detailed] Update PR description     → Dev10x:gh-pr-create (update mode)
+4.13 [detailed] Request review            → Dev10x:gh-pr-request-review
+4.14 [detailed] Verify acceptance criteria
+```
+
+**PR continuation:**
+```
+4.1  [detailed] Fetch PR and review context
+4.2  [epic]     Address review comments
+4.3  [epic]     Apply fixups              → Dev10x:gh-pr-respond
+4.4  [detailed] Code review               → Dev10x:review + Dev10x:review-fix
+4.5  [detailed] Commit outstanding changes → Dev10x:git-commit
+4.6  [detailed] Monitor CI                → Dev10x:gh-pr-monitor
+4.7  [detailed] Groom commit history      → Dev10x:git-groom
+4.8  [detailed] Update PR description     → Dev10x:gh-pr-create (update mode)
+4.9  [detailed] Request re-review         → Dev10x:gh-pr-request-review
+4.10 [detailed] Verify acceptance criteria
+```
+
+**Pr-continuation merge-state guard (GH-744 F1).** Task 4.1
+(Fetch PR and review context) MUST resolve the PR's merge state
+(`state` / `mergedAt` via `mcp__cli__pr_get` — not
+`pr_detect`, whose payload is not guaranteed to carry `state`,
+GH-764 F2) before building the continuation plan. When the PR is
+already `MERGED`, do NOT instantiate the full triage → fixup →
+re-review plan — collapse to a **post-merge cleanup** scope
+(answer any still-unresolved bot/human comments for the record,
+then Verify AC). `Dev10x:gh-pr-respond` enforces the same
+short-circuit in its Merge-State Check preamble, so a respond
+cycle dispatched from 4.3 stays safe even if this guard is
+missed; catching it at 4.1 avoids planning work that will be
+discarded.
+
+**Pr-continuation deletion guard (GH-117 #1).** Tasks 4.6
+(Monitor CI), 4.8 (Update PR description), 4.9 (Request
+re-review), and 4.10 (Verify acceptance criteria) MUST NOT be
+marked `status=deleted` while still `pending`. The terminal
+gate is `Dev10x:verify-acc-dod`, NOT a mid-session pivot to an
+inline edit. When the user pivots inside Phase 4 — for example,
+"actually, also fix this nit" — the pivot becomes a **new
+subtask inserted before 4.10**; it does not replace the existing
+Phase 4 plan. Deleting still-pending pr-continuation tasks
+empties the task list, kills CI monitoring, and lets unaddressed
+review comments slip through. The recurrence in GH-117 evidence
+(deletion happened twice in the same session) shows the
+regression is easy to repeat under user-pivot pressure.
+
+**Post-push auto-advance (GH-117 #2).** After
+`$Dev10x:git` returns a successful push on a branch that
+already has an open PR, the next active task is **always**
+`Monitor CI`. Move task 4.6 to `in_progress` immediately on
+push success — do not wait for the user to ask "did CI run?".
+A missed CI failure on an unattended post-push is documented as
+the most common pr-continuation oversight; auto-moving the
+monitor task converts it from oversight to deviation (visible
+in `TaskList`).
+
+**Local-only work (no ticket, no PR):**
+```
+4.1  [detailed] Summarize the work from gathered context
+4.2  [epic]     Implement changes
+4.3  [epic]     Verify
+       ├─ Run tests                       → test
+       └─ Run lint
+4.4  [detailed] Decide: create ticket, create PR, or done
+4.5  [detailed] Code review               → Dev10x:review + Dev10x:review-fix (if-pr-decided)
+4.6  [detailed] Commit outstanding changes → Dev10x:git-commit (if-pr-decided)
+4.7  [detailed] Create draft PR           → Dev10x:gh-pr-create (if-pr-decided)
+4.8  [detailed] Monitor CI                → Dev10x:gh-pr-monitor (if-pr-decided)
+4.9  [epic]     Apply fixups              → Dev10x:gh-pr-respond (if-pr-decided)
+4.10 [detailed] Groom commit history      → Dev10x:git-groom (if-pr-decided)
+4.11 [detailed] Update PR description     → Dev10x:gh-pr-create (if-pr-decided)
+4.12 [detailed] Request review            → Dev10x:gh-pr-request-review (if-pr-decided)
+4.13 [detailed] Verify acceptance criteria
+```
+
+**Investigation (no fix planned):**
+```
+4.1  [detailed] Summarize findings from gathered context
+4.2  [epic]     Investigate in codebase
+       ├─ Trace relevant code paths
+       └─ Check logs and error patterns
+4.3  [detailed] Document findings and next steps
+4.4  [detailed] Decide: create ticket, fix now, or done
+```
+
+**Structured-spec (SPDD pipeline, GH-174):**
+
+Selected when the Phase 1 suitability gate (see § Structured-Spec
+Suitability Gate) marks the ticket as good-fit. Routes through
+`Dev10x:ticket-scope` (with REASONS autopopulator),
+`Dev10x:spec-update` / `Dev10x:spec-sync` gates, and the regular
+shipping pipeline tail.
+
+```
+4.1  [detailed] Set up workspace                 → Dev10x:ticket-branch
+4.2  [detailed] Scope ticket with REASONS        → Dev10x:ticket-scope
+4.3  [detailed] Record ADR (if architectural)    → Dev10x:adr
+4.4  [detailed] Spec-update gate (Golden Rule)   → Dev10x:spec-update
+4.5  [detailed] Plan the commit sequence         → (see below)
+4.6  [epic]     Implement changes
+4.7  [detailed] Verify — API tests               → test
+4.8  [detailed] Verify — unit tests              → test
+4.9  [detailed] Spec-sync gate before merge      → Dev10x:spec-sync
+4.10 [detailed] Code review                      → Dev10x:review
+4.11 [detailed] Commit outstanding changes       → Dev10x:git-commit
+4.12 [detailed] Create draft PR                  → Dev10x:gh-pr-create
+4.13 [detailed] Monitor CI                       → Dev10x:gh-pr-monitor
+4.14 [epic]     Apply fixups                     → Dev10x:gh-pr-respond
+4.15 [detailed] Groom commit history             → Dev10x:git-groom
+4.16 [detailed] Update PR description            → Dev10x:gh-pr-create
+4.17 [detailed] Request review                   → Dev10x:gh-pr-request-review
+4.18 [detailed] Verify acceptance criteria
+```
+
+The structured-spec play differs from `feature` in two ways:
+
+1. **Scope step uses REASONS sections** — `Dev10x:ticket-scope`
+   renders Entities / Norms / Safeguards via the autopopulator
+   (GH-170) so the saved spec at `docs/specs/<TICKET-ID>.md` is
+   the single source of truth.
+2. **Two drift-detection gates bracket Implement** — the
+   spec-update gate (4.4) catches behaviour changes mid-flight;
+   the spec-sync gate (4.9) catches structural drift before
+   merge. Both use `dev10x.spec.drift_detector` so they agree.
+
+**Plan the commit sequence (4.5, GH-904 F1).** Same contract as
+the `feature` play: an explicit ordered per-commit plan (gitmoji,
+ticket ID, owned files, dependencies), with **refactor commits
+preceding feature commits (GH-904 F2)**. This plan folds into the
+saved spec at `docs/specs/<TICKET-ID>.md` — record it there (e.g.
+as a checklist under Implementation Steps) rather than as a
+throwaway note, so it survives the spec-sync gate.
+
+### Supervisor Approval Gate
+
+Present the plan as a **box-drawing tree** (Hybrid display
+convention, GH-730): phases are top-level nodes and their
+subtasks nest beneath them with box-drawing glyphs, preserving
+the Phase → subtask structure that a flat numbered list
+flattens away. The tree is **presentation only** — the plan
+still feeds the same `TaskCreate` calls regardless of how it is
+rendered, so the approval logic below is unchanged.
+
+Template:
+
+```
+Phase 4: Execute <work-type>
+├─ 4.1  <step subject>             → <skill>
+├─ 4.2  <epic subject>
+│        ├─ <child step>
+│        └─ <child step>
+├─ 4.3  <step subject>             → <skill>
+└─ 4.N  Verify acceptance criteria → Dev10x:verify-acc-dod
+```
+
+Use `├─` for every node except the last at a given depth, `└─`
+for the last node, and `│` to carry the parent's vertical run
+across a nested block. Flat two-level output (e.g., the Session
+mode summary below) keeps its bullet-indent form — see
+[`references/display-conventions.md`](../../../references/display-conventions.md)
+for the full hybrid convention.
+
+**Implicit approval bypass:** Skip `AskUserQuestion` ONLY when
+ALL three conditions are met:
+1. User input contains **numbered steps** (not just a list of
+   tickets, URLs, or a prose description)
+2. The steps explicitly cover **deliverables**, **verification**,
+   AND **integration/shipping** (commit, PR, merge)
+3. The steps are **actionable as-is** — not "investigate X" or
+   "fix the issues" but concrete actions like "add retry logic
+   to payments/service.py"
+
+A list of ticket URLs, a vague description, or bullet points
+without shipping steps does NOT qualify — always present the
+plan gate in those cases.
+
+**Natural language mapping:** User phrases like "prepare a draft",
+"for my approval", "let me review first", "show me the plan", or
+"what's the plan" all map to THIS gate. Present the plan via
+`AskUserQuestion` — do not write a document, create a plan file,
+or use Claude Code's built-in plan mode.
+
+### Session Mode Summary (GH-189)
+
+**REQUIRED: Display the resolved session mode** immediately
+before any plan-approval gate, including when the gate is
+bypassed via an `auto-advance` effect. The block makes
+autonomous behavior auditable upfront — without it, supervisors
+cannot tell whether the session will auto-merge or pause for
+confirmation, which is the visibility gap GH-189 closes.
+
+Gather the three facts through their owning tools — never by
+reading `~/.config/Dev10x/friction.yaml` yourself:
+
+1. `mcp__cli__supervisor_review_status()` →
+   `supervisor_review` (`required` / `none`) and `pinned`.
+2. `mcp__cli__preset_pin_status()` → `prefs`, whose
+   `gate_overlays` names the active overlays and whose
+   `gate_overrides` names any per-gate deviation.
+3. `mcp__cli__resolve_gate(gate="merge", context={})`
+   → whether this session ends by merging on its own.
+
+Then print:
+
+```
+Session mode summary
+  Baseline: adaptive (every gate auto-advances unless a floor,
+    a project pin, or an override says otherwise)
+  Supervisor review: <required | none> (<where the park lands>)
+  Overlays:
+    - <overlay-name>
+      • <one-line behavior bullet>
+  Gate overrides: <toggle>=<value>, … (or "none")
+  Merge: <auto-advance | ask | skip> — <what that means here>
+```
+
+`adaptive` is the sole shipped baseline (ADR-0022 D-1), so the
+baseline line is a constant, not a lookup — there is no
+`strict` / `guided` / `adaptive` level to report. For
+`supervisor_review`, say where the park lands: `required` parks
+before merge in a solo repo and before the team review request in a
+team repo (ADR-0022 D-3); `none` removes the supervisor's own park
+only — AI self-review and CI still run (ADR-0022 D-4). For each
+overlay, inline the documented behavior bullets from
+[`references/active-modes.md`](../../../references/active-modes.md);
+an undocumented name emits a single warning bullet ("overlay not
+documented — verify with `Dev10x:playbook`") rather than failing.
+
+**Contradiction warning (GH-744 F3).** Oversight overlays that force
+checkpoints — `supervised` and `pair-review` — oppose an autonomous
+posture. When either is active alongside the `afk` overlay, append a
+warning line so the contradiction is visible before the plan gate:
+
+```
+  ⚠ Contradiction: <overlay> forces checkpoints but the session is
+    walk-away — every gate will still fire. Drop <overlay>
+    (e.g., re-run Dev10x:afk, which reconciles it) or drop `afk`.
+```
+
+This was the root cause of every gate firing during an
+intended-AFK session (GH-744 F3): the oversight overlays silently
+outranked the adaptive intent with no surfaced contradiction. The
+warning is advisory — it does not block; `resolve_gate` still
+governs actual gate behavior.
+
+**This block is display-only (GH-189).** Nothing it prints decides
+anything. `mcp__cli__resolve_gate` (ADR-0016) reads
+session policy (baseline, overlays, project pin, session overrides,
+`supervisor_review`, plus the safety floors) itself and is the single
+source of truth for whether any gate below fires or auto-advances.
+Do not re-derive an auto-approve or bypass decision from a policy
+value in prose.
+
+Print this block once per session, immediately after the
+context summary and before the plan-approval gate. Subsequent
+re-invocations within the same session may omit the block when
+the persisted plan-sync context already shows the modes are
+unchanged.
+
+**Plan-approval gate (`plan_approval`).** When the plan was
+agent-generated (skip entirely under the "Implicit approval
+bypass" conditions above — no gate fires there at any friction
+level), call
+`mcp__cli__resolve_gate(gate="plan_approval")` and
+branch on `effect`:
+
+1. `effect == "ask"` — **REQUIRED: Call `AskUserQuestion`** (do NOT
+   use plain text):
+   `AskUserQuestion(questions=[{question: "How would you like to proceed with the work plan?", header: "Plan", options: [{label: "Approve (Recommended)", description: "Start execution immediately"}, {label: "Edit", description: "Describe what to change (add/remove/reorder steps)"}], multiSelect: false}])`
+2. `effect == "auto-advance"` — do not call `AskUserQuestion`, do not
+   present the plan as prose for approval. Auto-select "Approve" and
+   proceed directly to Phase 4. Surface the returned `record` line
+   (e.g. `⚙ gate:plan_approval → "Approve" (reason)`) in the
+   transcript so a present supervisor can veto. Safety floors
+   (destructive/irreversible/blocking work) make the resolver return
+   `ask` regardless of preset — this branch only fires when the
+   resolver itself judged the plan safe to auto-approve. This
+   supersedes the old `adaptive`+`solo-maintainer` and `auto-plan`
+   bypass rules; every **downstream** decision gate (epic A/B forks,
+   strategy/batch gates, the Plan Completion Gate) resolves
+   independently via its own `resolve_gate` call — an auto-advance
+   here does NOT license skipping them.
+3. `effect == "skip"` — skip the gate entirely, no prompt, no
+   auto-approve announcement.
+4. Response has an `error` key — fail safe: treat as `ask` and fire
+   the `AskUserQuestion` widget in step 1.
+
+After approval (explicit or auto-advanced), set task
+dependencies where appropriate (use `TaskUpdate` with
+`addBlockedBy`). Mark the first task as `in_progress` and
+begin Phase 4.
+
+### Persist Plan Context
+
+**REQUIRED after plan approval (GH-760 F2).** Execute these
+calls immediately — do NOT defer or skip:
+
+1. `mcp__cli__plan_sync_set_context(args=["work_type=<detected_work_type>", "tickets=<JSON array of ticket IDs>", "routing_table={\"commit\":\"$Dev10x:git-commit\",\"create_pr\":\"$Dev10x:gh-pr-create\",\"monitor_ci\":\"$Dev10x:gh-pr-monitor\",\"monitor_pr\":\"$Dev10x:gh-pr-monitor\",\"push\":\"$Dev10x:git\",\"groom\":\"$Dev10x:git-groom\",\"branch\":\"$Dev10x:ticket-branch\",\"verify_acceptance\":\"$Dev10x:verify-acc-dod\",\"merge_pr\":\"$Dev10x:gh-pr-merge\",\"work_on\":\"work-on\"}"])`
+2. `mcp__cli__plan_sync_set_context(args=["gathered_summary=<1-3 sentence summary>"])`
+3. **When bundling (GH-196):** `mcp__cli__plan_sync_set_context(args=["bundling=true", "batches=<JSON array of arrays, e.g. [[\"GH-12\",\"GH-14\"],[\"GH-21\"]]>"])`. Skip this call entirely when `tickets` has fewer than 2 ticket IDs or the user chose Strategy A (fanout). When skipped, downstream consumers treat the absence as `bundling=false`.
+
+**Session identity needs no separate write (GH-755, retired by
+ADR-0018).** The `tickets=` and `branch` values persisted by the
+plan-sync calls above ARE the freshness inputs the Phase 0
+`session_adoption` gate reads on the next same-branch invocation —
+`_computed_session_stale()` derives staleness from the plan-sync
+identity, not from any per-repo file. The original GH-755 step wrote
+them a second time into `.claude/Dev10x/session.yaml`; that file is
+retired, the write trips the self-settings consent gate, and nothing
+reads it back in a repo with a `friction.yaml` entry. Do not perform
+it — the plan-sync calls above are the whole of the identity write.
+
+**Attribution keys (GH-152):** The `work_on` key with value
+`"work-on"` is the audit attribution string — skill audits
+match on this exact value to confirm `Dev10x:work-on`
+orchestrated the plan. Include both `monitor_ci` and
+`monitor_pr` keys with the same value so callers can use
+either name without losing the routing.
+
+This ensures the PreCompact hook can inject the routing table
+and work type into the recovery context. Without this, the
+agent loses skill-to-action mappings after compaction (GH-477).
+Prior code-block formatting was treated as advisory — the
+numbered list enforces execution per
+`skill-orchestration-format.md`.
+
+---
+
+## Phase 4: Execute (Adaptive, Auto-Advance)
+
+Work through the approved task list. Update task status via
+`TaskUpdate` as work progresses.
+
+### Mid-Execution Interrupt Classification (GH-229)
+
+When a new supervisor message arrives while a Phase 4 task is
+`in_progress`, classify it before deciding whether to pause.
+The default is to keep working; only the signals in the **pause**
+column below justify stopping.
+
+| Signal type | Classification | Action |
+|-------------|----------------|--------|
+| Explicit stop word ("stop", "pause", "wait", "hold on") | Pause | Stop the in-progress task, mark `pending`, ask what changed |
+| In-flight correction of the current action ("not that file", "wrong approach") | Pause | Stop, address the correction, resume |
+| `Dev10x:session-wrap-up` invocation | Pause | Hand off to wrap-up |
+| `ALWAYS_ASK` gate firing | Pause | Honor the gate per its REQUIRED marker |
+| `<local-command-stdout>` block from a slash command | **Ambient chatter** | Continue — the user ran a side command, not a directive |
+| One-word ack ("ok", "k", "thanks", "👍") | **Ambient chatter** | Continue — acknowledgment, not a stop signal |
+| Conversational check-in ("how's it going?", "still working?") | **Ambient chatter** | Continue; answer briefly in the next status update |
+| New task scoped to the same plan ("also fix X") | Append, don't pause | Add via `TaskCreate` before Verify-AC; continue current task |
+| New ticket URL / Slack thread unrelated to current plan | Queue, don't pause | Append as a TODO; raise after current task completes |
+
+**Anti-pattern (GH-229):** Under `adaptive` friction, the agent
+stopped on an ambient `<local-command-stdout>` block + one-word
+check-in and waited for the supervisor to ask "are you working
+or pausing?". Slash-command stdout is the user's side command
+running; one-word acks are acknowledgment, not stop intent.
+Neither row above maps either signal to "pause".
+
+When in doubt at `adaptive`, default to **continue and post a
+brief status line** rather than pausing. The supervisor can
+explicitly stop you if needed — silence is consent to continue.
+
+### Progress Compaction
+
+After completing each phase boundary (e.g., all gather subtasks,
+all implementation subtasks), compact completed tasks into a brief
+summary via `TaskUpdate` metadata. This frees context window for
+remaining work. See `references/task-orchestration.md` Pattern 8
+for the full compaction protocol.
+
+### Context Fill Monitoring (GH-884)
+
+**Advisory check at phase boundaries.** Quality degrades when
+context utilization exceeds ~40%. Check context fill at these
+transition points:
+
+| Transition | When |
+|-----------|------|
+| Phase 2 → Phase 3 | After all gather subagents return |
+| Phase 3 → Phase 4 | After plan approval |
+| Mid-Phase 4 | After completing implementation epic |
+
+**Check method:** Approximate context fill from conversation
+length. If the Claude Code harness exposes token count or
+context utilization, use it directly. Otherwise estimate from
+message count and tool result sizes.
+
+**When context exceeds 40%:**
+1. Log: "Context fill ~{N}% — consider mitigation"
+2. **Recommended mitigations:**
+   - Delegate remaining implementation to subagents (use
+     haiku for data collection, sonnet for analysis)
+   - Compact completed task metadata (Pattern 8)
+   - For large remaining work: spawn a fresh session with
+     `Dev10x:session-wrap-up` + resume instructions
+3. Do NOT block execution — this is advisory. Some tasks
+   legitimately need deep context (e.g., cross-cutting
+   refactors spanning many files).
+
+**Skip when:** Session has fewer than 10 tool calls (too
+early to measure meaningfully).
+
+### Skill Routing Enforcement
+
+**Hard rule — applies to ALL plans and ALL work types
+(feature, bugfix, local-only, investigation, pr-continuation):**
+
+| Action | MUST delegate to | Never use directly |
+|--------|-----------------|-------------------|
+| Run tests — EVERY run, incl. narrow ones | `$Dev10x:py-test` | `pytest`, `uv run pytest`, `python -m pytest` |
+| Create a commit | `$Dev10x:git-commit` | `git commit` |
+| Create a PR | `$Dev10x:gh-pr-create` | `gh pr create` |
+| Monitor CI | `$Dev10x:gh-pr-monitor` | `gh pr checks --watch` |
+| Push to remote | `$Dev10x:git` | `git push` |
+| Groom history | `$Dev10x:git-groom` | `git rebase -i`, `git develop-log` for assessment |
+| Create branch | `$Dev10x:ticket-branch` | `git checkout -b` |
+| Create a skill | `$Dev10x:skill-create` | Writing SKILL.md directly |
+| Check PR state | `mcp__cli__pr_detect` | `gh pr view --json` |
+| Verify PR readiness | `mcp__cli__verify_pr_state` | `gh pr checks` |
+| Verify acceptance criteria | `$Dev10x:verify-acc-dod` | Inline checks |
+| Merge PR | `$Dev10x:gh-pr-merge` | `gh pr merge`, `git merge` |
+
+This table survives context compaction — it is the canonical
+routing for shipping actions. If you are about to run a raw
+git/gh command that appears in the "Never use directly" column,
+STOP and invoke the corresponding skill instead.
+
+**Full-suite gate before declaring a work item done (GH-876 F1).**
+The `Run tests` verification that gates commit / PR / task-completion
+MUST run the COMPLETE test suite with coverage — never only the
+subset covering edited files. A subset-green run misses regressions
+in unedited callers and the 100%-coverage gate; those then fail in
+CI after the item was already reported done. Narrow `$Dev10x:py-test`
+args (e.g. `-k` / a path) are fine for fast inner-loop iteration,
+but the final pre-commit / pre-DONE verification runs the full
+suite with no path-narrowing args.
+
+**The wrapper is not the gate wearing a wrapper (GH-1337).** The
+`Run tests` row binds EVERY run, including each iteration of an
+edit-run-edit loop. Reading it as "route the run that gates DONE" is
+the misreading that produced six raw invocations in one audited
+session. A narrow routed run is the cheaper of the two calls:
+
+- `-k <expr>` / a path → `run_tests(args=["-k", "<expr>"])`
+- `--no-cov` → `coverage=false`
+- `--extra dev` → drop it; the tool resolves the extra itself
+
+`pytest-inner-loop` (DX006) blocks the narrow raw shape and carries
+that translation, so a slip is caught at the call rather than at the
+terminal DoD check — which runs after the work merged. The
+full-coverage raw form stays unblocked: it is `Dev10x:py-test`'s
+fallback when no MCP server is reachable, and the shape that seeds a
+fresh worktree's virtualenv.
+
+**Compaction preservation (CRITICAL):** When context is
+compacted, the summary MUST retain this routing table
+verbatim. Without it, the agent loses skill-to-action
+mappings and falls back to raw CLI commands — the #1
+source of guardrail bypasses (24% compliance in GH-477).
+Re-inject the table into the compacted context as a
+**numbered list** (not a code block — code blocks are treated
+as advisory examples per `skill-orchestration-format.md`).
+**Self-check after compaction:** After any context compaction
+event, verify the routing table is still present by scanning
+for "$Dev10x:git-commit" in the current context. If
+missing, re-read this section before proceeding.
+
+1. run tests → `$Dev10x:py-test`
+2. commit → `$Dev10x:git-commit`
+3. create PR → `$Dev10x:gh-pr-create`
+4. monitor CI → `$Dev10x:gh-pr-monitor`
+5. push → `$Dev10x:git`
+6. groom → `$Dev10x:git-groom`
+7. branch → `$Dev10x:ticket-branch`
+8. create skill → `$Dev10x:skill-create`
+9. check PR state → `mcp__cli__pr_detect`
+10. verify PR readiness → `mcp__cli__verify_pr_state`
+11. verify acceptance → `$Dev10x:verify-acc-dod`
+12. merge PR → `$Dev10x:gh-pr-merge`
+
+### Groom Step: Always Delegate, Never Self-Assess
+
+**Hard rule (GH-505, GH-776, GH-929):** When the plan includes
+a "Groom commit history" step, you MUST invoke
+`$Dev10x:git-groom` and let the skill run its own
+analysis. **As the orchestrator, outside the skill,** do NOT run
+`git develop-log`, `git log`, or any commit inspection to
+pre-assess whether grooming is needed — not before invoking the
+skill, and not after invoking the skill to override its
+decision. The groom skill's Phase 2 strategy gate determines
+whether grooming is required — that decision belongs to the
+skill, not to the orchestrator.
+
+**Scope of the prohibition (GH-997).** This rule binds the
+*caller*, not the callee. `Dev10x:git-groom` Phase 1 opens with
+its own `git log` / `git merge-base` analysis — that is the
+skill's first documented step, and running it while executing
+the skill is compliant, not a violation. Read the rule as: do
+not inspect history to **predict** the groom's outcome from
+outside; inspection **inside** `Dev10x:git-groom` Phase 1 is the
+skill doing its job. Without this scoping the two documents read
+as contradictory instructions, which plausibly contributed to
+the three recorded recurrences below.
+
+**Anti-pattern (GH-776, GH-929):** The orchestrator
+pre-assessed "single commit, nothing to groom" and marked
+the task complete without invoking the skill. Session
+`da0d9c73` repeated this — third recurrence. Even when the
+groom skill is expected to be a no-op, the skill must run
+its own logic. The orchestrator must not inspect commit
+history to predict the outcome.
+
+### CI Re-Monitoring After Force Push
+
+**Hard rule:** Force push (from `Dev10x:git-groom` or conflict
+rebase) invalidates all previous CI results. After any force
+push, you MUST re-invoke `$Dev10x:gh-pr-monitor` to
+monitor the new CI runs. Do NOT declare CI green based on
+pre-groom results — the new HEAD has different commit SHAs
+and GitHub runs fresh checks against it.
+
+This applies to the shipping pipeline sequence:
+```
+... → Groom (force push) → RE-MONITOR CI → Update PR → ...
+```
+
+**Merge-state check before re-monitor/rewrite (GH-904 F4).** On
+ANY unexpected branch-head change — the local HEAD sha no longer
+matches what this session last pushed, most commonly because a
+maintainer ran GitHub's "Update branch" button — resolve the PR
+merge state via `mcp__cli__pr_get` (read `state` /
+`mergedAt`) BEFORE re-invoking `Dev10x:gh-pr-monitor` or any
+rebase/rewrite. Same pattern as `Dev10x:gh-pr-respond`'s
+Merge-State Check preamble. If `state == "MERGED"`, stop — do not
+rebase, force-push, or re-monitor a PR that already merged.
+
+### Solo-Maintainer Post-Create Monitor Mandate (GH-185)
+
+**Hard rule:** When `mcp__cli__resolve_gate(gate=
+"request_review", context={})` returns `effect: "skip"` — nobody
+else is being asked to look at this PR — the Phase 4 shipping
+sequence MUST invoke `$Dev10x:gh-pr-monitor` immediately
+after `$Dev10x:gh-pr-create` completes (success OR "PR
+already exists"). No gate effect suppresses this: an
+`auto-advance` elsewhere advances *through* gates, it must never
+advance *past* the monitor step. The monitor task remains a
+blocking step that runs in the same session, not a deferred
+follow-up.
+
+**Anti-pattern (GH-185):** A solo-maintainer + adaptive session
+created the PR and returned control to the user without
+dispatching the monitor. The user had to prompt explicitly
+~40 minutes later; by then the PR had already auto-merged and
+the monitor's only remaining work was milestone cleanup (which
+hit a separate permission gap — see GH-187).
+
+**Why solo-maintainer is the load-bearing case:** in
+team-review sessions, GitHub's review-required gate keeps the
+PR open long enough that the monitor catching up later is
+harmless. In solo-maintainer mode, there is no review gate,
+auto-merge may fire on the next CI tick, and skipping the
+monitor means skipping all of Phase 2 (fixup handling),
+Phase 3.5 (milestone cleanup), and Phase 4 (acceptance
+verification).
+
+The orchestrator MUST NOT mark the shipping phase complete
+until `$Dev10x:gh-pr-monitor` has run end-to-end.
+
+### Swarm-Child Auto-Advance (GH-368 F2, GH-385 F1)
+
+**Hard rule:** When the dispatch prompt carries the fanout
+swarm-context marker (the `wave_id` line — ADR-0019 / GH-950 keep
+swarm-child identity out of every config file), work-on MUST
+auto-advance past `$Dev10x:ticket-branch` without a
+continuation prompt. The branch is not a milestone — it is
+setup infrastructure. After the branch is created, immediately
+proceed to the next Phase 4 step (design or implement).
+
+**Root cause of the stall:** Without this rule, work-on shows
+the "branch created" output and waits for the user to say
+"continue". In a swarm context, there is no user — the agent
+waits indefinitely and terminates when the turn budget
+expires, leaving only a branch and no PR.
+
+**Required behavior in swarm-child mode:**
+1. `$Dev10x:ticket-branch` creates the branch.
+2. Without any pause, continue to the implementation steps.
+3. Run through the full shipping pipeline (commit → push →
+   PR → monitor → merge).
+4. Only AFTER the PR is merged, emit the terminal status line.
+
+**Terminal status line guarantee (GH-368 F2, GH-385 F1):**
+Even if the turn ends before the PR is merged (context limit,
+permission wall, or any interruption), the FINAL line of the
+agent's output MUST be one of:
+- `DONE` — PR merged, CI green, no open comments
+- `DONE_WITH_CONCERNS: <text>` — merged but flagged
+- `NEEDS_CONTEXT: <what>` — interrupted before merge (include
+  the PR URL if it exists so the orchestrator can resume)
+- `BLOCKED: <reason>` — cannot proceed
+
+Never end with free-form prose as the last line. The fanout
+orchestrator parses the trailing line deterministically and
+treats a missing or non-terminal line as `NEEDS_CONTEXT`
+(re-dispatch). Swarm agents MUST NOT rely on this fallback —
+the status line is their own responsibility.
+
+### Apply Fixups Completion Guard (GH-851 F2)
+
+**Hard rule:** The "Apply fixups" task CANNOT be marked
+complete until ALL PR checks — including automated review bots
+(claude-review, hygiene-review, openai-review) — have finished.
+A monitor returning "CI green" covers only core CI checks. Bot
+reviews are separate GitHub check runs that may still be PENDING
+when core CI passes. Verify via `gh pr checks` that zero checks
+remain in PENDING or IN_PROGRESS state before marking complete.
+
+### Skill Partial-Read Downgrade Prohibition (GH-44)
+
+**Hard rule:** Once you invoke a `Skill()`, you MUST follow its
+documented orchestration through to completion. Reading the first
+N lines, deciding the skill is "too heavy" or "dispatches a
+background agent we don't need", and substituting a "lighter"
+direct-CLI alternative is a violation. The skill's design — including
+background dispatch, gates, and side effects — is the contract.
+
+**Anti-pattern (GH-44):** Agent invokes
+`$Dev10x:gh-pr-monitor`, partially reads instructions.md
+(e.g., `Read(..., limit=100)`), encounters background-agent
+dispatch logic, rationalizes "this is overkill, let me just run
+`gh pr checks --watch` synchronously", and bypasses the skill.
+The rationalization "auto-advance pressure means I should pick
+the lightest path" is exactly what GH-932 warned against:
+"unattended mode changes the *pace*, not the *rules*."
+
+**Detection signal:** If you find yourself thinking "this skill
+is heavy, let me do simpler X instead" while inside a Skill()
+invocation, STOP. Either complete the skill as documented or
+abort the invocation explicitly and re-justify the substitution
+to the user via `AskUserQuestion`. Silent downgrade is forbidden.
+
+**Read fully before acting:** When delegating to a skill, read
+its `instructions.md` to completion (or until you hit the section
+relevant to your invocation context) before executing any
+substitute. Partial reads followed by substitutions miss
+guardrails that appear later in the file.
+
+### Post-PR Review-Comment Routing (GH-43)
+
+**Hard rule:** ANY review comment on the PR — human OR bot
+(claude-review, hygiene-review, openai-review) — MUST be
+addressed via `$Dev10x:gh-pr-respond`. Do NOT use raw
+`gh api PATCH`, `gh pr edit`, or `gh pr comment` to "just edit
+the PR body" or "just post a quick reply" inline. The
+gh-pr-respond skill runs the documented triage → fixup →
+resolve flow that bypasses get skipped when the agent edits
+directly.
+
+**Anti-pattern (GH-43):** Bot review surfaces "Fix JTBD voice"
+on PR body; agent runs `gh api -X PATCH .../pulls/N -F body=@...`
+followed by `gh pr comment N --body "..."`. The fix lands but
+the skill's triage/fixup/resolve flow is bypassed. The agent
+rationalizes "this is a one-liner, the skill is overkill" — that
+rationalization is the violation. Skill delegation is mandatory
+regardless of the comment's apparent simplicity.
+
+**Detection signal:** If you are about to call `gh api PATCH
+.../pulls/`, `gh pr edit`, or `gh pr comment` to respond to a
+PR review comment, STOP and invoke `$Dev10x:gh-pr-respond`
+instead. The skill handles single-comment cases just as well as
+batch.
+
+### Auto-Advance Rule
+
+See `references/task-orchestration.md` for the full pattern.
+
+**Complete a task → immediately start the next.** Do not pause
+between tasks to ask "should I continue?" or wait for the user
+to say "go" / "next" / "continue". The approved plan is the
+authorization to proceed — **no checkpoints the resolver did not
+ask for**. See `references/friction-levels.md` § "No checkpoints"
+rule for the canonical definition of what counts as a checkpoint.
+
+**Auto-advance on commits:** After creating a commit, immediately
+proceed to the next task. Never pause to show the commit or ask
+for confirmation — the commit is done, move on.
+
+**Auto-advance on code review (GH-932):** When delegating to
+`Dev10x:review` from the shipping pipeline, pass
+`args="--unattended"` so the skill skips the zero-findings
+AskUserQuestion gate and auto-advances to `Dev10x:review-fix`.
+Session `da0d9c73` invoked the skill without this flag,
+causing it to skip the mandatory attended-mode gate and the
+findings file write. The playbook `prompt:` says to use
+`--unattended` — this is not advisory, it is required.
+
+**Auto-advance on draft PR creation:** Create the draft PR and
+immediately proceed to **Monitor CI** — this is mandatory, not
+optional. Do not block on PR preview approval when executing
+the shipping pipeline — the PR body and title can always be
+updated later via the "Update PR description" step. When
+delegating to `Dev10x:gh-pr-create`, pass
+`args="--unattended"` to skip the preview gate.
+
+**Hard rule: Always invoke CI monitor after PR creation.**
+After `Dev10x:gh-pr-create` completes, the very next action
+MUST be `$Dev10x:gh-pr-monitor`. Do NOT skip this step
+even if the PR "looks fine" or CI "should pass." Session
+GH-477 showed the monitor was not invoked for 12+ hours after
+PR creation, requiring 9 user prompts. The monitor is part of
+the shipping pipeline, not an optional convenience.
+
+**Shipping pipeline is atomic — no-checkpoints sequence:** Once
+the main implementation and verification are done, the remaining
+shipping steps (code review → commit → PR → CI → groom → update
+→ ready → merge) form an atomic, no-checkpoints sequence. Auto-
+advance through ALL of them without pausing for user input. The
+sequence runs end-to-end with zero interruptions other than gates
+whose `resolve_gate` effect is `ask`. Do NOT stop
+after posting review replies, after creating the PR, after CI
+goes green, or after grooming — continue until the plan
+completion gate or a genuine blocker (unrecoverable CI,
+unresolved human review thread, merge conflict needing judgment).
+A trailing "Ready to proceed to the next step?" between any of
+these shipping steps is a checkpoint the resolver never asked
+for, and is forbidden.
+
+**Batched Decision Queue:** When a task hits a genuine A/B
+decision, do NOT interrupt the user immediately. Instead:
+
+1. Queue the decision in task metadata:
+   ```
+   TaskUpdate(taskId, status="pending",
+       metadata={"decision_needed": "description",
+                 "options": ["A", "B", "C"]})
+   ```
+2. Move to the next unblocked task and keep advancing.
+3. Only interrupt when ALL tasks are blocked — collect all
+   queued decisions into one `AskUserQuestion` batch (1-4 Qs).
+4. After the user answers, unblock and resume auto-advancing.
+
+The supervisor can step away, come back to answer all decisions
+at once, then step away again confident maximum progress will
+happen before the next interruption.
+
+**If blocked on the current task** (waiting for user input,
+external dependency, CI), check whether the next unblocked
+task can start. Examples:
+- Waiting for CI? Start self-review in parallel.
+- Waiting for user input on approach? Create the branch or
+  draft the Job Story meanwhile.
+- Stuck on a sub-task? Mark it `pending` with a note and
+  advance to the next unblocked task in the list.
+
+Return to the blocked task once the blocker resolves.
+
+### Plan Completion Gate
+
+**REQUIRED: Pre-gate verification checklist.** Before resolving
+the `completion_signoff` gate, verify ALL of the following:
+
+1. All background agents have completed or reported results —
+   check `TaskList` for any tasks still `in_progress`
+2. No unaddressed review comments exist on the PR — check via
+   `gh pr view --json reviewDecision,reviews`
+3. CI checks have completed (not still running) — check via
+   `gh pr checks`
+4. Working copy is clean — `git status` shows no uncommitted
+   changes
+5. No pending fixup commits that haven't been pushed — compare
+   local HEAD with remote tracking branch
+6. **verify-acc-dod was invoked** — check the conversation for
+   a `$Dev10x:verify-acc-dod` call. If absent, invoke it
+   NOW before presenting the gate. This is the #1 bypass pattern
+   (GH-471, GH-497, GH-930) — agents perform inline checks
+   instead of delegating. Session `da0d9c73` repeated this —
+   marking the task completed with an inline description and
+   never firing the completion gate AskUserQuestion. The
+   completion gate MUST NOT fire without it.
+
+If any check fails, resolve it before presenting the gate.
+Do NOT present "Work complete" as recommended when preconditions
+are unmet.
+
+**Recommendation defers to verify-acc-dod (GH-736).** The completion
+gate recommendation is computed from the verify-acc-dod result, never
+overridden by gate framing. While **any** blocking DoD check is
+failing/pending —
+`dev10x.domain.session_rules.completion_gate_recommendation()` returns
+`GO_BACK` — you MUST NOT label, present, or auto-select "Work complete"
+as Recommended. "The requested fix is done" is not "the PR is
+merge-ready": a still-red check (e.g. open review threads) makes
+**Go back** the only recommended option until the check is resolved or
+the failing criterion is honestly removed from scope (see below).
+
+**Scope-deferred review threads (GH-736).** When the supervisor has
+explicitly deferred open PR review threads for this session (e.g.
+"land the CI fix only, leave the review comments for a follow-up"),
+the **"No unresolved review threads"** DoD check will stay red. Do NOT
+paper over it by recommending "Work complete" anyway. Instead, make
+the scope decision explicit so the DoD reflects it:
+
+1. Detect the defer — a supervisor message scoping the session away
+   from review-thread resolution ("defer the threads", "skip the
+   review comments", "just the CI fix", "leave the open threads").
+2. **Do NOT write `.claude/Dev10x/session.yaml`** (ADR-0018, ADR-0019).
+   Whether the supervisor reads PRs here is a **durable project fact**,
+   not a session flag: it lives as `supervisor_review: required|none` in
+   the matching `projects[]` entry of the global
+   `~/.config/Dev10x/friction.yaml` (ADR-0022 D-2; the deprecated
+   `human_review: true|false` spelling is still read for one release).
+   Resolve the current value via
+   `mcp__cli__supervisor_review_status()` (default
+   `required`) — never by reading the durable file directly — and branch:
+   - **`supervisor_review: none`** — the project already says no
+     supervisor pass is needed. `Dev10x:verify-acc-dod` skips the
+     unresolved-threads and review-requested checks on its own; nothing
+     to set. Note it in the next status line and go to step 3.
+   - **`supervisor_review: required`** — the project says humans review, so the
+     open thread is genuinely in scope. The check STAYS RED. **REQUIRED:
+     Call `AskUserQuestion`** at every friction level (this is
+     `ALWAYS_ASK` — flipping a project's review posture is not an
+     auto-advance decision): "Open review threads remain and this
+     project is configured for human review. How should the DoD treat
+     them?" with options "Resolve threads now (Recommended)", "Change
+     the project posture — set `human_review: false` in
+     `~/.config/Dev10x/friction.yaml`", and "Hand over with the check
+     red — record the open threads in Verify-AC".
+3. Re-run the verify-acc-dod gate. When the checks are out of scope
+   (`human_review: false`), a green run resolves honestly to **Work
+   complete** / **Monitor for review** per the table below —
+   `verify-acc-dod` reports them as "skipped (human_review: false)",
+   *removed from scope* rather than silently passed.
+
+If the project is configured for human review and the supervisor has not
+changed that posture, an open thread is a failing blocking check →
+**Go back**; never "Work complete".
+
+**Why there is no per-session deferral (ADR-0019).** The old flow wrote
+`review-deferred` to a file ADR-0018 retired, which the reader reached
+only in an unconfigured repo — so in any configured repo the deferral
+was written and never read, and the checks it was meant to skip ran
+anyway. The replacement is durable and project-wide because the
+underlying question is: *are humans (including this supervisor) involved
+in review on this project?* The `review-deferred` mode string is still
+**read** for back-compat, but nothing writes it.
+
+**Merge-gated completion (GH-729).** Completion is reserved for the
+**merged** state — "shippable / handed off to review" is NOT
+terminal. Resolve the PR merge state (via
+`mcp__cli__pr_detect` / `verify_pr_state`) and apply
+`dev10x.domain.session_rules.completion_gate_recommendation()`:
+
+- **Merged / no PR**, checks green → recommend **"Work complete"**.
+- **Open, awaiting review** (CI green, comments addressed) →
+  recommend **"Monitor PR for review"**: dispatch
+  `$Dev10x:gh-pr-monitor` to background-watch the PR (~5 min)
+  and keep the session open. Under `solo-maintainer` the monitor →
+  auto-merge path already runs (see § Solo-Maintainer Post-Create
+  Monitor Mandate); the gate simply must not auto-select "Work
+  complete" before the merge lands. The residual terminal task is
+  **"Monitor PR #<N> for review / merge"**, not a passive
+  "Verify AC and close".
+- **CI failing / comments unaddressed** → resolve first (Go back).
+
+Never offer or auto-select "Work complete" while an associated PR
+is open/unmerged.
+
+**Background agent task status:** Tasks for background agents
+(e.g., PR monitor dispatched via `run_in_background`) MUST remain
+`in_progress` until the agent confirms completion. Do NOT mark
+them `completed` on dispatch — only mark `completed` when the
+agent's result notification arrives and confirms success.
+
+**After all checks pass** (including the non-waivable
+`$Dev10x:verify-acc-dod` run from the pre-gate checklist
+above — that delegation ALWAYS runs first, regardless of the
+gate's resolved effect below):
+
+Resolve whether the completion gate fires. Call
+`mcp__cli__resolve_gate(gate="completion_signoff")`
+and branch on `effect`. The recommended-option content itself
+(which of the two questions below, and which option is
+`(Recommended)`) still comes from
+`completion_gate_recommendation()` per the GH-736/GH-729 rules
+above — the resolver only decides whether confirmation is
+required.
+
+1. `effect == "ask"` — **REQUIRED: Call `AskUserQuestion`** (do NOT
+   use plain text). Show the full task list via `TaskList`, then
+   call:
+   - **When the PR is merged (or the work is PR-less):**
+     `AskUserQuestion(questions=[{question: "All tasks completed. How would you like to proceed?", header: "Done", options: [{label: "Work complete — hand over (Recommended)", description: "PR merged (or PR-less), all checks pass — ready to close"}, {label: "Add more tasks", description: "Continue with additional work"}, {label: "Revisit a step", description: "Re-examine a completed task"}], multiSelect: false}])`
+   - **When an associated PR is open/unmerged but otherwise green
+     (GH-729):**
+     `AskUserQuestion(questions=[{question: "All checks pass and PR #<N> is awaiting review. How would you like to proceed?", header: "Done", options: [{label: "Monitor PR for review (Recommended)", description: "Keep the session open; background-watch PR #<N> every ~5 min via Dev10x:gh-pr-monitor and surface review/ready-to-merge"}, {label: "Add more tasks", description: "Continue with additional work"}, {label: "Override — complete anyway", description: "Accept the unmerged PR as done"}], multiSelect: false}])`
+   - **When the PR is open/green under solo-maintainer + adaptive
+     (GH-883) — `completion_gate_recommendation()` returns
+     `AUTO_MERGE`:** there is no external reviewer to wait for and the
+     adaptive contract forbids a manual checkpoint, so the terminal
+     action is to auto-advance directly to `$Dev10x:gh-pr-merge`
+     (its solo-maintainer config supplies the approval override) — NOT
+     "monitor for review". Under `adaptive` the `completion_signoff`
+     gate resolves to `auto-advance` (no widget). If it nonetheless
+     resolves to `ask`, present the merged/PR-less question with "Merge
+     now (Recommended)" as the lead option. Repo `allowed_overlays`
+     policy still drops the solo-maintainer overlay before this ever
+     resolves (`ModeGuardRule`), so a team repo (e.g. this one) never
+     reaches AUTO_MERGE — it falls through to `MONITOR_REVIEW`.
+2. `effect == "auto-advance"` — auto-select the recommended option
+   from the applicable question above without prompting. Surface
+   the returned `record` line in the transcript so a present
+   supervisor can veto. Safety floors (e.g., an unmerged/CI-red PR)
+   make the resolver return `ask` regardless of preset — this
+   branch only fires when the resolver itself judged the work
+   genuinely done.
+3. `effect == "skip"` — skip the gate entirely, no prompt, no
+   auto-complete announcement. Still never mark the terminal
+   Verify-AC task completed autonomously (`essentials.md` Task
+   List Invariant).
+4. Response has an `error` key — fail safe: treat as `ask` and fire
+   the applicable widget in step 1.
+
+Never auto-complete the plan without the gate resolving to
+`auto-advance` or `skip`, and never skip the mandatory
+`Dev10x:verify-acc-dod` delegation above regardless of `effect`.
+Plain text questions (e.g., "Ready to merge?") are NOT
+acceptable in the `ask` branch — they allow the session to
+auto-proceed without structured confirmation.
+
+### Executing Detailed Tasks
+
+Run the task directly. If the task has a `prompt` in metadata,
+use it as execution guidance. If the task has `skills` in
+metadata, delegate to those skills in order.
+
+**REQUIRED: When the playbook step lists `skills:`, you MUST
+invoke via `Skill()`. Do NOT perform actions directly.** Skill
+delegation ensures consistent behavior, proper tool declarations,
+and reusable orchestration. Bypassing delegation by inlining the
+skill's logic breaks these guarantees.
+
+**Unattended mode compliance — no checkpoints, but no shortcuts
+either:** Auto-advance pressure in unattended mode makes it
+tempting to perform operations directly (e.g., `git checkout -b`
+instead of `Dev10x:ticket-branch`, inline review instead of
+`Dev10x:review`). This is still a violation — "no checkpoints"
+eliminates implicit pauses between steps;
+it does NOT license raw-CLI substitutions for skill wrappers.
+Unattended mode changes the *pace*, not the *rules*. If you catch
+yourself about to skip a `Skill()` call, stop and invoke the
+skill. Refer to the **Skill Routing Enforcement** table above —
+it lists every action that MUST use a skill wrapper regardless of
+execution mode. The two rules compose: auto-advance between steps,
+but always through the correct skill.
+
+**Mandatory delegation flag:** When a playbook step has
+`skills:` entries, delegation is mandatory — not advisory.
+The `skills:` field means "invoke these via `Skill()`", not
+"consider using these". Zero of 15 expected delegations in
+session 05d49f11 were made because the enforcement was
+treated as optional. It is not optional.
+
+**Mode `prompt:` overrides preserve `skills:` delegation
+(GH-45):** A mode block (e.g., `solo-maintainer:`) that
+overrides a step's `subject:` or `prompt:` does NOT remove the
+step's `skills:` field. The skill delegation still applies —
+the override changes only the documented behavior the skill
+should adopt. The agent MUST invoke `Skill()` and let the skill
+read the active mode from the durable prefs and apply the override
+internally. Taking the prompt override literally and running
+the raw command directly bypasses the skill's setup, validation,
+and side effects.
+
+**Anti-pattern (GH-45):** Step subject "Mark PR ready for
+review" with `skills: [Dev10x:gh-pr-request-review]` and
+`solo-maintainer` mode override `prompt: "Run gh pr ready. No
+reviewers, no Slack."` Agent reads the prompt, runs `gh pr
+ready 37` directly, never invokes the skill. Correct behavior:
+invoke `$Dev10x:gh-pr-request-review`; the skill resolves
+the `request_review` gate and takes the no-reviewer path itself.
+
+Common skill delegations:
+
+| Task | Delegated to |
+|------|-------------|
+| Set up workspace (branch) | `Dev10x:ticket-branch` skill |
+| Set up workspace (worktree) | `Dev10x:git-worktree` skill |
+| Draft Job Story | `Dev10x:jtbd` skill (attended mode) |
+| Update ticket status | Linear MCP (see references/team-info.md) |
+| Fetch PR context | `gh pr view` + `gh pr diff` |
+| Code review | `Dev10x:review` (`--unattended`) + `Dev10x:review-fix` skills |
+| Commit changes | `Dev10x:git-commit` skill |
+| Create draft PR | `Dev10x:gh-pr-create` skill (`--unattended`) |
+| Monitor CI | `Dev10x:gh-pr-monitor` skill |
+| Apply fixups to review | `Dev10x:gh-pr-respond` skill |
+| Groom commit history | `Dev10x:git-groom` skill |
+| Update PR description | `Dev10x:gh-pr-create` skill (update mode) |
+| Request review | `Dev10x:gh-pr-request-review` skill |
+| Merge PR | `Dev10x:gh-pr-merge` skill |
+
+### Post-Step Skill Delegation Verification
+
+**REQUIRED: After completing ANY playbook step that lists
+`skills:`, verify the delegation occurred.** Before marking
+the task `completed`, confirm:
+
+1. The `Skill()` tool was called for each listed skill
+2. Raw CLI commands were NOT used as substitutes (e.g.,
+   `git commit` instead of `$Dev10x:git-commit`)
+3. If you used raw commands instead of `Skill()`, STOP —
+   re-do the step with proper delegation before proceeding
+
+This check exists because under auto-advance pressure, the
+agent rationalizes raw commands as "equivalent" to skill
+invocations. They are not — skills enforce gitmoji, JTBD,
+Fixes links, CI monitoring, and other guardrails that raw
+commands skip.
+
+**Special attention: verify-acc-dod delegation.** The
+acceptance criteria step is the most commonly bypassed
+delegation (GH-471, GH-930). Agents perform inline AC checks
+(e.g., "CI green, PR merged, looks good") instead of
+invoking `$Dev10x:verify-acc-dod`. The inline check
+skips structured PR state verification (`gh pr checks`,
+`gh pr view --json isDraft`) and the skill's own
+`AskUserQuestion` gate. Always delegate — unless a playbook
+override provides an explicit inline substitute.
+
+After verification, mark the task `completed` via
+`TaskUpdate` and move to the next task.
+
+### Task Reconciliation After Skill Delegation
+
+**REQUIRED:** After a delegated skill completes (e.g.,
+`Dev10x:gh-pr-respond`, `Dev10x:gh-pr-monitor`), reconcile
+the task list before proceeding. Delegated skills may create
+their own tasks that overlap with the parent's remaining
+pipeline steps. Without reconciliation, parent tasks remain
+`pending` forever and the completion gate is never reached.
+
+**Reconciliation protocol:**
+
+1. Call `TaskList` after the delegated skill returns
+2. Check if the delegated skill fulfilled any of the parent's
+   remaining tasks (e.g., if `gh-pr-respond` ran groom + push,
+   mark the parent's "Groom commit history" and "Push" tasks
+   as `completed`)
+3. Mark any tasks completed by the delegated skill's side
+   effects — match by subject/action, not by task ID
+4. If context compaction cleared the task list, recreate only
+   the remaining uncompleted tasks from the playbook
+
+This prevents the failure mode where delegated skills run
+their own shipping pipeline, the parent's tasks are never
+updated, and the completion gate never fires.
+
+### Expanding Epic Tasks
+
+When reaching an epic task:
+
+1. **Read the step prompt** — if the task metadata contains a
+   `prompt` field (from playbook.yaml), use it as guidance
+   for how to execute or expand the step. The prompt may
+   contain heuristics for adapting the step to context.
+2. **Check for pre-templated children** — if the task metadata
+   contains `steps` (from the playbook.yaml template), use
+   those as the sub-task list instead of generating from scratch.
+   Each child step may also have its own `prompt` for guidance.
+   This gives users control over epic expansion via YAML.
+3. **If no pre-templated children**, generate sub-tasks from
+   context. This may involve:
+   - Reading code to understand scope
+   - `AskUserQuestion` for A/B decisions (e.g., "approach X
+     vs approach Y?") — but only when the choice genuinely
+     cannot be inferred from context
+   - Follow-up information gathering
+4. **Delegate to listed skills** — if the task or sub-task has
+   `skills` in metadata, invoke those skills in order. Multiple
+   skills on one step run sequentially (each may depend on the
+   previous).
+5. **Present sub-tasks** briefly (inline, not a new approval
+   gate) and begin executing immediately. Only ask for
+   approval if the expansion reveals unexpected scope or
+   trade-offs the supervisor should weigh in on.
+6. **Check for parallelism** — if sub-tasks are independent,
+   ask the supervisor before launching parallel agents
+7. **Execute sub-tasks**, marking each completed as they finish.
+   Auto-advance between sub-tasks (same rule as top-level).
+8. **Mark the epic completed** when all sub-tasks are done
+
+### Multi-Issue Execution
+
+When multiple issues are provided, two strategies exist:
+
+**Strategy A: Separate PRs (fanout — default)**
+
+Each issue gets its own branch, PR, and full playbook play.
+Use `Dev10x:fanout` for parallel execution or sequential
+execution within `work-on`.
+
+Each issue MUST execute the **full playbook play** — not a
+collapsed subset. Fanout does NOT exempt individual issues
+from the shipping pipeline.
+
+**Strategy B: Bundled PR (atomic commits)**
+
+All issues share one branch and one PR. Each issue becomes
+one atomic commit. The shipping pipeline runs once for the
+bundle, not per issue. Use this when issues are small,
+related, and benefit from a single review cycle.
+
+**Bundled execution pattern:**
+```
+1. Set up workspace (one branch for all issues), branched
+   from a freshly-fetched origin/<base>
+2. Batch the issues (see § Batch Detection below)
+3. For each BATCH (sequentially):
+   a. Re-sync onto fresh base (see § Per-Batch Base Re-Sync
+      below) — pre-review hygiene only; SKIPPED once review
+      fixups / unresolved threads exist
+   b. Design approach for this batch
+   c. Implement changes
+   d. Create atomic commit (one per batch; ticket IDs of
+      every batch member appear in the commit body)
+4. Verify (run tests once for all changes)
+5. Shipping pipeline (review → PR → CI → groom → merge)
+```
+
+#### Per-Batch Base Re-Sync (GH-626)
+
+In an actively-developed area the base branch advances while the
+bundle is being worked, so later batches — and the shipping
+pipeline — hit merge conflicts and **superseded-duplicate** work
+that only surface at `Monitor CI` / merge time. Re-syncing each
+batch onto the fresh base *before* working it converts those
+late, expensive conflict cycles into cheap up-front detection.
+
+Before step 3b (Design) of each batch:
+
+1. Resolve `<base>` via `mcp__cli__detect_base_branch`
+   (develop → main fallback). Always rebase onto `origin/<base>`,
+   never the possibly-stale local ref (same caution
+   `Dev10x:git-groom` documents in Phase 1, GH-486).
+2. Fetch `origin/<base>` and rebase the bundle branch onto it via
+   `$Dev10x:git-groom` / the existing rebase wrapper —
+   never raw `git rebase`.
+3. After any force-push from this pre-review rebase, re-monitor
+   CI (already required — see § CI Re-Monitoring After Force Push).
+
+**Critical constraint — never rebase once review fixups exist.**
+The auto re-sync applies **only before reviews start**. Once
+fixup commits are addressing in-progress review threads, a rebase
+rewrites the base SHAs that review-thread permalinks reference
+(`/pull/N/commits/<sha>` → 404) and destroys the per-comment
+audit trail. This is the same invariant `Dev10x:git-groom`
+enforces in **Phase 0 (refuse pre-merge groom with open
+unresolved threads, GH-68 Fix E)** — the two rules compose:
+
+- **Suppress** the re-sync when any unresolved review thread or
+  review fixup exists on the PR.
+- Fixup commits stay on their original base; only true merge
+  conflicts at that point are resolved in place (resolve-in-rebase
+  or a base-merge that does not rewrite the fixup SHAs), never a
+  wholesale rebase that orphans permalinks.
+
+In short: **re-sync-onto-fresh-base is a per-batch pre-work /
+pre-review hygiene step; it is forbidden once a review cycle has
+begun.**
+
+The "Implement changes" epic expands to one sub-task per
+**batch** — not per individual issue. Each sub-task produces
+exactly one commit. When a batch has a single member, the
+commit references that one ticket; when a batch covers
+multiple overlapping tickets, the commit body lists every
+ticket ID and `Fixes:` line. The shipping pipeline runs
+once — the PR references all bundled issues via multiple
+`Fixes:` lines aggregated across batches.
+
+#### Batch Detection (GH-196)
+
+Bundled execution allows two layouts: **sequential** (one
+commit per ticket) and **batched** (one commit per group of
+overlapping tickets). Default to the sequential layout. Promote
+tickets into a shared batch only when overlap signals justify
+it; arbitrary grouping muddies review.
+
+**Overlap signals** (gathered from Phase 2 context):
+
+1. **Shared component** — Sentry issues report failures in the
+   same file/module/class, or ticket bodies name the same path
+2. **Shared error class** — Sentry traces show the same
+   exception type from the same code path
+3. **Same parent ticket** — Linear tickets share a parent, or
+   GitHub issues link to the same tracking issue
+4. **Repeated label set** — every ticket carries the same
+   non-milestone label (e.g., `audit:patterns`, `flaky-test`)
+5. **Explicit reference** — one ticket body mentions another
+   by ID with intent to fix together
+
+Two tickets share a batch when **at least 2** of the signals
+above hold simultaneously. Tickets without overlap signals
+form singleton batches. Never put more than 5 tickets in a
+single batch — review readability degrades past that point.
+
+**Shared-file tickets always collapse into one batch (GH-591).**
+When two bundle members edit the **same file**, they CANNOT become
+separate per-issue commits: splitting them would require hunk-level
+selective staging, which `Dev10x:git-commit` explicitly prohibits
+("NEVER stage individual files by name"). A shared file is a strong
+form of the **shared component** signal — treat it as decisive on
+its own and place the members in one batch even if no second signal
+holds. The batched-layout convention then applies: one atomic
+commit whose body lists every member with a `Fixes:` line per
+ticket (see the per-batch commit-message convention below). Do NOT
+attempt per-issue commits for shared-file members.
+
+**Surfacing the batch plan:**
+
+After detection, resolve the batch-layout gate. Compute
+`overlap_signals` as the signal count of the **least-confident**
+proposed non-singleton batch (when every proposed batch is a
+singleton, pass `context={}` — there is no non-singleton batch to
+score). Call `mcp__cli__resolve_gate(gate="batch_layout",
+context={"overlap_signals": <N>})` and branch on `effect`:
+
+1. `effect == "ask"` — present the proposed batch layout. Each
+   option below is REQUIRED — do not collapse to plain-text
+   confirmation:
+   `AskUserQuestion(questions=[{question: "Proposed batch layout for bundled execution:\n\n<batch_summary>\n\nHow would you like to proceed?", header: "Batches", options: [{label: "Accept (Recommended)", description: "Use the proposed batches; one commit per batch"}, {label: "Sequential (no batching)", description: "Treat every ticket as its own batch — one commit per ticket"}, {label: "Edit batches", description: "Describe regrouping (which tickets merge or split)"}], multiSelect: false}])`
+2. `effect == "auto-advance"` — auto-select "Accept (Recommended)"
+   without prompting. Surface the returned `record` line in the
+   transcript so a present supervisor can veto.
+3. `effect == "skip"` — skip the gate entirely; use the proposed
+   batches as-is with no announcement.
+4. Response has an `error` key — fail safe: treat as `ask` and fire
+   the widget in step 1.
+
+The `<batch_summary>` placeholder enumerates each proposed
+batch, e.g.:
+
+```
+Batch 1: GH-12, GH-14
+  Signals: shared component (payments/service.py),
+           shared error class (SquareTimeoutError)
+Batch 2: GH-21
+  Signals: singleton — no overlap with others
+```
+
+A batch sitting at exactly 2 signals is the resolver's designed
+`ask` boundary — ambiguous batches are the one case where bundling
+needs explicit human sign-off; do not second-guess an `ask` effect
+by auto-accepting anyway.
+
+**Persisting the batch plan:** After approval, extend the
+Phase 3 plan-sync context with the batch layout so it survives
+compaction:
+
+```
+mcp__cli__plan_sync_set_context(args=[
+  "bundling=true",
+  "batches=[[\"GH-12\",\"GH-14\"],[\"GH-21\"]]"
+])
+```
+
+**Per-batch commit message convention:** Use the gitmoji of the
+dominant change type, followed by the first ticket ID in the
+batch as the canonical ticket reference. The commit body lists
+every batch member with one `Fixes:` line per ticket. Example:
+
+```
+♻️ GH-12 Tighten Square timeout handling across payment paths
+
+Bundle members:
+- GH-12 Retry transient SquareTimeoutError on capture
+- GH-14 Surface timeout reason in refund response
+
+Fixes: GH-12
+Fixes: GH-14
+```
+
+**Commit step positioning (GH-164):** The shipping-pipeline
+`Commit outstanding changes` step (4.7 in the solo-maintainer
+fragment) runs ONCE at the end of all bundle sub-tasks — for
+any residual changes from review/simplify, not as the
+per-issue commit driver. The per-issue commits happen
+*inside* the "Implement changes" epic (step 2c above), not in
+the shipping pipeline. Audit GH-164 caught an agent that
+treated the shipping-pipeline commit step as a sibling of
+the implementation sub-tasks and committed after the very
+first sub-task — prematurely, before later bundle members
+were implemented.
+
+Rule: in bundle mode, every per-issue commit is a child of
+"Implement changes". The shipping-pipeline `Commit outstanding
+changes` step must be positioned strictly AFTER all
+implementation children complete.
+
+**Pre-review commit step (GH-858 F3):** The shipping pipeline now
+opens with a `Commit implementation changes` step *before* `Code
+review`. `Dev10x:review` diffs commits against base (`develop-diff`),
+not the working tree, so a single-ticket branch whose implementation
+is still uncommitted would review an empty diff. The new step commits
+that work first. In bundle mode this is a no-op — the per-issue
+commits already happened inside "Implement changes" — so the two
+commit steps do not conflict: the pre-review step catches the
+non-bundle case, and the trailing `Commit outstanding changes` step
+still sweeps residual review/simplify changes.
+
+**Strategy selection:** Compute the **recommended** strategy —
+Strategy B when the user explicitly requests bundling (e.g.,
+"one PR", "atomic commits", "bundle these"), Strategy B when the
+**Same-Milestone Heuristic (GH-948)** below holds, otherwise
+Strategy A (fanout). The strategy-choice gate (`strategy_choice`)
+decides whether that recommendation needs confirmation — see below.
+
+**Same-Milestone Heuristic (GH-948):** Prefer Strategy B
+(bundled) when ALL of these conditions hold:
+
+1. **Same milestone** — every classified ticket belongs to
+   the same GitHub milestone (or Linear project). Detect via
+   the `milestone` field from `mcp__cli__issue_get`
+   or the Linear project field. Skip this check if any ticket
+   lacks a milestone field.
+2. **No separate reviewer** — `mcp__cli__resolve_gate(
+   gate="request_review", context={})` returns `effect: "skip"`.
+   Team reviewers imply separate review cycles, so fanout
+   remains correct whenever that gate asks or auto-advances.
+3. **Small/medium effort** — no ticket is labeled `effort:L`,
+   `effort:XL`, or `size:L`+. Large epics warrant isolation
+   even within a milestone.
+4. **Thematically related** — tickets share at least one
+   non-milestone label (e.g., all `audit:patterns`, all
+   `refactor:cleanup`).
+
+When all four conditions hold, the recommended strategy is
+Strategy B; when any condition fails, it falls back to Strategy A
+(fanout). The heuristic only changes the **recommended** strategy
+— it does not decide whether the gate fires.
+
+**Resolving the strategy-choice gate.** Call
+`mcp__cli__resolve_gate(gate="strategy_choice")` and
+branch on `effect`:
+
+1. `effect == "ask"` — present both strategies via `AskUserQuestion`
+   with the recommended one marked `(Recommended)`:
+   `AskUserQuestion(questions=[{question: "Multiple issues detected. How should they be executed?", header: "Strategy", options: [{label: "Separate PRs (fanout)<Recommended marker on the winning option>", description: "Each issue gets its own branch, PR, and full playbook play"}, {label: "Bundled PR (atomic commits)<Recommended marker on the winning option>", description: "All issues share one branch/PR; each issue becomes one atomic commit"}], multiSelect: false}])`
+2. `effect == "auto-advance"` — use the recommended strategy without
+   prompting. Surface the returned `record` line in the transcript
+   so a present supervisor can veto.
+3. `effect == "skip"` — use the recommended strategy with no
+   announcement.
+4. Response has an `error` key — fail safe: treat as `ask` and fire
+   the widget in step 1.
+
+**Anti-pattern (PROHIBITED for both strategies):**
+```
+for each issue:
+  branch → edit → commit → push → PR   # 5 steps
+```
+
+### Parallelism Policy
+
+| Phase | Parallelism | Approval needed? |
+|-------|------------|-----------------|
+| Phase 2 (Gather) | Auto-parallel | No |
+| Phase 4 (detailed tasks) | Sequential | No |
+| Phase 4 (epic sub-tasks) | Parallel if independent | Yes — ask supervisor |
+
+When asking about parallelism, present which tasks would run
+concurrently and why they're independent:
+
+```
+Tasks 4a and 4b are independent (different files, no shared state).
+Run them in parallel?
+- Yes, launch parallel agents (Recommended)
+- No, run sequentially
+```
+
+**Subagent implementation model (GH-904 F3).** When Phase 4
+sub-tasks are dispatched to parallel implementer agents:
+
+- **Partition by disjoint file sets.** Each agent must own a
+  distinct set of files so two agents never write the same
+  working tree path — concurrent writes to a shared file are a
+  clobber, not a merge.
+- **Dependency spine + one parallel wave.** Model the work as a
+  sequential spine of tasks with real dependencies, plus at most
+  one wave of independent chunks dispatched in parallel off that
+  spine. Do not chain multiple parallel waves — the spine already
+  captures the ordering constraints.
+- **Never run a shared-DB test suite concurrently.** Parallel
+  implementers MUST NOT each run the full test suite against a
+  shared database at the same time — defer to a single serialized
+  test run after all chunks land, to avoid cross-agent state
+  interference.
+- **Import dependencies usually force a mostly-sequential spine.**
+  Most feature work has one module depending on another, so the
+  parallel wave is typically small — expect modest, not dramatic,
+  wall-clock gains from parallelism.
+
+**Worktree isolation limitation:** Agents dispatched with
+`isolation: "worktree"` cannot use the `Write` tool — Claude Code
+restricts Write access to the main session's working directory.
+Use `Bash(cat <<'EOF' > file)` or `Edit` as a workaround inside
+worktree-isolated agents. Alternatively, avoid `isolation: "worktree"`
+and use sequential tool calls in the main session instead.
+
+**`bypassPermissions` limitation:** The `bypassPermissions` flag
+does not propagate into worktree isolation contexts. If a task
+step requires unattended execution inside a worktree agent, use
+`mode: "dontAsk"` on the Agent call or avoid `isolation: "worktree"`
+for that step. Sequential tool calls in the main session are the
+safest fallback for permission-sensitive operations.
+
+### Skill Delegation During Execution
+
+**Workspace setup** (uses the decision from Phase 1):
+
+| State | Action |
+|-------|--------|
+| Main repo, user wants worktree | Invoke `Dev10x:git-worktree` (creates branch internally — do NOT call `Dev10x:ticket-branch` first) |
+| Main repo, work here | Invoke `Dev10x:ticket-branch` to create feature branch |
+| Worktree, generic WT branch | Invoke `Dev10x:ticket-branch` to create work-specific branch from within the worktree |
+| Worktree, matching feature branch | No action needed — branch already exists |
+
+If the Phase 1 workspace decision was deferred (local-only
+work), resolve the workspace-choice gate. Call
+`mcp__cli__resolve_gate(gate="workspace_choice")` and
+branch on `effect`:
+
+1. `effect == "ask"` — **REQUIRED: Call `AskUserQuestion`** (do NOT
+   use plain text, call spec:
+   [ask-workspace-decision.md](tool-calls/ask-workspace-decision.md)).
+   Options:
+   - Work here (Recommended) — Use current directory and branch
+   - New worktree — Create an isolated worktree
+2. `effect == "auto-advance"` — use the recommended option ("Work
+   here") without prompting. Surface the returned `record` line in
+   the transcript so a present supervisor can veto.
+3. `effect == "skip"` — use the recommended option with no
+   announcement.
+4. Response has an `error` key — fail safe: treat as `ask` and fire
+   the widget in step 1.
+
+**Job Story drafting:**
+- MUST invoke `$Dev10x:jtbd` explicitly — never draft inline
+- Pass gathered context to avoid redundant API calls
+- If approved, write back to the ticket:
+
+| Tracker | Write-back |
+|---------|-----------|
+| GitHub | `gh issue comment` |
+| Linear | Prepend to description via `save_issue` |
+| JIRA | `Dev10x:jira` skill |
+
+**Ticket status update (Linear only):**
+
+**REQUIRED after workspace setup:** When a ticket-backed plan
+starts execution (feature or bugfix), update the ticket status
+to "In Progress" immediately after the "Set up workspace" step
+completes. Do NOT defer this to the end of the session.
+
+1. Get statuses: `list_issue_statuses(teamId)` from
+   references/team-info.md
+2. Find "In Progress" (type `started`)
+3. Update: `save_issue(id, stateId)`
+4. Skip if already "In Progress"; warn if "Done"/"Canceled"
+
+---
+
+## Pause/Resume
+
+At any pause signal ("wrap up", "pause", "that's enough for
+today", end-of-session):
+
+1. Invoke `Dev10x:session-wrap-up` — it reads `TaskList` and
+   discovers all open tasks automatically
+2. `Dev10x:session-wrap-up` handles routing each open item (PR
+   bookmark, TODO.md, Slack DM, etc.)
+3. The task list itself serves as resume context — when the user
+   resumes work, they can invoke `Dev10x:park-discover` to find
+   deferred items and `Dev10x:session-tasks` to see the saved
+   task list
+
+No custom bookmarking needed — leverage existing
+`Dev10x:session-wrap-up` and `Dev10x:park` infrastructure.
+
+---
+
+## Important Notes
+
+- **DO NOT use `ExitPlanMode` or Claude Code's built-in plan mode.**
+  This skill has its own planning phase (Phase 3) that uses
+  `TaskCreate` + `AskUserQuestion`. Writing a plan file and calling
+  `ExitPlanMode` bypasses the playbook system and destroys the
+  session's task-tracking capability. If the user asks to "see the
+  plan" or "prepare a draft", present it via `AskUserQuestion` at
+  the Phase 3 approval gate — never via plan mode.
+- **Always create tasks via `TaskCreate`** — never skip the task
+  list, even for single-step work. The supervisor uses it to add
+  new tasks mid-session.
+- Always verify ticket exists before creating a branch
+- If ticket is "Done"/"Canceled" (Linear) or "closed" (GitHub),
+  warn the user before proceeding
+- Handle errors gracefully — if a fetch fails, continue with
+  what was gathered and note the failure in the context summary
+- Linear team UUID is in `references/team-info.md` (template)
+- After completing work, use `Dev10x:gh-pr-create` to create the PR
+- Do not modify ticket description or add comments unless the
+  user explicitly approves (e.g., Job Story write-back)
+- **Batch data files must use `.json` format** — never `.env`.
+  Pre-tool-use hooks block `.env` file creation. When creating
+  temporary data files (e.g., batch issue lists, config), use
+  `.json` instead.
+
+### Known Limitations
+
+- **Worktree cleanup:** No skill currently handles worktree
+  teardown after work completes. Users must manually run
+  `git worktree remove <path>` when done.
+- **PR merge-to-completion lifecycle:** The `Dev10x:gh-pr-monitor`
+  skill stops after CI passes and review is requested — it does
+  not monitor through to merge. Users must manually merge or
+  re-invoke monitoring after approval.
+- **Write tool in worktree agents:** See Parallelism Policy
+  section for the `isolation: "worktree"` Write tool limitation.
+- **`bypassPermissions` in worktree agents:** See Parallelism
+  Policy section for the propagation limitation and workarounds.
+
+## Resources
+
+### references/team-info.md
+
+Linear team configuration template: UUID, status mappings,
+branch naming, Sentry integration patterns.
+
+---
+
+## Examples
+
+### Example 1: Single Ticket URL
+
+**User:** `$Dev10x:work-on https://github.com/org/repo/issues/15`
+
+**Phase 1:** Classify → `github-issue`, repo=`org/repo`, number=15
+
+**Phase 2:** Fetch issue. Body mentions Sentry URL → fetch Sentry
+issue. Body mentions PR #42 → fetch PR. Produce context summary.
+
+**Phase 3:** Load `feature` plan template (user overrides →
+defaults → schema). Build subtasks of Phase 4:
+```
+4.1  [detailed] Set up workspace          → Dev10x:ticket-branch
+4.2  [detailed] Draft Job Story           → Dev10x:jtbd
+4.3  [epic]     Design implementation approach (3 children)
+4.4  [detailed] Plan the commit sequence
+4.5  [epic]     Implement changes
+4.6  [epic]     Verify (2 children)
+4.7  [detailed] Code review               → Dev10x:review + Dev10x:review-fix
+4.8  [detailed] Commit outstanding changes → Dev10x:git-commit
+4.9  [detailed] Create draft PR           → Dev10x:gh-pr-create
+4.10 [detailed] Monitor CI                → Dev10x:gh-pr-monitor
+4.11 [epic]     Apply fixups              → Dev10x:gh-pr-respond
+4.12 [detailed] Groom commit history      → Dev10x:git-groom
+4.13 [detailed] Update PR description     → Dev10x:gh-pr-create
+4.14 [detailed] Request review            → Dev10x:gh-pr-request-review
+4.15 [detailed] Verify acceptance criteria
+```
+Supervisor approves.
+
+**Phase 4:** Auto-advance through subtasks 4.1-4.15, expanding
+epics as reached. No pauses between tasks unless a genuine
+decision is needed.
+
+### Example 2: Multiple Inputs
+
+**User:** `$Dev10x:work-on TEAM-133 https://slack.com/archives/C123/p456 "check the retry logic"`
+
+**Phase 1:** Classify →
+- `linear-ticket` TEAM-133
+- `slack-thread` C123/p456
+- `note` "check the retry logic"
+
+**Phase 2:** Fetch all three in parallel. Linear ticket links to
+Sentry issue → fetch that too. Produce context summary with 4
+sources.
+
+**Phase 3:** Load `bugfix` plan template (Sentry issue detected):
+
+```
+4.1  [detailed] Set up workspace          → Dev10x:ticket-branch
+4.2  [detailed] Reproduce the issue
+4.3  [epic]     Investigate root cause (2 children)
+4.4  [epic]     Implement fix
+4.5  [epic]     Verify fix (2 children)
+4.6  [detailed] Code review               → Dev10x:review + Dev10x:review-fix
+4.7  [detailed] Commit outstanding changes → Dev10x:git-commit
+4.8  [detailed] Create draft PR           → Dev10x:gh-pr-create
+4.9  [detailed] Monitor CI                → Dev10x:gh-pr-monitor
+4.10 [epic]     Apply fixups              → Dev10x:gh-pr-respond
+4.11 [detailed] Groom commit history      → Dev10x:git-groom
+4.12 [detailed] Update PR description     → Dev10x:gh-pr-create
+4.13 [detailed] Request review            → Dev10x:gh-pr-request-review
+4.14 [detailed] Verify acceptance criteria
+```
+
+### Example 3: PR Continuation
+
+**User:** `$Dev10x:work-on https://github.com/org/repo/pull/42`
+
+**Phase 1:** Classify → `github-pr`, number=42
+
+**Phase 2:** Fetch PR. Body has `Fixes: GH-15` → fetch issue.
+PR has 3 review comments → note them.
+
+**Phase 3:** Load `pr-continuation` plan template:
+```
+4.1  [detailed] Fetch PR and review context
+4.2  [epic]     Address review comments
+4.3  [epic]     Apply fixups              → Dev10x:gh-pr-respond
+4.4  [detailed] Code review               → Dev10x:review + Dev10x:review-fix
+4.5  [detailed] Commit outstanding changes → Dev10x:git-commit
+4.6  [detailed] Monitor CI                → Dev10x:gh-pr-monitor
+4.7  [detailed] Groom commit history      → Dev10x:git-groom
+4.8  [detailed] Update PR description     → Dev10x:gh-pr-create
+4.9  [detailed] Request re-review         → Dev10x:gh-pr-request-review
+4.10 [detailed] Verify acceptance criteria
+```
+
+### Example 4: Mid-Workflow Pause
+
+User is at task 4 of 7 and says "let's wrap up for today".
+
+1. Skill detects pause signal
+2. Invokes `Dev10x:session-wrap-up`
+3. `Dev10x:session-wrap-up` reads `TaskList` — sees 3 pending tasks
+4. Routes each via `Dev10x:park` (e.g., PR bookmark, TODO.md)
+5. Session ends with bookmark saved
+
+Next session: user runs `Dev10x:discover` to find bookmarks and
+resume where they left off.
+
+### Example 5: Bundled Execution with Batches (GH-196)
+
+**User:** `$Dev10x:work-on GH-12 GH-14 GH-21`
+
+**Phase 1:** Classify three `github-issue` sources.
+`bundling_candidate = true` (3 ticket inputs).
+
+**Phase 2:** Fetch all three in parallel.
+- GH-12: "Retry transient SquareTimeoutError on capture"
+  (label: `payments`, mentions `payments/service.py`)
+- GH-14: "Surface timeout reason in refund response"
+  (label: `payments`, mentions `payments/service.py`)
+- GH-21: "Add metrics for retry attempts"
+  (label: `observability`, mentions `metrics/`)
+
+All three share the `audit:payments` milestone. GH-12 and GH-14
+overlap on **shared component** (`payments/service.py`) AND
+**shared label** (`payments`) — 2 signals → same batch. GH-21
+has no overlap with either → singleton batch.
+
+**Phase 3:** Same-Milestone Heuristic favors Strategy B
+(bundled). Solo-maintainer mode is active.
+
+Batch Detection proposes:
+```
+Batch 1: GH-12, GH-14
+  Signals: shared component (payments/service.py),
+           shared label (payments)
+Batch 2: GH-21
+  Signals: singleton — no overlap with others
+```
+
+`AskUserQuestion` Batches gate fires (Batch 1 has only 2
+signals → not auto-accepted). User picks "Accept (Recommended)".
+
+Persist plan context with `bundling=true` and
+`batches=[["GH-12","GH-14"],["GH-21"]]`.
+
+Plan template (feature play, bundle layout):
+```
+4.1  [detailed] Set up workspace
+4.2  [epic]     Implement Batch 1 (GH-12 + GH-14)
+       ├─ Read payments/service.py
+       ├─ Apply both fixes
+       └─ Atomic commit: "♻️ GH-12 Tighten Square timeout
+           handling across payment paths" (Fixes: GH-12,
+           GH-14)
+4.3  [epic]     Implement Batch 2 (GH-21)
+       ├─ Add retry metrics
+       └─ Atomic commit: "✨ GH-21 Add retry-attempt metrics"
+           (Fixes: GH-21)
+4.4  [epic]     Verify (run tests once for all batches)
+4.5+ [shipping pipeline — runs once for the whole bundle]
+```
+
+**Phase 4:** Each "Implement Batch" epic produces exactly one
+commit. The shipping pipeline runs once and creates a PR whose
+body lists all three `Fixes:` lines, so each issue auto-closes
+on merge.

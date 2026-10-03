@@ -1,0 +1,4 @@
+interface:
+  display_name: "Session Config Seed"
+policy:
+  allow_implicit_invocation: false
