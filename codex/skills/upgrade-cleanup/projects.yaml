@@ -81,6 +81,7 @@ command_spellings:
       - dev10x doctor run
       - dev10x playbook diff
       - dev10x skill count-instructions
+      - dev10x skill codex-skills
       - dev10x config
       - dev10x platform
       - dev10x init
