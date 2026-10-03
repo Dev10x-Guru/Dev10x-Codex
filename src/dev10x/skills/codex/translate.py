@@ -283,7 +283,12 @@ def translate_skills(root: Path) -> GeneratedTree:
             for unknown in unknown_skill_mentions(text, known):
                 warnings.append(f"{source}: mentions Dev10x:{unknown}, which has no skill")
             if source.name == SKILL_FILE and source.parent.name == name:
-                front_matter, body = split_front_matter(text)
+                try:
+                    front_matter, body = split_front_matter(text)
+                except yaml.YAMLError as ex:
+                    raise InvalidSkillFile(
+                        f"{source}: front matter is not valid YAML: {ex}"
+                    ) from ex
                 files[target] = (
                     render_front_matter(
                         name=name,

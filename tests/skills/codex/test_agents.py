@@ -77,6 +77,8 @@ class TestCodexRoleName:
 
 
 class TestAgentTools:
+    source = PurePosixPath("agents/x.md")
+
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
@@ -87,7 +89,15 @@ class TestAgentTools:
         ],
     )
     def test_accepts_comma_lists_and_yaml_lists(self, value: object, expected: set) -> None:
-        assert agent_tools(value) == expected
+        assert agent_tools(value, source=self.source) == expected
+
+    @pytest.mark.parametrize("value", [{"Glob": None}, [None], ["Read", 3], 7])
+    def test_unreadable_tools_value_names_the_file(self, value: object) -> None:
+        with pytest.raises(InvalidAgentFile, match="agents/x.md: tools must be"):
+            agent_tools(value, source=self.source)
+
+    def test_tool_names_compare_without_case(self) -> None:
+        assert is_read_only(frozenset({"read", "edit"})) is False
 
     @pytest.mark.parametrize(
         ("tools", "read_only"),
@@ -108,14 +118,24 @@ class TestAgentTools:
 class TestReasoningEffort:
     @pytest.mark.parametrize(
         ("model", "effort"),
-        [("opus", "high"), ("sonnet", "medium"), ("haiku", "low"), (" Opus ", "high")],
+        [
+            ("opus", "high"),
+            ("sonnet", "medium"),
+            ("haiku", "low"),
+            (" Opus ", "high"),
+            ("claude-opus-4-5", "high"),
+        ],
     )
     def test_maps_claude_model_tiers_to_codex_effort(self, model: str, effort: str) -> None:
         assert reasoning_effort(model) == effort
 
-    @pytest.mark.parametrize("model", ["", "inherit", None])
-    def test_unknown_or_missing_model_gets_the_default(self, model: object) -> None:
+    @pytest.mark.parametrize("model", ["", "  ", None])
+    def test_missing_model_gets_the_default(self, model: object) -> None:
         assert reasoning_effort(model) == DEFAULT_EFFORT
+
+    @pytest.mark.parametrize("model", ["inherit", "gpt-5.5", ["opus"], 4])
+    def test_unrecognised_model_is_reported_as_unknown(self, model: object) -> None:
+        assert reasoning_effort(model) is None
 
 
 class TestTomlStrings:
@@ -217,6 +237,27 @@ class TestTranslateAgents:
             "agents/reviewer-x.md: name 'reviewer-y' differs from the file name 'reviewer-x'"
         ]
 
+    def test_unknown_model_falls_back_with_a_warning(self, plugin: Path) -> None:
+        write(plugin / "agents" / "reviewer-x.md", agent("reviewer-x", model="inherit"))
+        tree = translate_agents(plugin)
+        role = tomllib.loads(tree.files[CODEX_AGENTS_RELPATH / "reviewer-x.toml"])
+        assert role["model_reasoning_effort"] == DEFAULT_EFFORT
+        assert tree.warnings == [
+            "agents/reviewer-x.md: model 'inherit' names no known tier; using medium effort"
+        ]
+
+    def test_agent_with_an_empty_body_is_refused(self, plugin: Path) -> None:
+        write(plugin / "agents" / "empty.md", "---\nname: empty\ndescription: Nothing.\n---\n\n")
+        with pytest.raises(InvalidAgentFile, match="agents/empty.md: agent body is empty"):
+            translate_agents(plugin)
+
+    def test_malformed_front_matter_is_refused_by_path(self, plugin: Path) -> None:
+        write(plugin / "agents" / "bad.md", "---\ndescription: a: b: c\n---\n\nBody.\n")
+        with pytest.raises(
+            InvalidAgentFile, match="agents/bad.md: front matter is not valid YAML"
+        ):
+            translate_agents(plugin)
+
     def test_agent_without_description_is_refused(self, plugin: Path) -> None:
         write(plugin / "agents" / "broken.md", "# no front matter\n")
         with pytest.raises(InvalidAgentFile, match="agents/broken.md"):
@@ -295,4 +336,8 @@ class TestCommittedCodexAgents:
             assert role["developer_instructions"].strip(), path
 
     def test_deferred_agents_are_not_shipped(self, committed: dict[PurePosixPath, str]) -> None:
-        assert not {path.stem for path in committed} & DEFERRED_AGENTS
+        assert not {path.stem for path in committed} & set(DEFERRED_AGENTS)
+
+    def test_every_deferred_agent_still_exists_upstream(self) -> None:
+        for name in DEFERRED_AGENTS:
+            assert (REPO_ROOT / "agents" / f"{name}.md").is_file(), name

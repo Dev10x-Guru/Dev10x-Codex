@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path, PurePosixPath
 
+import yaml
+
 from dev10x.skills.codex.translate import (
     PLUGIN_ROOT_PLACEHOLDER,
     TOOL_EQUIVALENTS_RELPATH,
@@ -37,20 +39,32 @@ def codex_role_name(stem: str) -> str:
     return f"{ROLE_PREFIX}{stem}"
 
 
-def agent_tools(value: object) -> frozenset[str]:
+def agent_tools(value: object, *, source: PurePosixPath) -> frozenset[str]:
+    if value is None:
+        return frozenset()
     if isinstance(value, str):
-        return frozenset(part.strip() for part in value.split(",") if part.strip())
-    if isinstance(value, list):
-        return frozenset(str(part).strip() for part in value if str(part).strip())
-    return frozenset()
+        parts = value.split(",")
+    elif isinstance(value, list) and all(isinstance(part, str) for part in value):
+        parts = value
+    else:
+        raise InvalidAgentFile(
+            f"{source}: tools must be a comma-separated string or a list of tool names"
+        )
+    return frozenset(part.strip() for part in parts if part.strip())
 
 
 def is_read_only(tools: frozenset[str]) -> bool:
-    return bool(tools) and not tools & EDITING_TOOLS
+    editing = {tool.lower() for tool in EDITING_TOOLS}
+    return bool(tools) and not {tool.lower() for tool in tools} & editing
 
 
-def reasoning_effort(model: object) -> str:
-    return EFFORT_BY_MODEL.get(str(model).strip().lower(), DEFAULT_EFFORT)
+def reasoning_effort(model: object) -> str | None:
+    if model is None or (isinstance(model, str) and not model.strip()):
+        return DEFAULT_EFFORT
+    if not isinstance(model, str):
+        return None
+    normalized = model.strip().lower()
+    return next((effort for tier, effort in EFFORT_BY_MODEL.items() if tier in normalized), None)
 
 
 def _escape_char(char: str, *, multiline: bool) -> str:
@@ -131,18 +145,30 @@ def translate_agents(root: Path) -> GeneratedTree:
         if stem in DEFERRED_AGENTS:
             continue
         source = UPSTREAM_AGENTS_RELPATH / path.name
-        front_matter, body = split_front_matter(path.read_text(encoding="utf-8"))
+        try:
+            front_matter, body = split_front_matter(path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as ex:
+            raise InvalidAgentFile(f"{source}: front matter is not valid YAML: {ex}") from ex
+        if not body.strip():
+            raise InvalidAgentFile(f"{source}: agent body is empty — the role would carry no task")
         declared = front_matter.get("name")
         if declared is not None and declared != stem:
             warnings.append(f"{source}: name {declared!r} differs from the file name {stem!r}")
+        model = front_matter.get("model")
+        effort = reasoning_effort(model)
+        if effort is None:
+            warnings.append(
+                f"{source}: model {model!r} names no known tier; using {DEFAULT_EFFORT} effort"
+            )
+            effort = DEFAULT_EFFORT
         files[CODEX_AGENTS_RELPATH / f"{stem}.toml"] = render_role(
             stem=stem,
             description=codex_role_description(front_matter.get("description"), source=source),
-            effort=reasoning_effort(front_matter.get("model", "")),
+            effort=effort,
             instructions=render_instructions(
                 stem=stem,
                 body=body,
-                read_only=is_read_only(agent_tools(front_matter.get("tools"))),
+                read_only=is_read_only(agent_tools(front_matter.get("tools"), source=source)),
             ),
         )
     return GeneratedTree(output=CODEX_AGENTS_RELPATH, files=files, warnings=warnings)
