@@ -434,6 +434,7 @@ def count_instructions(
 @click.option("--check", is_flag=True, help="Exit non-zero when codex/skills/ is stale")
 def codex_skills(*, root_path: Path | None, check: bool) -> None:
     import shutil
+    import tempfile
 
     from dev10x.skills.codex.translate import (
         CODEX_SKILLS_RELPATH,
@@ -443,6 +444,9 @@ def codex_skills(*, root_path: Path | None, check: bool) -> None:
     from dev10x.skills.permission.enumerate_mcp import plugin_root
 
     root = root_path or plugin_root()
+    if not (root / ".codex-plugin").is_dir():
+        click.echo(f"ERROR: {root} is not a Dev10x plugin checkout (no .codex-plugin/)", err=True)
+        sys.exit(2)
     tree = translate_skills(root)
 
     if check:
@@ -459,13 +463,29 @@ def codex_skills(*, root_path: Path | None, check: bool) -> None:
         click.echo(f"OK: {CODEX_SKILLS_RELPATH} matches skills/")
         return
 
+    if not tree.files:
+        click.echo(
+            f"ERROR: no skills found under {root / 'skills'} — refusing to empty "
+            f"{CODEX_SKILLS_RELPATH}",
+            err=True,
+        )
+        sys.exit(1)
+
     output = root / CODEX_SKILLS_RELPATH
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".skills-", dir=output.parent))
+    try:
+        for relative, content in sorted(tree.files.items()):
+            destination = staging / relative.relative_to(CODEX_SKILLS_RELPATH)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(content, encoding="utf-8")
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    staging.chmod(0o755)
     if output.exists():
         shutil.rmtree(output)
-    for relative, content in sorted(tree.files.items()):
-        destination = root / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(content, encoding="utf-8")
+    staging.rename(output)
     skill_count = len({path.parts[2] for path in tree.files})
     click.echo(f"Wrote {len(tree.files)} files for {skill_count} skills to {output}")
     if tree.warnings:

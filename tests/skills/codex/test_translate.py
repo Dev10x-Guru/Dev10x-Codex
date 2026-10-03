@@ -84,6 +84,7 @@ def plugin(tmp_path: Path) -> Path:
     )
     (tmp_path / "skills" / "empty-leftover" / "__pycache__").mkdir(parents=True)
     write(tmp_path / "references" / "git-commits.md", "guide\n")
+    (tmp_path / ".codex-plugin").mkdir()
     return tmp_path
 
 
@@ -352,6 +353,41 @@ class TestCodexSkillsCommand:
         write(plugin / CODEX_SKILLS_RELPATH / "orphan" / "SKILL.md", "old\n")
         CliRunner().invoke(codex_skills, ["--root", str(plugin)])
         assert not (plugin / CODEX_SKILLS_RELPATH / "orphan").exists()
+
+    def test_root_without_a_codex_plugin_manifest_is_refused(self, tmp_path: Path) -> None:
+        write(tmp_path / "codex" / "skills" / "keep" / "SKILL.md", "keep\n")
+        result = CliRunner().invoke(codex_skills, ["--root", str(tmp_path)])
+        assert result.exit_code == 2
+        assert "not a Dev10x plugin checkout" in result.output
+        assert (tmp_path / "codex" / "skills" / "keep" / "SKILL.md").exists()
+
+    def test_empty_upstream_skills_never_wipe_the_output(self, tmp_path: Path) -> None:
+        (tmp_path / ".codex-plugin").mkdir()
+        (tmp_path / "skills").mkdir()
+        write(tmp_path / "codex" / "skills" / "keep" / "SKILL.md", "keep\n")
+        result = CliRunner().invoke(codex_skills, ["--root", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "refusing to empty" in result.output
+        assert (tmp_path / "codex" / "skills" / "keep" / "SKILL.md").exists()
+
+    def test_failed_write_keeps_the_previous_output_and_leaves_no_staging(
+        self, plugin: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        write(plugin / CODEX_SKILLS_RELPATH / "keep" / "SKILL.md", "keep\n")
+
+        def fail_write(self: Path, *args: object, **kwargs: object) -> int:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(Path, "write_text", fail_write)
+        result = CliRunner().invoke(codex_skills, ["--root", str(plugin)])
+        monkeypatch.undo()
+        assert isinstance(result.exception, OSError)
+        assert (plugin / CODEX_SKILLS_RELPATH / "keep" / "SKILL.md").read_text() == "keep\n"
+        assert [p.name for p in (plugin / "codex").iterdir()] == ["skills"]
+
+    def test_written_output_is_world_readable(self, plugin: Path) -> None:
+        CliRunner().invoke(codex_skills, ["--root", str(plugin)])
+        assert (plugin / CODEX_SKILLS_RELPATH).stat().st_mode & 0o777 == 0o755
 
 
 class TestCommittedCodexSkills:
