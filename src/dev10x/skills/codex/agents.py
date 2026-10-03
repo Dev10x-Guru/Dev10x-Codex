@@ -3,8 +3,6 @@ from __future__ import annotations
 import re
 from pathlib import Path, PurePosixPath
 
-import yaml
-
 from dev10x.skills.codex.catalog import DEFERRED_AGENTS
 from dev10x.skills.codex.translate import (
     PLUGIN_ROOT_PLACEHOLDER,
@@ -21,7 +19,7 @@ ROLE_PREFIX = "Dev10x:"
 
 EFFORT_BY_MODEL: dict[str, str] = {"opus": "high", "sonnet": "medium", "haiku": "low"}
 DEFAULT_EFFORT = "medium"
-EDITING_TOOLS: frozenset[str] = frozenset({"Edit", "MultiEdit", "NotebookEdit", "Write"})
+EDITING_TOOLS: frozenset[str] = frozenset({"edit", "multiedit", "notebookedit", "write"})
 
 _AGENT_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -54,8 +52,7 @@ def agent_tools(value: object, *, source: PurePosixPath) -> frozenset[str]:
 
 
 def is_read_only(tools: frozenset[str]) -> bool:
-    editing = {tool.lower() for tool in EDITING_TOOLS}
-    return bool(tools) and not {tool.lower() for tool in tools} & editing
+    return bool(tools) and not {tool.lower() for tool in tools} & EDITING_TOOLS
 
 
 def reasoning_effort(model: object) -> str | None:
@@ -145,10 +142,7 @@ def translate_agents(root: Path) -> GeneratedTree:
         if stem in DEFERRED_AGENTS:
             continue
         source = UPSTREAM_AGENTS_RELPATH / path.name
-        try:
-            front_matter, body = split_front_matter(path.read_text(encoding="utf-8"))
-        except yaml.YAMLError as ex:
-            raise InvalidAgentFile(f"{source}: front matter is not valid YAML: {ex}") from ex
+        front_matter, body = split_front_matter(path.read_text(encoding="utf-8"), source=source)
         if not body.strip():
             raise InvalidAgentFile(f"{source}: agent body is empty — the role would carry no task")
         declared = front_matter.get("name")

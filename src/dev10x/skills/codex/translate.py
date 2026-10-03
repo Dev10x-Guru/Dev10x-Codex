@@ -70,6 +70,10 @@ class InvalidPluginRoot(ValueError):
     pass
 
 
+class InvalidFrontMatter(ValueError):
+    pass
+
+
 def codex_skill_name(directory: str) -> str:
     if len(directory) > NAME_MAX_LENGTH or not _NAME_RE.match(directory):
         raise InvalidSkillName(
@@ -83,11 +87,14 @@ def display_name(directory: str) -> str:
     return " ".join(DISPLAY_ACRONYMS.get(word, word.capitalize()) for word in directory.split("-"))
 
 
-def split_front_matter(text: str) -> tuple[dict, str]:
+def split_front_matter(text: str, *, source: PurePosixPath) -> tuple[dict, str]:
     match = _FRONT_MATTER_RE.match(text)
     if not match:
         return {}, text
-    data = yaml.safe_load(match.group(1)) or {}
+    try:
+        data = yaml.safe_load(match.group(1)) or {}
+    except yaml.YAMLError as ex:
+        raise InvalidFrontMatter(f"{source}: front matter is not valid YAML: {ex}") from ex
     if not isinstance(data, dict):
         return {}, text
     return data, text[match.end() :]
@@ -283,12 +290,7 @@ def translate_skills(root: Path) -> GeneratedTree:
             for unknown in unknown_skill_mentions(text, known):
                 warnings.append(f"{source}: mentions Dev10x:{unknown}, which has no skill")
             if source.name == SKILL_FILE and source.parent.name == name:
-                try:
-                    front_matter, body = split_front_matter(text)
-                except yaml.YAMLError as ex:
-                    raise InvalidSkillFile(
-                        f"{source}: front matter is not valid YAML: {ex}"
-                    ) from ex
+                front_matter, body = split_front_matter(text, source=source)
                 files[target] = (
                     render_front_matter(
                         name=name,

@@ -435,6 +435,7 @@ def count_instructions(
 def codex_skills(*, root_path: Path | None, check: bool) -> None:
     from dev10x.skills.codex.translate import (
         CODEX_SKILLS_RELPATH,
+        InvalidFrontMatter,
         InvalidPluginRoot,
         InvalidSkillFile,
         InvalidSkillName,
@@ -446,7 +447,7 @@ def codex_skills(*, root_path: Path | None, check: bool) -> None:
     root = root_path or plugin_root()
     try:
         tree = translate_skills(root)
-    except (InvalidPluginRoot, InvalidSkillFile, InvalidSkillName) as ex:
+    except (InvalidPluginRoot, InvalidSkillFile, InvalidSkillName, InvalidFrontMatter) as ex:
         click.echo(f"ERROR: {ex}", err=True)
         sys.exit(2)
 
@@ -491,14 +492,14 @@ def codex_agents(*, root_path: Path | None, check: bool) -> None:
         InvalidAgentFile,
         translate_agents,
     )
-    from dev10x.skills.codex.translate import InvalidPluginRoot
+    from dev10x.skills.codex.translate import InvalidFrontMatter, InvalidPluginRoot
     from dev10x.skills.codex.tree import stale_paths, write_tree
     from dev10x.skills.permission.enumerate_mcp import plugin_root
 
     root = root_path or plugin_root()
     try:
         tree = translate_agents(root)
-    except (InvalidPluginRoot, InvalidAgentFile) as ex:
+    except (InvalidPluginRoot, InvalidAgentFile, InvalidFrontMatter) as ex:
         click.echo(f"ERROR: {ex}", err=True)
         sys.exit(2)
 

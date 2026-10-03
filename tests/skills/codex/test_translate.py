@@ -17,6 +17,7 @@ from dev10x.skills.codex.translate import (
     PLUGIN_ROOT_PLACEHOLDER,
     TOOL_EQUIVALENTS_RELPATH,
     VERIFIED_SKILLS,
+    InvalidFrontMatter,
     InvalidPluginRoot,
     InvalidSkillFile,
     InvalidSkillName,
@@ -117,17 +118,23 @@ class TestDisplayName:
 
 
 class TestSplitFrontMatter:
+    source = PurePosixPath("skills/x/SKILL.md")
+
     def test_returns_mapping_and_body(self) -> None:
-        data, body = split_front_matter("---\nname: x\n---\n\n# Body\n")
+        data, body = split_front_matter("---\nname: x\n---\n\n# Body\n", source=self.source)
         assert data == {"name": "x"}
         assert body == "\n# Body\n"
 
     def test_text_without_front_matter_is_all_body(self) -> None:
-        assert split_front_matter("# Body\n") == ({}, "# Body\n")
+        assert split_front_matter("# Body\n", source=self.source) == ({}, "# Body\n")
 
     def test_non_mapping_front_matter_is_treated_as_body(self) -> None:
         text = "---\n- a\n---\nbody\n"
-        assert split_front_matter(text) == ({}, text)
+        assert split_front_matter(text, source=self.source) == ({}, text)
+
+    def test_invalid_yaml_names_the_file(self) -> None:
+        with pytest.raises(InvalidFrontMatter, match="skills/x/SKILL.md: front matter is not"):
+            split_front_matter("---\ndescription: a: b: c\n---\n\nBody.\n", source=self.source)
 
 
 class TestRewriteText:
@@ -283,7 +290,7 @@ class TestTranslateSkills:
 
     def test_skill_file_gets_codex_front_matter_and_preamble(self, plugin: Path) -> None:
         text = translate_skills(plugin).files[CODEX_SKILLS_RELPATH / "git-commit" / "SKILL.md"]
-        front_matter, body = split_front_matter(text)
+        front_matter, body = split_front_matter(text, source=PurePosixPath("SKILL.md"))
         assert front_matter == {
             "name": "git-commit",
             "description": (
@@ -348,10 +355,11 @@ class TestTranslateSkills:
             "skills/foreman/SKILL.md: mentions Dev10x:retired-skill, which has no skill"
         ]
 
-    def test_malformed_front_matter_is_refused_by_path(self, plugin: Path) -> None:
+    def test_malformed_front_matter_is_reported_by_the_command(self, plugin: Path) -> None:
         write(plugin / "skills" / "bad" / "SKILL.md", "---\ndescription: a: b: c\n---\n\nBody.\n")
-        with pytest.raises(InvalidSkillFile, match="skills/bad/SKILL.md: front matter is not"):
-            translate_skills(plugin)
+        result = CliRunner().invoke(codex_skills, ["--root", str(plugin), "--check"])
+        assert result.exit_code == 2
+        assert "ERROR: skills/bad/SKILL.md: front matter is not valid YAML" in result.output
 
     def test_invalid_upstream_directory_name_fails_loudly(self, plugin: Path) -> None:
         write(plugin / "skills" / "Bad_Name" / "SKILL.md", "---\nname: x\n---\n")
@@ -511,7 +519,7 @@ class TestCommittedCodexSkills:
         }
         assert skill_files
         for path, text in skill_files.items():
-            front_matter, _ = split_front_matter(text)
+            front_matter, _ = split_front_matter(text, source=path)
             assert set(front_matter) <= CODEX_VALIDATOR_KEYS, path
             assert front_matter["name"] == path.parts[2], path
             assert CODEX_NAME_RE.match(front_matter["name"]), path

@@ -251,13 +251,6 @@ class TestTranslateAgents:
         with pytest.raises(InvalidAgentFile, match="agents/empty.md: agent body is empty"):
             translate_agents(plugin)
 
-    def test_malformed_front_matter_is_refused_by_path(self, plugin: Path) -> None:
-        write(plugin / "agents" / "bad.md", "---\ndescription: a: b: c\n---\n\nBody.\n")
-        with pytest.raises(
-            InvalidAgentFile, match="agents/bad.md: front matter is not valid YAML"
-        ):
-            translate_agents(plugin)
-
     def test_agent_without_description_is_refused(self, plugin: Path) -> None:
         write(plugin / "agents" / "broken.md", "# no front matter\n")
         with pytest.raises(InvalidAgentFile, match="agents/broken.md"):
@@ -304,6 +297,12 @@ class TestCodexAgentsCommand:
         result = CliRunner().invoke(codex_agents, ["--root", str(plugin), "--check"])
         assert result.exit_code == 2
         assert "ERROR: agents/broken.md" in result.output
+
+    def test_malformed_front_matter_is_reported_by_the_command(self, plugin: Path) -> None:
+        write(plugin / "agents" / "bad.md", "---\ndescription: a: b: c\n---\n\nBody.\n")
+        result = CliRunner().invoke(codex_agents, ["--root", str(plugin), "--check"])
+        assert result.exit_code == 2
+        assert "ERROR: agents/bad.md: front matter is not valid YAML" in result.output
 
 
 class TestWriteAgentsTree:
