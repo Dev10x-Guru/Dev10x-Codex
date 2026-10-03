@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+import posixpath
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -123,7 +123,7 @@ def codex_path_for(upstream: PurePosixPath) -> PurePosixPath:
 
 
 def _normalize(path: PurePosixPath) -> PurePosixPath | None:
-    normalized = PurePosixPath(os.path.normpath(path.as_posix()))
+    normalized = PurePosixPath(posixpath.normpath(path.as_posix()))
     if normalized.parts and normalized.parts[0] == "..":
         return None
     return normalized
@@ -146,7 +146,7 @@ def rewrite_links(
         if resolved is None or not exists(resolved):
             return match.group(0)
         mapped = codex_path_for(resolved) if resolved in copied else resolved
-        relative = os.path.relpath(mapped.as_posix(), target.parent.as_posix())
+        relative = posixpath.relpath(mapped.as_posix(), target.parent.as_posix())
         return f"{match.group(1)}{relative}{hash_sign}{anchor}{match.group(3)}"
 
     return _MARKDOWN_LINK_RE.sub(replace, text)
@@ -172,7 +172,7 @@ def render_front_matter(*, name: str, description: str, upstream: PurePosixPath)
 
 
 def render_preamble(*, directory: str, target: PurePosixPath, verified: bool) -> str:
-    equivalents = os.path.relpath(TOOL_EQUIVALENTS_RELPATH.as_posix(), target.parent.as_posix())
+    equivalents = posixpath.relpath(TOOL_EQUIVALENTS_RELPATH.as_posix(), target.parent.as_posix())
     upstream_dir = (UPSTREAM_SKILLS_RELPATH / directory).as_posix()
     lines = [
         f"> **Running in Codex.** Generated from `{upstream_dir}/` by "

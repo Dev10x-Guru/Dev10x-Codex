@@ -235,6 +235,17 @@ class TestRewriteLinks:
     def test_template_placeholders_and_missing_targets_are_untouched(self, link: str) -> None:
         assert self.rewrite(f"[x]({link})") == f"[x]({link})"
 
+    def test_links_use_forward_slashes_whatever_the_os_separator(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import ntpath
+        import os
+
+        monkeypatch.setattr(os, "path", ntpath)
+        assert self.rewrite("[x](scripts/run.sh)") == (
+            "[x](../../../skills/git-commit/scripts/run.sh)"
+        )
+
     def test_link_title_is_kept(self) -> None:
         assert self.rewrite('[x](scripts/run.sh "Run")') == (
             '[x](../../../skills/git-commit/scripts/run.sh "Run")'
