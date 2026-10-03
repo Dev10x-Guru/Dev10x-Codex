@@ -45,6 +45,8 @@ DEFERRED_SKILLS: dict[str, int] = {
     "ide-normalize": IDE_ISSUE,
 }
 
+DEFERRED_AGENTS: dict[str, int] = {"permission-auditor": PERMISSION_FRICTION_ISSUE}
+
 SKILL_CAVEATS: dict[str, str] = {
     "fanout": (
         "Codex agents share one working directory: give each item its own worktree from "

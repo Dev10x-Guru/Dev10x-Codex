@@ -5,6 +5,7 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
+from dev10x.skills.codex.catalog import DEFERRED_AGENTS
 from dev10x.skills.codex.translate import (
     PLUGIN_ROOT_PLACEHOLDER,
     TOOL_EQUIVALENTS_RELPATH,
@@ -18,7 +19,6 @@ UPSTREAM_AGENTS_RELPATH = PurePosixPath("agents")
 CODEX_AGENTS_RELPATH = PurePosixPath("codex") / "agents"
 ROLE_PREFIX = "Dev10x:"
 
-DEFERRED_AGENTS: frozenset[str] = frozenset({"permission-auditor"})
 EFFORT_BY_MODEL: dict[str, str] = {"opus": "high", "sonnet": "medium", "haiku": "low"}
 DEFAULT_EFFORT = "medium"
 EDITING_TOOLS: frozenset[str] = frozenset({"Edit", "MultiEdit", "NotebookEdit", "Write"})
