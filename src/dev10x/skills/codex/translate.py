@@ -218,12 +218,12 @@ def render_openai_yaml(*, directory: str, implicit: bool) -> str:
 def _copied_files(skill_dir: Path, upstream_dir: PurePosixPath) -> list[PurePosixPath]:
     files: list[PurePosixPath] = []
     for path in sorted(skill_dir.rglob("*")):
-        relative = path.relative_to(skill_dir)
-        if not path.is_file() or path.suffix not in COPIED_SUFFIXES:
+        relative = PurePosixPath(path.relative_to(skill_dir).as_posix())
+        if not path.is_file() or path.suffix not in COPIED_SUFFIXES or _is_hidden(relative):
             continue
         if relative.parts[0] in UPSTREAM_ONLY_DIRS or "__pycache__" in relative.parts:
             continue
-        files.append(upstream_dir / PurePosixPath(relative.as_posix()))
+        files.append(upstream_dir / relative)
     return files
 
 

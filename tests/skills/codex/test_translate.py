@@ -375,6 +375,16 @@ class TestStalePaths:
     def test_read_tree_of_absent_output_is_empty(self, tmp_path: Path) -> None:
         assert read_tree(tmp_path) == {}
 
+    def test_hidden_upstream_files_are_neither_translated_nor_reported_stale(
+        self, plugin: Path
+    ) -> None:
+        write(plugin / "skills" / "git-commit" / ".tooling.yaml", "x: 1\n")
+        write(plugin / "skills" / "git-commit" / ".notes" / "draft.md", "draft\n")
+        tree = translate_skills(plugin)
+        assert not any(".tooling" in p.as_posix() or ".notes" in p.as_posix() for p in tree.files)
+        write_tree(plugin, tree)
+        assert stale_paths(plugin, tree) == []
+
     def test_finder_metadata_and_other_dotfiles_are_ignored(self, plugin: Path) -> None:
         tree = translate_skills(plugin)
         write_tree(plugin, tree)
