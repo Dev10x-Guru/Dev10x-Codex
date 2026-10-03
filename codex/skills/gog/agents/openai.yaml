@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gog"
+policy:
+  allow_implicit_invocation: false

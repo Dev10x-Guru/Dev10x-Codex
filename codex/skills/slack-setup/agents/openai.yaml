@@ -1,0 +1,4 @@
+interface:
+  display_name: "Slack Setup"
+policy:
+  allow_implicit_invocation: false

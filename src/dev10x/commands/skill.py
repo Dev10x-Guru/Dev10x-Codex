@@ -418,3 +418,57 @@ def count_instructions(
     click.echo(f"Scanned {len(reports)} file(s): {warn_count} warn, {over_count} over.")
 
     sys.exit(1 if over_count > 0 else 0)
+
+
+@skill.command(
+    name="codex-skills",
+    help="Translate the Claude Code skills in skills/ into Codex skills under codex/skills/.",
+)
+@click.option(
+    "--root",
+    "root_path",
+    default=None,
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Plugin checkout to translate (default: this plugin)",
+)
+@click.option("--check", is_flag=True, help="Exit non-zero when codex/skills/ is stale")
+def codex_skills(*, root_path: Path | None, check: bool) -> None:
+    from dev10x.skills.codex.translate import (
+        CODEX_SKILLS_RELPATH,
+        InvalidPluginRoot,
+        InvalidSkillFile,
+        InvalidSkillName,
+        stale_paths,
+        translate_skills,
+        write_tree,
+    )
+    from dev10x.skills.permission.enumerate_mcp import plugin_root
+
+    root = root_path or plugin_root()
+    try:
+        tree = translate_skills(root)
+    except (InvalidPluginRoot, InvalidSkillFile, InvalidSkillName) as ex:
+        click.echo(f"ERROR: {ex}", err=True)
+        sys.exit(2)
+
+    if check:
+        stale = stale_paths(root, tree)
+        if stale:
+            click.echo(
+                f"STALE: {len(stale)} file(s) under {CODEX_SKILLS_RELPATH} — "
+                "run `dev10x skill codex-skills`",
+                err=True,
+            )
+            for path in stale[:20]:
+                click.echo(f"  - {path}", err=True)
+            sys.exit(1)
+        click.echo(f"OK: {CODEX_SKILLS_RELPATH} matches skills/")
+        return
+
+    output = write_tree(root, tree)
+    skill_count = len({path.parts[2] for path in tree.files})
+    click.echo(f"Wrote {len(tree.files)} files for {skill_count} skills to {output}")
+    if tree.warnings:
+        click.echo(f"{len(tree.warnings)} warning(s):")
+        for warning in tree.warnings:
+            click.echo(f"  - {warning}")

@@ -1,0 +1,905 @@
+# Merge PR (Instructions)
+
+## Orchestration
+
+This skill follows `references/task-orchestration.md` patterns.
+Create a task at invocation, mark completed when done:
+
+**REQUIRED: Create a task at invocation.** Execute at startup:
+
+1. `TaskCreate(subject="Merge PR", activeForm="Merging PR")`
+
+Mark completed when done: `TaskUpdate(taskId, status="completed")`
+
+## Overview
+
+Pre-merge validation gate that checks 9 conditions before
+executing `gh pr merge`. Prevents premature merges like PR #633
+(merged with 7 unaddressed review comments) and PRs #690-692
+(merged with unaddressed top-level automated review comments).
+
+## Merge Strategy Resolution
+
+The merge strategy is resolved using the config resolution order
+(see `references/config-resolution.md`):
+
+1. **Global with repo matching** — read
+   `<Dev10x config>/settings-pr-merge.yaml`, match the current repo's
+   `org/repo` against `projects[].match_repo` globs (`match:` is a
+   deprecated alias for one release, ADR-0026). With no `origin`
+   remote there is no `org/repo` to match, so the list is not
+   evaluated at all and the default applies.
+2. **Default** — `rebase`
+
+Rationale for the `rebase` default: commits authored through this
+plugin already follow gitmoji + ticket + JTBD conventions enforced
+by `Dev10x:git-commit`, and `Dev10x:git-groom` produces a curated
+linear history before merge. Squashing erases that structure and
+breaks per-commit references in PR review threads. Rebase preserves
+the curated commits as-is.
+
+**Migration note for existing users:** If a project previously relied
+on the implicit `squash` default, set `strategy: squash` explicitly
+in `<Dev10x config>/settings-pr-merge.yaml` for that repo's
+`projects[].match_repo` entry. No behavior change for projects that
+already declared `strategy:` explicitly.
+
+### Config file format
+
+**Global format** (preferred — one file for all repos):
+```yaml
+# <Dev10x config>/settings-pr-merge.yaml
+projects:
+  - match_repo: "Dev10x-Guru/*"
+    strategy: rebase
+    delete_branch: true
+    solo_maintainer: true
+  - match_repo: "example-org/*"
+    strategy: rebase
+    delete_branch: true
+    solo_maintainer: true
+  - match_repo: "legacy-org/*"
+    strategy: squash   # explicit opt-in to historical default
+    delete_branch: true
+```
+
+All fields are optional. Defaults:
+- `strategy`: `rebase`
+- `delete_branch`: `true`
+- `solo_maintainer`: `false`
+
+## Self-Check Before Pre-Merge Validation
+
+**REQUIRED — call `TaskList` now.** Do NOT shortcut to `gh pr merge`
+based on a single `gh pr view` JSON read — that is the regression this
+check exists to catch (GH-112).
+
+**The nine subtask RECORDS are not load-bearing; running and
+reporting the nine checks is** (GH-971 F2). What the gate is
+defending is that each check was actually *performed against live
+state* before the merge — nine `TaskCreate` round-trips are ceremony
+that costs a call each and proves nothing the report does not. So
+this step is satisfied by BOTH of:
+
+1. The `TaskList` call above, made in THIS invocation.
+2. A reported nine-item checklist in which every check names the
+   **observed value** it was decided on — `isDraft: false`,
+   `mergeable: MERGEABLE`, `verdict: green`, `unresolved threads: 0`,
+   and so on. A bare "✓ passed" per line does not satisfy it: an
+   unverifiable tick is exactly the shortcut GH-112 caught.
+
+Creating the subtasks is still fine — preferred when the merge is one
+step of a longer plan the supervisor is watching — but their absence
+is not a violation, and you must never skip a *check* because its
+task record does not exist. If a check cannot be run, HALT and report
+which one and why; do not merge.
+
+**Unskippable on every invocation (GH-253):** The `TaskList` call
+above runs ONCE per skill invocation, at Step 1, before any check
+or `gh pr merge` execution. It is not optional and it is not
+satisfied by a prior invocation's call. If you proceed past Step 1
+without calling `TaskList` in this invocation, HALT with the
+message: "gh-pr-merge Step 1 self-check skipped — restart from
+Step 1." Do not jump to Step 5 (`gh pr merge` / `merge_pr`) based
+on the agent's recollection that "the checks just passed" — those
+checks belong to a sibling skill's context, not this one.
+
+**Re-invocation contract:** Every invocation of `Dev10x:gh-pr-merge`
+re-runs the full skill body from Step 1, including all 9 pre-merge
+checks. Check results from a prior `Dev10x:gh-pr-monitor` phase,
+prior `Dev10x:verify-acc-dod` run, or earlier invocation of this
+same skill are NOT reusable. CI state, review comments, draft
+toggles, and force-push state can drift between invocations — the
+9 checks exist precisely to detect that drift.
+
+### Subagent handoff exception (GH-1093)
+
+The re-invocation contract has ONE bounded exception. A worker
+subagent that ran the 9 checks and could not fire an `ALWAYS_ASK`
+gate — `AskUserQuestion` is not exposed to background subagents —
+hands its report to the orchestrator holding the standing
+authorization. Re-running all 9 there validated every merge twice
+for ~3–4× duplicated tool traffic per PR.
+
+The exception applies ONLY when ALL of these hold:
+
+1. The report carries `head_sha`, `measured_at`, the
+   `blocked_gate` and its evidence, and an **observed value** per
+   check (a bare "✓ passed" does not count).
+2. A fresh `pr_get` shows the PR still open with a head SHA
+   identical to the reported one.
+3. The orchestrator re-runs the time-sensitive checks itself:
+   Check 2 (CI) and Checks 1 / 1b / 1c (comments — the GH-462 F3
+   late-comment race). Checks 2b / 3 / 4 / 7 ride along on the
+   same fresh `pr_get` from step 2, so they are never inherited.
+
+Only Checks 1d, 5 and 6 may then be accepted from the report:
+each is a function of the commit graph or of worker-local state
+the orchestrator cannot observe, and the unchanged head SHA pins
+all three.
+
+**Any HEAD mismatch, any missing field, or a report older than 30
+minutes → full re-run, as today.** When in doubt, re-run. The
+exception removes duplicated traffic; it never licenses a merge
+on a stale reading. Report schema, per-check reasoning, and the
+bl-zebra evidence:
+[`references/subagent-handoff.md`](references/subagent-handoff.md).
+
+**Audit the report before inheriting anything (GH-1380).** The
+three conditions above were prose the orchestrator applied by eye,
+and a report that narrates the pipeline reads exactly like one that
+reports it. Write the report and the fresh `pr_get` response to
+files (`mcp__cli__mktmp`) and run:
+
+```bash
+<plugin-root>/skills/gh-pr-merge/scripts/audit-handoff-report.py \
+  --report-file <report.json> --pr-state-file <pr-get.json>
+```
+
+It prints a JSON verdict on stdout and exits non-zero unless the
+verdict is `accept`. **Exit non-zero forbids the exception** — run
+all 9 checks yourself. The `already_merged` verdict is the GH-1380
+case: the PR merged before the report could gate it, so the report
+describes someone else's work. Attribute the merge per Check 2b
+rather than asking the worker for a better report; there is no
+report that can authorize a merge that already happened.
+
+**"Re-run the skill" expansion:** When the supervisor says
+"execute the whole skill again", "re-run the skill", "run it once
+more", or any equivalent phrasing, treat that as a fresh invocation
+starting from Step 1 of this body — NOT as "resume from the last
+unfinished step" or "skip to the merge command". The full skill
+body, including all 9 checks, runs every time.
+
+Session policy does NOT waive this skill body. Whatever
+`resolve_gate(gate="merge")` returns at Step 5 governs only the
+final ask/auto-advance/skip decision immediately before
+executing the merge; the 9 checks below still run
+unconditionally on every invocation. See
+`references/friction-levels.md` § "The baseline does not waive
+skill bodies".
+
+## Pre-Merge Validation Checks
+
+Run ALL 9 checks before merging. Report results as a checklist.
+If ANY check fails, refuse to merge and report which failed.
+
+### Check 1: No unresolved review threads
+
+Query unresolved review threads via the MCP wrapper — never raw
+`gh api graphql` (GH-598). The wrapper runs the `reviewThreads`
+GraphQL query and returns only the unresolved threads:
+
+```
+mcp__cli__unresolved_threads(repo="OWNER/REPO", pr_number=NUMBER)
+```
+
+`unresolved_threads` requires an explicit `repo` (no CWD default);
+pass `pr_number` so it runs the fast single-PR GraphQL query rather
+than a repo-wide merged-PR sweep. Each returned thread is
+unresolved; report the count and first comment of each.
+
+**AFK bot-authored auto-remediation (GH-858 F1).** Each returned
+thread carries `author_type` (`"bot"` / `"human"`). A bot-to-bot
+review cycle that has already been addressed must not block a
+walk-away merge on a supervisor prompt. So before treating an
+unresolved-thread count as a hard failure, resolve
+`mcp__cli__resolve_gate(gate="thread_resolution",
+context={"author_type": "bot"})`:
+
+- When its `effect == "auto-advance"` (AFK) **and every** unresolved
+  thread has `author_type == "bot"`, do NOT stop here. Auto-delegate
+  to `$Dev10x:gh-pr-respond` — the same auto-remediation shape
+  Check 2 uses for CI failures — to address/auto-resolve the bot
+  threads, then re-run Check 1.
+- Fall through to the hard stop only when **any** thread has
+  `author_type == "human"`, or when `gh-pr-respond` itself surfaces
+  an `AskUserQuestion` (its own gate result is authoritative). A
+  single human-authored unresolved thread keeps the whole check
+  blocking — the all-bot condition must be strict.
+
+### Check 1b: No unaddressed top-level PR comments (GH-698)
+
+**REQUIRED:** This check MUST run after Check 1. Top-level PR
+comments are invisible to the `reviewThreads` GraphQL query —
+skipping this check silently misses automated review findings
+(GH-728). Do NOT proceed to Check 2 until this script runs.
+
+Top-level PR comments (posted via `gh pr comment`, not inline
+review threads) are invisible to Check 1's `reviewThreads`
+query. Automated reviewers (claude-review, hygiene-review)
+post findings as top-level comments with severity markers.
+
+```bash
+<plugin-root>/skills/gh-pr-merge/scripts/check-top-level-comments.sh \
+  OWNER REPO NUMBER
+```
+
+Prefer the MCP wrapper over the raw script:
+
+```
+mcp__cli__check_top_level_comments(repo="OWNER/REPO", pr_number=NUMBER)
+```
+
+The result carries `findings`/`count` plus two severity buckets
+(GH-808 F1): `blocking` (findings with a `REQUIRED`/`CRITICAL`/
+`BLOCKING` marker) and `needs_disposition` (non-blocking
+`INFO`/`NOTE`/`SUGGESTION` findings, incl. those in a
+`COMMENTED`/`APPROVED` review **body** that a severity-only scan
+used to miss). Both buckets must be clear before this check passes:
+
+- `blocking_count > 0` → hard-block merge; report the count and
+  first line of each.
+- `needs_disposition_count > 0` → block until each has an explicit
+  disposition (address / defer-with-ticket / reply-declining). A
+  non-blocking INFO recommendation must not merge silently
+  unaddressed — the human reviewer catching it later is the failure
+  GH-808 documents.
+
+**Addressed findings are matched by key (GH-907, GH-884).** A finding
+(either bucket) is "addressed" when a later comment replies to it with
+the finding's **comment id on the `Re:` line** — the documented
+`Dev10x:gh-pr-respond` format, `Re: comment <id> — …`. `top-level-comments.jq`
+collects every id keyed by a reply and drops those findings from the
+result, so the reply satisfies the disposition requirement for a
+`needs_disposition` finding just as it clears a `blocking` one, and
+`blocking_count` actually returns to 0.
+
+Matching is deliberately keyed rather than prose-fuzzy: an unkeyed
+`Re: the footer thing` does NOT clear the gate, and short digit runs
+(`GH-907`, `Round 4`) stay under the 6-digit floor so a ticket reference
+can never wave a live finding through. The id is read from the raw body,
+so wrapping it in backticks is no longer needed to work around a stale
+finding. A reply still never counts as a finding itself (GH-777).
+
+**Minimizing a comment does NOT address it (GH-920).** This scan reads
+the REST issue-comments array, which carries no `isMinimized` field, so
+a `minimizeComment` mutation is invisible here by design.
+`Dev10x:gh-pr-respond` Gate 6 hiding is cosmetic noise reduction, not a
+disposition. When this check blocks on a finding whose comment is
+already hidden, the fix is a keyed `Re:` reply — not another
+minimization, and not a merge override.
+
+**Reviewer round-summary wrapper excluded (GH-858 F2).** The
+automated reviewer's own `## Review Summary (Round N)` comment
+restates already-fixed findings under `### Addressed since last
+review`. `top-level-comments.jq` now scans only that comment's
+`### Remaining issues` section, so a round summary with no live
+remaining issues no longer false-blocks this check. Combined with
+the AFK auto-remediation in Check 1, a bot-authored
+`needs_disposition` finding under an `auto-advance`
+`thread_resolution` gate follows the same auto-delegate-to-
+`gh-pr-respond` path rather than forcing a manual merge override.
+
+**Only the latest round is authoritative (GH-873 F3).** When several
+`## Review Summary (Round N)` comments exist, `top-level-comments.jq`
+now keeps only the highest `Round N` and treats earlier rounds as
+superseded — their `### Remaining issues` are a historical snapshot,
+not live blockers. So a green final round (Round 4) clears the stale
+"remaining issues" that Rounds 1/3 listed at the time, instead of
+each historical round independently false-blocking the merge.
+
+**Markup is optional on the wrapper, and sign-offs do not block
+(GH-1054 F2).** A summary headline is recognised without `##`/bold
+when it numbers itself (`Review Summary (Round 3)` as plain text),
+so a bot that skips heading markup still gets latest-round
+supersession instead of a stale round blocking forever. Separately,
+a severity token inside a negation or confirmation on the same line
+— `No CRITICAL issues found`, `All CRITICAL items fully addressed`,
+`✅ Fix verified — CRITICAL resolved` — is the reviewer signing off,
+not a finding, and no longer blocks. The exempt set is deliberately
+narrow: each shape demands an explicit cue (a quantifier, a
+past-tense resolution verb, or a checkmark paired with one) beside
+the token, because a missed blocker is worse than a false positive
+the author can still answer with a keyed `Re:` reply.
+
+### Check 1c: No unaddressed inline review comments (GH-760)
+
+Inline review comments posted via `pulls/{n}/comments` are
+invisible to both Check 1 (GraphQL `reviewThreads`) and
+Check 1b (`issueComments`). Query them via the MCP wrapper —
+never raw `gh api .../pulls/.../comments` (GH-598):
+
+```
+mcp__cli__pr_comments(pr_number=NUMBER, action="list", unresolved_only=true)
+```
+
+Filter for bot users with unaddressed severity markers
+(`CRITICAL`, `BLOCKING`, `REQUIRED`). A comment is
+addressed if a reply exists (same `in_reply_to_id`).
+If unaddressed findings remain, report them and block
+merge.
+
+### Check 1d: Fixes-linked issue scope delivered (GH-856)
+
+A `Fixes:`/`Closes:` link auto-closes its issue on merge
+regardless of how much of the issue's stated scope the diff
+delivers. Checks 1–1c and 2–7 validate only code that is
+*present*; nothing compares the linked issue's scope against the
+diff. Under session-close pressure a narrower slice merges with
+the full-scope `Fixes:` link intact and the issue closes short —
+including *self-disclosed* cuts (a PR body or unchecked checklist
+noting remaining work), because the link fires on merge
+regardless of disclosure.
+
+**Run the deterministic pass first (GH-1241).** The judgment
+below is the right instrument for the hard case and the wrong one
+for the easy case — and the easy case is what shipped wrong. PR
+#1228 declared six links and carried commits for five; GH-1221
+closed with no commit behind it at all. A link with *no* commit
+mentioning its ticket needs no reasoning, so decide it
+mechanically before spending judgment on the rest:
+
+```bash
+<plugin-root>/skills/gh-pr-merge/scripts/reconcile-fixes-links.py \
+  --body-file <pr-body.txt> --base origin/<base>
+```
+
+Write the PR body to a file via `mcp__cli__mktmp`
+first. The script prints a JSON verdict on stdout and exits
+non-zero when any link is unbacked; `unbacked` names the specific
+issues. **Exit 1 blocks the merge** — the link would close an
+issue this PR never touched.
+
+For a link deliberately kept without a commit of its own (an
+issue delivered by a commit that names a sibling), pass
+`--acknowledge <number>`. That is an explicit argument rather
+than an inferred exception so a human records the decision;
+never widen the regex or drop the link to make the check pass.
+
+Then, for each link the deterministic pass cleared, compare the
+linked issue's title + acceptance criteria against the diff
+(`git diff origin/<base>..HEAD`). This second pass is a reasoning
+judgment, not a shell command — a commit can mention a ticket
+without delivering what the ticket titled:
+
+- **Block** when a titled capability is unbuilt — tell-tales:
+  new production code with no non-test caller, a titled
+  sub-feature (e.g. "aggregate **+ promoteYear mutation**") with
+  no corresponding diff, or a review comment / unchecked
+  checklist item noting remaining work.
+- **Pass** when every titled capability of each linked issue is
+  represented in the diff.
+
+On failure, do NOT merge. Recommend one of: drop or narrow the
+`Fixes:`/`Closes:` link so the issue stays open for the
+undelivered scope, or split the undelivered scope into a tracked
+follow-up issue **before** merge and keep the link. This mirrors
+the disposition requirement of Checks 1b/1c — an under-delivered
+scope must not merge silently.
+
+### Check 2: CI checks passing
+
+```bash
+gh pr checks NUMBER --json name,state,bucket
+```
+
+All checks must have `bucket` of `pass` — including checks
+that are not required by branch protection. No checks may be
+`PENDING` or `IN_PROGRESS`. Report any failing or pending
+checks by name.
+
+**`ci_check_status`'s `required_verdict: "empty"` is not a pending
+state (GH-1381).** `develop` registers no required status checks
+(ADR-0024), so `required_verdict` reads `"empty"` on every green,
+mergeable PR — that is where it settles, not a step before
+`"green"`. Branch this check on the blended `verdict` field: a green
+`verdict` with zero `pending` and zero `fail` clears Check 2
+regardless of what `required_verdict` says. Two workers each sat on
+a fully-passed PR (#1362 at 7/7, #1360 at 6/6) without merging
+because `required_verdict: "empty"` read as "still waiting" —
+neither actually was.
+
+**Unattended contexts: prefer the wrapper (GH-1058).** When this
+skill runs the merge gate for an unattended harness (the
+`Dev10x:foreman` watchdog, an afk session), reach for
+`mcp__cli__ci_check_status(wait=false)` instead of
+the raw `gh pr checks` above. It returns the same verdict off the
+Bash layer, so it cannot raise a permission prompt that nobody is
+awake to answer — the failure mode that froze a watchdog mid-night
+because a pending prompt records neither a block nor a denial in
+the hook logs. Attended sessions may keep the raw form.
+
+`gh-pr-merge` MUST NOT proceed silently past any `PENDING`,
+`IN_PROGRESS`, or `bucket: fail` state. The default response
+is to stay in the fix-and-monitor loop — not to ask the user.
+The user is only consulted when all automated options have
+been exhausted or the failure looks unrelated to the PR.
+
+**Pending CI delegation (GH-775, GH-955):** If any check is
+`PENDING` or `IN_PROGRESS`, do NOT poll inline with `sleep`
++ `gh pr checks` and do NOT ask the user. Instead, delegate
+to `$Dev10x:gh-pr-monitor` to wait for CI to complete,
+then retry the merge validation from Check 1. The monitor
+skill handles CI polling reliably; inline sleep loops bypass
+these guardrails. A pending check's verdict is by definition
+unknown — waiting is the only correct behavior.
+
+**Code-failure auto-fix loop (GH-955):** If a check has
+`bucket: fail` and the failure looks caused by the PR's own
+changes (e.g., lint, type, test, coverage, formatting), do
+NOT ask the user. Delegate to `$Dev10x:gh-pr-monitor` —
+its Phase 1 "CI Failure Handling" table maps each failure
+type to a fixup strategy (format, type annotations, test
+fixes, etc.). The monitor creates fixup commits, pushes,
+and re-checks until CI turns green. Retry the merge
+validation from Check 1 after the monitor returns.
+
+Only escalate to `AskUserQuestion` when:
+
+1. The failure has exhausted the monitor's fix attempts
+   (e.g., 5+ rounds of fixup + re-check with the same check
+   still failing), OR
+2. The failure matches the infrastructure signals below
+   (non-code cause — user judgement required to decide
+   whether to merge despite the infra outage).
+
+**Infrastructure failure override (GH-730, ALWAYS_ASK):**
+When a check fails with a clear infrastructure cause — the
+failure is not the PR's fault and no fixup will resolve it —
+fire the user-confirmation gate. Signals include:
+
+- "Credit balance is too low" (API billing / quota outage)
+- "OIDC token validation" (auth handshake failure)
+- "Resource not accessible by integration" (permissions)
+- Repeated identical failures after fixup attempts
+  (monitor exhaustion)
+
+Never auto-classify without evidence — if uncertain whether
+the failure is code or infra, default to the auto-fix loop
+above (safer to attempt a fix than to ask the user
+prematurely).
+
+**REQUIRED: Call `AskUserQuestion`** in this escalation path:
+
+- Question: "CI check `{check-name}` failed due to what
+  looks like an infrastructure issue (`{error-summary}`)
+  and the auto-fix loop cannot resolve it. Merge anyway,
+  or wait?"
+- Options:
+  - **Wait (Recommended)** — re-invoke
+    `$Dev10x:gh-pr-monitor` to retry CI, then retry
+    merge validation from Check 1
+  - **Merge anyway** — user MUST supply a reason (free text
+    via the `Other` notes field). Record the reason in the
+    skill's task metadata
+    (`TaskUpdate(taskId, metadata={"merge_override_reason":
+    "<user text>", "override_check": "<check-name>",
+    "override_state": "<state>"})`) so `Dev10x:skill-audit`
+    can surface override patterns later.
+  - **Abort** — cancel merge.
+
+The gate fires regardless of session policy — an autonomous
+posture governs pacing between skills, it does NOT authorize
+silent merges past unresolved CI signal. The narrow scope (only after auto-fix
+is exhausted or the failure is clearly infra) keeps the
+user out of the loop for routine code fixes while still
+requiring human judgement for cases where the agent cannot
+safely decide.
+
+### Checks 3, 4, 7: Draft / mergeable / approval (one `pr_get` call)
+
+Raw `gh pr view` is hook-blocked and routes to the MCP wrapper.
+`pr_get` now exposes `isDraft`, `mergeable`, `reviewDecision`, and
+`reviewRequests` (GH-668), so a single call satisfies Checks 3, 4,
+and 7 — read each field from the one response:
+
+```
+mcp__cli__pr_get(number=NUMBER, repo="OWNER/REPO")
+```
+
+### Check 2b: PR not already merged; auto-merge not silently armed (GH-848 F4)
+
+`pr_get` now also returns `state` and `autoMergeRequest` — read both
+from the same response before evaluating Checks 3/4/7:
+
+1. **Already merged.** If `state == "MERGED"` (or `mergedAt` is
+   non-null), the PR self-merged — almost always because auto-merge
+   was armed and CI went green before this gate ran. Do NOT attempt to
+   merge again. **Short-circuit to post-merge verification**: confirm
+   the merge commit, then hand off to `Dev10x:verify-acc-dod`. Report
+   that the merge already happened; the remaining checks are moot.
+
+   **Report `ALREADY MERGED`, never the checklist (GH-1380).** The
+   Step 4 nine-item checklist is a claim that those nine checks ran in
+   THIS invocation. They did not — the merge preceded them. Emitting it
+   here is how two workers came to report a gate the orchestrator had
+   run by hand for them. Report instead:
+
+   ```
+   ## Pre-Merge Validation — NOT RUN
+   ALREADY MERGED: PR #N merged at <mergedAt> by <mergedBy, or
+   "an actor the PR state does not name">. This invocation ran no
+   pre-merge checks; the gate that governed this merge ran elsewhere.
+   ```
+
+   Name the actor when `pr_get` or your own `merge_pr` result carries
+   one (`mergedBy`, or `merged_as` per GH-1272), and say plainly that
+   it is unnamed when neither does. A guessed actor is the same defect
+   in a smaller font.
+2. **Auto-merge armed on an open PR.** If `state != "MERGED"` and
+   `autoMergeRequest` is non-null, the PR will self-merge the instant
+   CI passes — potentially before a deferred human review lands. Surface
+   this to the supervisor. When review was deliberately deferred,
+   **offer to disable auto-merge** (`gh pr merge --disable-auto NUMBER`,
+   routed via the merge wrapper) so the pre-merge checks below actually
+   gate the merge. At `adaptive` + `solo-maintainer` (where arming
+   auto-merge is the intended terminal), leave it armed and proceed.
+
+This check runs BEFORE Checks 3/4/7 because a merged/armed PR makes
+those checks either moot (merged) or racing against the auto-merge
+(armed).
+
+**Where armed auto-merge comes from (GH-1107 finding 3).** No Dev10x
+path arms it on a created PR: `--auto` is reachable only through
+`merge_pr(auto=True)`, which defaults to `False` and is gated by the
+Step 5 admin/auto prompt below. `create_pr`, `create-pr.sh`, and
+`Dev10x:gh-pr-monitor` never pass it. An armed PR therefore came from
+outside the plugin — a repo-level setting or a manual `gh pr merge
+--auto`.
+
+**That still leaves the gate skippable by timing on a repo with no
+required status checks.** With no required checks, GitHub merges the
+instant CI settles, which can land between "mark ready" and this
+gate — in the run behind this finding, a PR merged before the child
+invoked the skill at all, so none of the 9 validations ran for it.
+Check 2b then correctly short-circuits to post-merge verification,
+but the merge is already done.
+
+Read this as a **repo-configuration** finding, not a skill bug: the
+fix is to require at least one status check in branch protection, so
+an armed auto-merge waits for something this skill can also see.
+Establish it from `ci_check_status`, not from assumption —
+`required_verdict: "empty"` with every leg `required: false` is what
+an unprotected base looks like.
+
+**Do not re-file this against a repo that has already answered it
+(GH-1283).** The answer is a durable record, not a per-session
+judgement, so check for one before reporting:
+
+- **Answered, and the rule is live** — `required_verdict` is
+  something other than `"empty"`. Nothing to report; a
+  `state == "MERGED"` here is a genuine anomaly worth investigating
+  on its own terms, not the known gap.
+- **Answered, rule not yet applied, or answered as
+  deliberately-advisory** — the repo carries an ADR or equivalent
+  recording the decision (in this repo,
+  [ADR-0024](../../../docs/adr/0024-required-status-checks-on-develop.md)).
+  Cite it in the post-merge report and move on. Re-raising a recorded
+  decision as a fresh finding is the failure mode this paragraph
+  exists to stop — it cost a slot in three consecutive bundles.
+- **Unanswered** — no such record exists. Report it once, and prefer
+  filing the *decision* (which legs are merge-blocking) over filing
+  "no required checks", which is a symptom.
+
+In every case where the base is genuinely unprotected, treat a
+`state == "MERGED"` at Check 2b as a signal that the gate was
+bypassed by timing, and say so in the post-merge report rather than
+reporting a clean merge.
+
+### Check 3: PR is not in draft
+
+Read `isDraft` from the `pr_get` response. If `isDraft` is `true`,
+report that the PR must be marked ready before merging.
+
+**Re-verify after every push (GH-958).** A force-push can reset a
+published PR back to draft, so an earlier successful `pr_ready`
+call proves nothing once another push has landed. Never trust a
+prior ready call — and never trust a `create_pr(draft=false)`:
+
+1. `pr_ready` must run AFTER the FINAL push, not only at PR
+   creation. Any `--force-with-lease` (rebase, amend, groom)
+   invalidates the ready state.
+2. Read `isDraft` from a FRESH `pr_get` immediately before the
+   merge gate; if it is `true`, call `pr_ready` and re-read.
+
+Skipping this costs a rejected merge (`GraphQL: Pull Request is
+still a draft`) plus a wasted CI round, because marking ready
+re-registers the bot checks.
+
+### Check 4: No merge conflicts
+
+Read `mergeable` from the `pr_get` response. The field must be
+`MERGEABLE`. If `CONFLICTING`, report that merge conflicts must be
+resolved first.
+
+### Check 5: Working copy is clean
+
+```bash
+git status --porcelain
+```
+
+If output is non-empty, report uncommitted changes that must
+be committed or stashed before merging.
+
+### Check 6: No fixup/squash commits remaining
+
+```bash
+git log --oneline origin/develop..HEAD
+```
+
+Scan commit subjects for `fixup!` or `squash!` prefixes.
+If any exist, report that commit history must be groomed
+first (via `Dev10x:git-groom`).
+
+### Check 7: Review approval
+
+Read `reviewDecision` from the `pr_get` response (same call as
+Checks 3/4). Check that `reviewDecision` is `APPROVED`.
+
+**Solo-maintainer override:** If `solo_maintainer: true` in
+config, skip this check entirely. Solo maintainers do not
+require external approval.
+
+## Execution Flow
+
+### Step 1: Detect PR
+
+Detect the current PR from the branch name via the MCP wrapper
+(raw `gh pr view` is hook-blocked):
+
+```
+mcp__cli__pr_detect(arg="")
+```
+
+It returns `PR_NUMBER`, `REPO`, `PR_URL`, and `BRANCH`. If no PR
+exists for the current branch, report and stop. (The base branch,
+if needed, is available from `pr_get`'s `baseRefName`.)
+
+### Step 2: Load merge strategy config
+
+Read the per-project config file. If it does not exist, use
+defaults (`strategy: rebase`, `delete_branch: true`,
+`solo_maintainer: false`).
+
+### Step 3: Run all 9 validation checks
+
+**Comment-check ordering (GH-462 F3):** Checks 1, 1b, 1c,
+and 1d fetch comment/PR-body state that is time-sensitive —
+automated review bots continue posting comments during the CI
+window, and the `Fixes:`/`Closes:` links Check 1d reads can be
+edited then too, so state read before CI settles is stale. Run
+Checks 2–7 first (CI, draft, mergeable, working copy,
+fixup, approval). Only after Check 2 confirms CI is green
+(all checks `pass`) re-fetch and run Checks 1, 1b, 1c, and 1d
+as a final gate immediately before Step 5 merge. This
+eliminates the race where a bot posts a REQUIRED finding
+after the comment check but before the merge.
+
+Run non-comment checks in parallel where possible (Check 2 uses
+`gh pr checks`, Checks 3/4/7 share one `pr_get` MCP call, and
+Checks 5/6 use `git`). **Check 1b MUST be run as a
+separate step after Check 1** — it calls
+`check-top-level-comments.sh` and is NOT part of the
+GraphQL batch (GH-728). Collect all results before
+reporting.
+
+### Step 4: Report validation results
+
+Present results as a checklist:
+
+```
+## Pre-Merge Validation
+
+- [x] No unresolved review threads (0 unresolved)
+- [x] No unaddressed automated review comments (0 found)
+- [x] Fixes-linked issue scope delivered (2/2 links)
+- [x] CI checks passing (12/12 green)
+- [x] PR is not in draft
+- [x] No merge conflicts (MERGEABLE)
+- [x] Working copy is clean
+- [x] No fixup/squash commits (8 clean commits)
+- [x] Review approved (or solo-maintainer override)
+```
+
+If any check fails, show `[ ]` with failure details:
+
+```
+- [ ] CI checks passing (2 failing: lint, type-check)
+```
+
+### Step 5: Merge or refuse
+
+**Any check fails:** Do NOT merge — skip straight to the "Any
+check fails" table below. The merge gate below only applies once
+all 9 checks pass.
+
+**All checks pass — resolve the merge gate (ADR-0016, GH-757):**
+Call `mcp__cli__resolve_gate(gate="merge",
+context={})` before executing the merge. Do NOT special-case
+`solo_maintainer`, `friction_level`, or `active_modes` in prose
+here — the resolver reads session policy (preset + overlays,
+including the solo-maintainer overlay) itself.
+
+1. `effect == "ask"` → Fire `AskUserQuestion`:
+   - Question: "All 9 pre-merge checks passed for PR #NUMBER.
+     Merge now via STRATEGY?"
+   - Options: **Merge now (Recommended)** — proceed to the
+     `merge_pr` call below / **Abort** — leave the PR open.
+2. `effect == "auto-advance"` → Proceed directly to the
+   `merge_pr` call below without prompting. Surface the
+   returned `record` line in the transcript before merging.
+3. `effect == "skip"` → Do NOT merge. Report that gate policy
+   for this session hands merges to a human via the PR UI
+   (`gh pr merge` from the command line or the GitHub web UI),
+   and stop — this is the guided-preset behavior, not a check
+   failure.
+4. Response has an `error` key → fail safe: treat as `ask` and
+   fire the `AskUserQuestion` widget above.
+
+**Executing the merge** (after `ask` is approved or the gate
+auto-advances), call the MCP tool (GH-232):
+
+```
+mcp__cli__merge_pr(
+    pr_number=NUMBER,
+    strategy="rebase",        # or "squash" / "merge" per config
+    delete_branch=True,       # or False per config
+    repo="OWNER/REPO",        # auto-detected if omitted
+)
+```
+
+The `admin` and `auto` parameters default to `false` here — a
+normal merge never sets them. They are set ONLY by the
+required-review block override below, and only with explicit
+user confirmation.
+
+The MCP tool wraps `gh pr merge` inside the MCP server's
+subprocess, so the PreToolUse hook that blocks raw `gh pr
+merge` Bash invocations does not apply. This is the only
+authorized way to execute the merge — do NOT fall back to a
+raw `gh pr merge` invocation or any caller-level env-bypass.
+Hook overrides for transient MCP unavailability live in the
+hook layer (see `.claude/rules/hook-patterns.md`), not at the
+skill caller.
+
+The tool returns `{pr_number, url, strategy, branch_deleted,
+admin, auto, repo}` on success and `{error: "..."}` on failure.
+
+**Worktree safety (GH-773):** The tool always passes
+`--repo OWNER/REPO` to `gh pr merge` (auto-detected when
+`repo` is omitted) so it never tries to check out the base
+branch locally — required when the base branch is already
+checked out in another worktree.
+
+**MCP unavailable fallback:** If the MCP server is
+disconnected (`merge_pr` listed as "no longer available" in
+system-reminders), STOP and ask the user to reconnect via
+`/mcp` or restart the session. Raw `gh pr merge` is blocked
+and the SKIP env-var prefix is not the documented contract.
+
+**Required-review block override (GH-733, ALWAYS_ASK):** When
+Checks 1–7 pass but the merge cannot land because the PR is
+`BLOCKED` by a required-review branch-protection rule the
+current account cannot satisfy, `merge_pr` returns an error
+containing "base branch policy prohibits the merge" (and `gh`
+advises adding `--admin` or `--auto`). This is the canonical
+solo-maintainer case — GitHub forbids self-approval, so the
+PR can never reach `reviewDecision: APPROVED` on its own. It
+is NOT a check failure to route around: the 7 non-approval
+checks already passed, and approval (Check 7) is the only
+unsatisfiable gate.
+
+Fire this gate **only when `solo_maintainer: true`** in config.
+Without solo-maintainer mode, a `BLOCKED` PR means a real
+reviewer still owes an approval — do NOT offer an admin bypass;
+report the block and stop.
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text).
+This gate is `ALWAYS_ASK` — it fires at every friction level
+including `adaptive`+`solo-maintainer`, mirroring the Check-2
+infrastructure override. Auto-merging with admin privileges
+silently would defeat the gate's purpose.
+
+- Question: "PR #NUMBER passed all checks but is BLOCKED by a
+  required-review rule you cannot self-approve. Merge with
+  administrator privileges, enable auto-merge, or abort?"
+- Options:
+  - **Merge with admin override (Recommended)** — re-call
+    `merge_pr(pr_number=NUMBER, strategy="...", admin=true,
+    repo="OWNER/REPO")`. Record the reason in task metadata:
+    `TaskUpdate(taskId, metadata={"merge_override_reason":
+    "solo-maintainer required-review block",
+    "override_check": "branch-protection",
+    "override_state": "BLOCKED"})` so `Dev10x:skill-audit`
+    can surface override patterns later.
+  - **Enable auto-merge** — re-call
+    `merge_pr(pr_number=NUMBER, strategy="...", auto=true,
+    repo="OWNER/REPO")`. GitHub queues the merge and lands it
+    once branch-protection requirements are met; nothing merges
+    immediately. Use when a reviewer is expected to approve
+    later.
+  - **Abort** — leave the PR open.
+
+Never set `admin=true` or `auto=true` autonomously — only the
+user may authorize either path through this gate. The flags
+exist so the sanctioned MCP path can complete the merge
+instead of forcing a raw `gh api .../merge` admin bypass that
+skips the entire 9-check gate.
+
+**Any check fails:** Do NOT merge. Report which checks failed
+and what action is needed to resolve each one. Suggest the
+appropriate skill for remediation:
+
+| Failed check | Remediation |
+|-------------|-------------|
+| Unresolved threads | `Dev10x:gh-pr-respond` |
+| Unaddressed automated comments | Review and address findings |
+| Under-delivered Fixes scope | Narrow the `Fixes:` link or split a follow-up issue |
+| CI failing | `Dev10x:gh-pr-monitor` |
+| Still in draft | `gh pr ready` |
+| Merge conflicts | Rebase onto base branch |
+| Dirty working copy | `Dev10x:git-commit` |
+| Fixup commits | `Dev10x:git-groom` |
+| No approval | Request review |
+
+### Step 6: Confirm merge
+
+After successful merge, report:
+
+```
+PR #NUMBER merged via STRATEGY into BASE_BRANCH.
+Remote branch deleted: yes/no
+```
+
+## Auto-Advance Behavior
+
+Whether the merge itself pauses for confirmation is decided
+once, at Step 5, by `resolve_gate(gate="merge")` — see Step 5
+for the branch pattern. This section covers what happens
+**after** a successful merge: the calling skill proceeds
+immediately to the next step (typically acceptance criteria
+verification), with **no checkpoints the resolver did not ask
+for**. There is NO confirmation gate after merge: a trailing "PR
+merged — ready to verify acceptance?" is a checkpoint nobody
+asked for, and is forbidden. The merge is a step in the
+no-checkpoints shipping sequence, not a natural stopping point.
+
+If merge fails (e.g., branch protection rules), report the
+error and let the calling skill decide how to proceed. A
+genuine merge failure is a hard blocker, not a checkpoint —
+treat it accordingly.
+
+The ALWAYS_ASK "merge anyway" override (Check 2 failure path)
+is the only documented in-skill pause, and only fires when the
+auto-fix loop is exhausted. See `references/friction-levels.md`
+§ "No checkpoints" rule for the canonical definition.
+
+## Important Notes
+
+- Never merge without running ALL 9 checks first
+- Never bypass checks even if "it looks fine" — any `PENDING`,
+  `IN_PROGRESS`, or `FAILURE` (required or not) blocks the
+  merge. Check 2 handles these by delegating to
+  `Dev10x:gh-pr-monitor` (pending → wait; code failure →
+  fixup + re-check). The ALWAYS_ASK gate (GH-955, GH-730)
+  only fires when the auto-fix loop is exhausted or the
+  failure is clearly infrastructure-related. All
+  "Merge anyway" overrides require explicit user
+  confirmation via `AskUserQuestion` with a recorded reason.
+- The solo-maintainer override only skips check 8 (approval),
+  not the other 7 checks
+- This skill must NOT be called from background agents
+  (`Dev10x:gh-pr-monitor` explicitly forbids merge operations)
+- Always use `gh pr merge` (not `git merge`) to ensure GitHub
+  records the merge event properly

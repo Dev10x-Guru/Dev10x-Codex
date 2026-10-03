@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ticket Scope"
+policy:
+  allow_implicit_invocation: false

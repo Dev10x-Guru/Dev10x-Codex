@@ -1,0 +1,4 @@
+interface:
+  display_name: "QA Self"
+policy:
+  allow_implicit_invocation: false

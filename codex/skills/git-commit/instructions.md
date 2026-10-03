@@ -1,0 +1,1184 @@
+# Create Commit (Instructions)
+
+## Overview
+
+This skill creates properly formatted git commits following project conventions:
+- Gitmoji prefix based on change type
+- Ticket reference extracted from branch name
+- 72 character title limit
+- Structured body with solution points
+- Proper footer with ticket reference
+
+## Guiding Principle: User-Facing Outcomes
+
+**Shift the perspective from what changed in the code to what it enables for the actor.** The same principle drives Job Stories — the "so [beneficiary] can" clause captures the outcome, not the mechanism. This applies to commit titles, PR titles, ticket titles, and branch grooming.
+Use the project or ticket language for Job Stories and user-story prose;
+when BDD or Gherkin-derived keywords appear, use Cucumber's official
+language reference: https://cucumber.io/docs/gherkin/languages/
+
+- Bad: `Add DEVICES_READ to Square OAuth scopes` (implementation)
+- Good: `Enable automatic terminal discovery` (outcome)
+- Bad: `Add Square location ID GraphQL query` (implementation)
+- Good: `Enable multi-location payment routing` (outcome)
+- Bad: `Add customer_id column to invoices table` (implementation)
+- Good: `Link invoices to customer records` (outcome)
+
+## Orchestration
+
+This skill follows `references/task-orchestration.md` patterns
+(Tier: Standard).
+
+**Auto-advance:** Complete each step and immediately start the next — no checkpoints the resolver did not ask for.
+Never pause between steps to ask "should I continue?".
+
+**REQUIRED: Create tasks before ANY work.** Execute these
+`TaskCreate` calls at startup:
+
+1. `TaskCreate(subject="Gather commit context", activeForm="Gathering context")`
+2. `TaskCreate(subject="Draft commit message", activeForm="Drafting message")`
+3. `TaskCreate(subject="Review and approve", activeForm="Reviewing message")`
+4. `TaskCreate(subject="Create commit", activeForm="Creating commit")`
+
+Set sequential dependencies: draft blocked by gather, review blocked
+by draft, create blocked by review.
+
+**Nested-mode exemption:** When invoked as a nested skill within
+a parent orchestrator (e.g., via `Skill()` from `Dev10x:work-on`),
+the four startup tasks above are condensed into **exactly one**
+summary task — not zero. The parent's task list provides phase
+visibility; the nested summary task makes the commit step itself
+visible. See `references/task-orchestration.md` § Delegated
+Invocation Exception.
+
+Required nested-mode startup call:
+
+1. `TaskCreate(subject="Commit outstanding changes", activeForm="Committing")`
+
+Mark this task `in_progress` on entry and `completed` after the
+commit succeeds (or `deleted` if the run aborts). Skipping the
+task entirely is a compliance violation — it leaves the parent
+orchestrator with no record that the commit step ran.
+
+**Decision gates in nested mode:** ALL `AskUserQuestion` gates
+documented below are skipped only when **both** unattended-mode
+conditions in the next paragraph are met (invoked via
+`$Dev10x:git-commit` AND the parent has an active task
+list). When in doubt — for example, when called from a script
+or one-off invocation with no parent task list — default to
+**attended mode** and fire all gates. "Nested" alone does not
+imply "unattended"; the active-task-list signal is what
+authorizes auto-advance.
+
+**Task creation in unattended mode (top-level only):** All 4
+startup tasks MUST be created when running as a top-level
+invocation. When a task's work is auto-skipped (e.g., "Review
+and approve" in unattended mode), still create the task via
+`TaskCreate` and immediately mark it `completed` with description
+"Auto-skipped: unattended mode". This preserves supervisor
+visibility into the full workflow.
+
+**Unattended mode:** When this skill is invoked by an
+orchestrating skill (e.g., `Dev10x:work-on`, `test:fix-flaky`,
+`Dev10x:git-promote`) and the orchestrator has already approved
+the work plan, all interactive decision gates are bypassed:
+- Staging → auto-stage all changes
+- Commit type → auto-select from context
+- Problem/solution → auto-generate from session context
+- Preview → resolved by `resolve_gate(gate="artifact_preview")`
+  at Step 9 (see below) — not hardcoded to skip here
+- Next steps → return control to orchestrator immediately
+
+Detection: unattended mode activates when **both** conditions
+are met:
+1. The skill is invoked via `$Dev10x:git-commit` (not
+   directly by the user via `$Dev10x:git-commit`)
+2. The caller is executing a plan step with an active task
+   list (i.e., an orchestrating skill like `work-on`)
+
+When either condition is absent, default to **attended mode**
+with all interactive gates. When in doubt, default to attended.
+
+**Decision gates (attended mode) — REQUIRED: Call
+`AskUserQuestion`** (do NOT use plain text) at each of these
+points. In unattended mode, these gates are skipped:
+
+- **Staging approval** (when unstaged changes exist):
+  **REQUIRED: Call `AskUserQuestion`** (do NOT use plain text,
+  call spec: [ask-staging.md](tool-calls/ask-staging.md)).
+  Options:
+  - Stage all (Recommended) — git add -A
+  - Stage specific files — user specifies which files
+  - Abort — cancel commit
+
+- **Commit type selection** (gitmoji):
+  **REQUIRED: Call `AskUserQuestion`** (do NOT use plain text,
+  call spec: [ask-commit-type.md](tool-calls/ask-commit-type.md)).
+  Options:
+  - Feature — new functionality
+  - Fix — bug fix
+  - Refactor — code restructuring
+  - Test — adding or updating tests
+
+- **Message preview approval** is NOT governed by the
+  attended/unattended fork above. It is resolved via
+  `resolve_gate(gate="artifact_preview")` at Step 9 in every
+  invocation (nested or top-level) — see Step 9 for the full
+  branch pattern. When the resolved effect is `ask`, fire the
+  EXISTING widget (call spec:
+  [ask-message-preview.md](tool-calls/ask-message-preview.md))
+  with options: Commit (Recommended) / Edit message / Abort.
+
+## Scope Invariant (GH-153)
+
+**One commit scope per invocation.** If a second unrelated change
+surfaces mid-flow (e.g., during staging review, the agent spots an
+incidental edit in a different module), finish the current
+invocation first, then re-invoke `Dev10x:git-commit` for the new
+scope. Do NOT extend the in-flight invocation to cover multiple
+scopes.
+
+**Recovery for a blocked raw `git commit`:** When the PreToolUse
+hook denies a raw `git commit -F <path>` you reached for mid-flow
+because a second scope appeared, the correct response is to:
+
+1. Complete the current `Dev10x:git-commit` invocation with the
+   original scope.
+2. Re-invoke `$Dev10x:git-commit` for the new scope.
+
+**Do NOT reach for env-level hook bypasses as a workaround.** Hook
+overrides live in the hook layer, not at the skill caller — see
+`.claude/rules/hook-patterns.md`. See
+`references/commit-examples.md` for atomic commit guidance.
+
+## Prerequisites Check
+
+**IMPORTANT:** Verify git state before committing:
+
+1. Check if we're in a git repository
+2. Check if there are staged or unstaged changes
+3. Check current branch (should not be develop/main/master,
+   unless `supervisor_review_status()` reports a pinned
+   `supervisor_review: "none"` — see the escape below)
+4. Verify branch follows naming convention (username/TICKET-ID/[worktree/]description)
+
+## When to Use This Skill
+
+Use this skill when:
+- Ready to commit changes with proper formatting
+- Want to ensure commit follows project conventions
+- Need help formatting commit message
+- Want ticket reference auto-extracted from branch
+
+## Workflow
+
+### Step 1: Verify Git State
+
+**CWD safety check — resolve worktree root first:**
+
+Before any git commands, verify CWD is the repository/worktree
+root. Prior commands in the session (e.g., `pnpm test`) may
+have left CWD in a subdirectory, causing `git add` to interpret
+repo-root-relative paths as CWD-relative — producing broken
+double-nested paths like `apps/web/apps/web/src/...`.
+
+```bash
+git rev-parse --show-prefix
+```
+
+If the output is non-empty, CWD is a subdirectory. Get the
+repo root and reset CWD in two separate steps (never chain
+with `&&`):
+
+```bash
+git rev-parse --show-toplevel
+```
+
+Then use the returned path directly:
+
+```bash
+cd /absolute/path/to/repo/root
+```
+
+This avoids the `cd "$(git rev-parse ...)" && ...` pattern
+which hooks block due to subshell + chaining friction.
+
+**Never `git -C <path>`:** `git -C` breaks allow-rule matching
+in `settings.local.json`. Always use `cd` to the repo root
+first (above), then run git commands without `-C`.
+
+**Check repository status:**
+```bash
+# Verify in git repo
+git rev-parse --git-dir
+
+# Get current branch
+BRANCH=$(git symbolic-ref --short HEAD)
+
+# Check for changes
+git status --porcelain
+```
+
+**No-PR-workflow escape (GH-57):** Before applying the base-branch
+block, call `mcp__cli__supervisor_review_status()`.
+Skip the develop/main/master block only when it reports BOTH
+`supervisor_review: "none"` and `pinned: true` — a single-author
+project with no PR workflow, deliberately recorded in the durable
+`~/.config/Dev10x/friction.yaml`. Requiring `pinned` keeps the
+escape auditable: the safe unset default (`required`) never opens
+it. Never read `.claude/Dev10x/session.yaml` for this — it is
+retired (ADR-0018) and the tool owns the precedence (ADR-0022 D-2).
+
+**Validations:**
+- ❌ If not in git repo → Error: "Not in a git repository"
+- ❌ If on develop/main/master AND the escape does not apply →
+  Error: "Cannot commit directly to develop/main/master.
+  Create a feature branch first, or record this repo as having no
+  PR workflow with `Dev10x:friction-setup` (supervisor_review:
+  none) if it is single-author."
+- ❌ If no changes → Error: "No changes to commit"
+- ✅ If staged changes exist → Continue
+- ⚠️ If only unstaged changes → Ask: "Stage all changes? (y/n)"
+
+### Step 1.5: Detect Branch Drift (GH-147)
+
+**Why this step exists.** Step 1's base-branch block catches HEAD
+on `develop`/`main`/`master`, but the no-PR-workflow escape
+disables that block, and any *other* non-base branch passes
+silently. In long sessions a `rebase --continue`, a forgotten
+`git checkout`, or a script can move HEAD to a different feature
+branch (or back to develop where the escape applies) unnoticed.
+The commit then lands on the wrong branch and recovery requires
+reflog archaeology.
+
+**Source the expected ticket from plan-sync context:**
+
+```
+mcp__cli__plan_sync_json_summary()
+```
+
+Read `plan.context.tickets` from the response. If the call returns
+an empty dict, the `tickets` list is missing, or the list is
+empty, **skip this step entirely** — no orchestrator is tracking
+expected work, so drift cannot be detected. This preserves
+backward compatibility for ad-hoc `$Dev10x:git-commit`
+invocations outside `Dev10x:work-on`.
+
+**Compare against current HEAD:**
+
+```bash
+git symbolic-ref --short HEAD
+```
+
+For each ticket ID in `context.tickets`, check whether the
+branch name contains it as a `/`-delimited segment (avoid
+substring false positives — `GH-14` must not match a branch
+containing `GH-147`). Match passes when ANY expected ticket is
+present.
+
+**On match → continue to Step 2 silently.**
+
+**On mismatch → drift detected.** Fire the decision gate:
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text,
+call spec: [ask-branch-drift.md](tool-calls/ask-branch-drift.md)).
+This gate is `ALWAYS_ASK` — it fires at every friction level
+including `adaptive`, because auto-selecting either branch
+silently masks the drift the gate exists to catch.
+
+Substitute the placeholders in the call spec:
+- `<actual-branch>` — output of `git symbolic-ref --short HEAD`
+- `<expected-ticket>` — first ticket from `context.tickets`
+- `<expected-branch>` — most recent `checkout: moving to <name>`
+  entry in `git reflog -n 50` whose target contains the expected
+  ticket ID; fall back to `<user>/<expected-ticket>/...` if no
+  reflog entry matches
+
+**Verify expected branch exists before offering the switch option
+(GH-462 F5):** Before constructing the gate options, run:
+
+```bash
+git rev-parse --verify <expected-branch>
+```
+
+- If the command exits **0** (branch exists locally or as a
+  remote ref), include the "Switch back to expected branch"
+  option as documented.
+- If the command exits **non-zero** (branch no longer exists —
+  e.g., deleted after merge), the switch option would fail with
+  `pathspec did not match`. Instead, replace it with:
+  - **Archive stale plan** — call `plan_sync_archive()` to
+    clear the obsolete `in_progress` plan, then continue on
+    the current branch. Present this as the recommended option
+    with description "The expected branch was deleted (likely
+    merged). Archive the stale plan and commit here."
+
+**Handling the user's choice:**
+
+- **Switch back to expected branch** — run `git checkout
+  <expected-branch>` and stop the skill. The orchestrator (or
+  user) re-invokes `Dev10x:git-commit` after the checkout. Do
+  NOT auto-resume — the working tree state on the expected
+  branch may differ and Step 1's status check must re-run.
+- **Archive stale plan** (shown instead of switch when branch
+  is gone) — call `mcp__cli__plan_sync_archive()`
+  and proceed to Step 2 on the current branch.
+- **Continue on current branch** — proceed to Step 2. The
+  ticket ID extracted in Step 2 will reflect the actual branch,
+  not the expected one. This is the intentional-switch path.
+- **Abort** — stop the skill without changing branches.
+
+**Nested-mode behavior.** Unattended mode does NOT bypass this
+gate. The orchestrator's plan approval covers *what* to commit,
+not *where*; a wrong-branch commit is a higher-severity error
+than the friction this gate adds. Treat the gate as a safety
+interlock that fires even when every other prompt is auto-advanced.
+
+### Step 2: Extract Ticket ID from Branch
+
+**Branch naming convention:** `username/TICKET-ID/[worktree-name/]description`
+
+**Examples:**
+- `janusz/PAY-133/fix-motor-timeout` → `PAY-133`
+- `janusz/ENG-42/add-retry-mechanism` → `ENG-42`
+- `janusz/PAY-133/app-pos-7/fix-motor-timeout` → `PAY-133` (worktree)
+
+**Extraction:**
+```bash
+# Extract ticket ID (second segment)
+TICKET_ID=$(git branch --show-current | cut -d'/' -f2)
+
+# Validate format (TEAM-NUMBER)
+if [[ ! $TICKET_ID =~ ^[A-Z]+-[0-9]+$ ]]; then
+  echo "⚠️  Warning: Could not extract ticket ID from branch name"
+  echo "Branch: $(git branch --show-current)"
+  echo "Expected format: username/TICKET-ID/[worktree/]description"
+fi
+```
+
+**If extraction fails:**
+- Ask user: "What is the ticket ID? (e.g., PAY-133)"
+- Use provided ticket ID
+
+**If no ticket (technical branch):**
+- Commits without ticket reference are allowed
+- Skip ticket prompts
+
+### Step 2.5: Optional JTBD Title Derivation
+
+This step activates when **any** of these conditions are met:
+- **Explicit request:** User passes "use Dev10x:jtbd" (or similar) in `$Dev10x:git-commit` args
+- **First commit:** Ticket ID extracted, zero commits ahead of develop, and
+  commit type is Feature (✨) or Bug (🐛)
+
+**Flow:**
+1. Invoke the `Dev10x:jtbd` base skill in **unattended** mode with `ticket_id`.
+   The returned story carries one ROI bucket and an evidence rank (see
+   `Dev10x:jtbd` § Guiding Principle and § Step 1).
+2. Derive the title from the **bucket and the shape of the truth**, never by
+   transposing the "so [beneficiary] can" clause into an imperative.
+   Transposing a fixed-shape clause yields a fixed-shape title; a release of
+   17 PRs derived that way read `Let <actor> <verb>` eleven times (GH-1225).
+   The same rules govern PR titles — `Dev10x:gh-pr-create` § Title Frames
+   names four PR-title frames (Outcome, Prevention, Actor, Subject); they
+   map onto the shape table below, and the Actor frame is only available
+   for a human role.
+3. Run the title checks below, then present two candidates in different
+   frames plus "type your own":
+   ```
+   Suggested titles (bucket: Revenue — leak):
+     1. Bill every service the customer agreed to
+     2. Stop approved work vanishing from the order total
+   Accept 1 or 2, or type your own
+   ```
+4. If the user accepts → use it as the commit title description (Step 4 is
+   pre-filled). If the user types their own → use that; when it names a
+   different job than the story did, feed the correction back to the story.
+
+**Frame follows the shape of the truth, not the bucket.** The bucket says
+where the money is; the frame says what kind of change the diff is.
+Pick the bucket first, then the shape, then a frame from that row.
+Evidence: one repair-shop POS release of 17 PRs re-titled (GH-1225).
+
+| Shape of the truth | Frames | Example |
+|---|---|---|
+| New value the actor could not get before | `Collect`, `Bill`, `Capture <revenue event>`, `Unblock <sale>`, `Get <actor> to <milestone> sooner` | `Collect tips on terminals and pay-by-link, per store` |
+| Money or agreed work leaking away | `Bill every <agreed thing>`, `Stop <leak>` | `Bill every service the customer agreed to` |
+| Preventing a failure or a cost | `Prevent <failure>`, `Keep <invariant>`, `Spare <actor> <penalty>` | `Spare a shop a state fine for a missing odometer` |
+| Manual step or wait removed | `Drop <manual step>`, `Cut <wait>` | `Drop the staff approval from every settings edit` |
+| Owner's choice or discipline made available | `Choose <trade-off>`, `Prove <thing> before <check>` | `Prove each wheel's pressure before a spot inspection` |
+| Contract held with a named counterparty | `Hold <contract> with <counterparty>` | `Hold the POS tipping schema in generated types` |
+
+Same bucket, different shape: `Prevent stale plans from reaching new
+worktrees` is Cost money in a prevention sentence, and it is the right title.
+`Cut <effort>` on that change would have billed a saving nobody measured.
+
+**Title checks (run before presenting):**
+
+- **Human first.** The subject or object names a role: shop, owner,
+  technician, support rep, customer. "the CRM", "the client", "the poller",
+  "the API" are mechanisms. When the only honest actor is a system, the PR is
+  plumbing — apply the generated-only rule below instead of hunting for a
+  human.
+- **Generated-only rule.** A diff that is entirely machine output (codegen,
+  lockfiles, schema regen) takes `Hold <contract> with <counterparty>`, bucket
+  Platform integrity, `👽`, no `Fixes:`. Never an outcome title: it either
+  repeats the sibling PR's win on the release list or claims a step the diff
+  does not deliver. The ticket-level outcome goes on the PR that wires it.
+- **`Hold` needs a counterparty.** Finish "the contract we hold is with
+  ___" (the POS service, the backend gateway, the rollout plan). If nothing outside
+  this repo relies on the change, it is Cost, not Platform integrity.
+  A watcher script that slept is Cost; the types it watches are integrity.
+- **No undelivered invariant.** If the PR body names an open ticket that
+  undermines the claim, `Keep <invariant>` is unavailable.
+- **"and" is a split signal.** Two buckets or two beneficiaries in one title
+  means two PRs. If already merged, title by the part with the hardest number
+  and carry the other in the body.
+- **Second meaning check.** Read each candidate once in the feature's own
+  domain. `Capture` on a change that records an approval reads as
+  capture-as-record; `Cut staff` on an employee-deactivation feature reads as
+  firing. Force the money word into the line or pick another frame.
+- **Sibling check.** When the ticket has other PRs, titles differ by
+  outcome, not by verb. `look up` vs `create` is not a distinction; a support
+  rep on a call vs an owner self-serving is.
+- **Incumbent paraphrase.** A candidate that restates the current title
+  almost verbatim is not an alternative; produce a second frame.
+- **Specific and general.** Offer one candidate naming the entities (channels,
+  states, roles) and one without. Pick the specific one when the names matter
+  to a business reader, the general one when the specific reads technical:
+  `Collect tips on terminals and pay-by-link, per store` vs
+  `Earn tips wherever a store takes payment`.
+- **Release-list bullseye.** Release notes are read by the business. Read the
+  title next to its siblings from the same release; a non-engineer must be
+  able to say what real-world use case each one serves and which carry
+  deployment risk. When a supervisor rewrites a suggested title, the
+  rewrite names the job the AI missed: keep the rewrite, and record the miss.
+
+**Skip entirely** when not explicitly requested AND it's a subsequent commit,
+refactor, test, docs, or config change — keeping those fast. Also skip when a
+Job Story was already sourced from the Linear ticket earlier in this session
+(e.g., during `ticket:work-on`) — invoking the `jtbd` skill again is redundant.
+
+### Step 3: Determine Commit Type
+
+**Project override check:** Before presenting the type menu,
+check for a strategy override:
+
+1. Read `<Dev10x config>/gitmoji.yaml`
+2. Get the repo's `org/repo`: `git remote get-url origin`, then
+   take the last two path segments — the same pair for an SSH or
+   an HTTPS remote (ADR-0026). No `origin` remote → the `projects`
+   list is not evaluated; skip to step 4.
+3. Walk the `projects` list — first `match_repo` glob that fits
+   `org/repo` selects the named `strategy` (`match:` is read as a
+   deprecated alias for one release)
+4. If no match, check `default-strategy`
+5. If still no match, check for a semantic-release config in
+   the project root (see `references/semantic-release.md`).
+   Search for `release.config.mjs`, `.releaserc.json`,
+   `.releaserc.yaml`, or `package.json` with a `"release"` key.
+   If found, extract `releaseRules` from the
+   `@semantic-release/commit-analyzer` plugin config and enrich
+   the defaults with `release` tags. This adds release impact
+   metadata without replacing the type menu.
+6. If no config found, load `references/gitmoji-defaults.yaml`
+
+If the user config or semantic-release config is invalid or
+unreadable, log a warning and fall back to the defaults file —
+never block the commit.
+
+When a strategy is resolved (from manual override, semantic-release
+auto-detection, or defaults), use its `gitmoji-mapping` list.
+Each entry has `emoji`, `label`, `description`, and optional
+`release` (patch/minor/major/none). When `release` is present,
+append it as a badge: `"Bug fixes [patch]"`.
+
+See `references/project-override.md` for manual override schema.
+See `references/semantic-release.md` for auto-detection details.
+
+**Unattended mode:** Auto-select the commit type from context
+(e.g., changed file types, session history, orchestrator hints).
+Skip the interactive prompt entirely. Use `label` matching
+against detected change type. If a project override is loaded,
+match against its entries.
+
+**Attended mode — ask user to select commit type:**
+
+Build the `AskUserQuestion` options from the loaded mapping
+(project override or defaults). Present the first 4 entries
+as options. If more exist, mention them in the question text
+as additional choices available via "Other".
+
+**Default gitmoji mapping:** Loaded from
+`references/gitmoji-defaults.yaml` (ships with the plugin).
+The "Other" option is always appended to allow custom gitmoji.
+
+### Step 4: Get Commit Description
+
+**Unattended mode:** Auto-generate the description from session
+context (ticket title, changed files, commit type). Apply JTBD
+self-check automatically and proceed without prompting.
+
+**Attended mode — ask user:**
+```
+Short description (will be title line):
+[User types description]
+```
+
+**Validate:**
+- Calculate total length: `gitmoji + space + TICKET-ID + space + description`
+- If > 72 chars → Ask: "Title is {X} characters (max 72). Please shorten the description."
+- Iterate until ≤ 72 chars
+
+**JTBD self-check (mandatory):** Before accepting the description, verify it
+describes the **user-facing outcome**, not the implementation action. No hook
+enforces this today — the only commit-msg hook checks fixup links — so this
+self-check is the gate.
+
+| Blocked verb | Example bad title | JTBD rewrite |
+|---|---|---|
+| Add | "Add retry logic" | "Enable automatic retry on failure" |
+| Update | "Update OAuth scopes" | "Enable terminal discovery" |
+| Remove | "Remove dead code" | "Simplify payment flow" |
+| Refactor | "Refactor repository" | "Simplify repository hierarchy" |
+| Move/Rename | "Move factory to utils" | "Enable shared factory access" |
+| Synchronize | "Sync skill with source" | "Enable dual-mode workflow" |
+
+If the description starts with an implementation verb, rewrite it before
+proceeding. The verb list is a denylist, not a recipe: `Let`, `Enable`,
+`Allow`, `Support`, `Ensure` all pass it and all produce capability-grant
+titles ("Let a shop find the tip setting") that read as feature inventory.
+An outcome is a changed behaviour or metric, not a granted capability.
+Pick the frame from the shape-of-the-truth table in Step 2.5 instead.
+
+**Example titles:**
+- `✅ PAY-310 Stabilize tax amount tests` (38 chars)
+- `🐛 PROJ-404 Bill every service the customer agreed to` (52 chars)
+- `✨ PROJ-248 Collect tips on terminals and pay-by-link, per store` (63 chars)
+- `👽 PROJ-248 Hold the POS tipping schema in generated types` (57 chars)
+
+### Step 4.5: Revert and Re-land Titles
+
+GitHub's default revert subject fails every rule here: on GH-1225's release
+it was 83 chars, nested two `Revert "` prefixes, carried a key from a
+tracker the release pipeline cannot resolve, and named no outcome.
+Never let `Revert "…"` become a commit subject.
+
+| Kind | Format | Example |
+|---|---|---|
+| Revert | `⏪ <REVERT-TICKET> <effect on the user, for now>` | `⏪ PROJ-727 Send roster changes back through support for now` |
+| Re-land | `⏩ <FEATURE-TICKET> Reland <noun-phrase outcome>` | `⏩ PROJ-725 Reland self-serve roster changes, no support ticket` |
+
+- The marker sits right after the ticket ID: the gitmoji slot is taken, and a
+  trailing `(re-land)` is the first thing a 72-char trim eats.
+- After `Reland` the outcome is a noun phrase inherited from the original
+  title's frame, not a fresh imperative.
+- Only the original carries the plain outcome; the revert and re-land carry a
+  direction marker so a release list never shows the same capability twice
+  with no way to tell which entry is live.
+- The revert carries its own ticket (create one), the re-land the feature
+  ticket, so both close in the release pipeline.
+- A revert body must state: the observed failure and where it was seen, what
+  must be true before re-landing, the reverted SHA and original PR, and
+  `Fixes:` its own ticket. "Reverts #N" alone is not a body.
+
+### Step 5: Get Problem Explanation
+
+**If the problem and solution are already known from prior context** in the
+session (e.g., from a preceding scope, code review, or ticket investigation),
+auto-generate Steps 5-6 rather than asking redundant questions.
+
+**Attended mode:** Present the pre-filled content in the preview
+(Step 9) for user review.
+
+**Unattended mode:** Auto-generate and proceed directly to
+staging and commit — no preview gate.
+
+**Otherwise, ask user:**
+```
+Detailed explanation of the problem being solved:
+(What was wrong? Why did it need fixing? Context?)
+
+[User provides explanation - can be multiple lines]
+```
+
+**Guidance:**
+- Explain WHAT was wrong
+- Explain WHY it needed fixing
+- Provide context
+- 2-4 sentences typically sufficient
+
+**Example:**
+```
+Tests in TestAddTireServiceIndividual and TestAddTireServiceMultiple
+were marked as flaky because they randomly failed when tax amounts
+or percentages were generated as zero by Faker.
+```
+
+### Step 6: Get Solution Points
+
+**Unattended mode:** Auto-generate solution points from the
+staged diff and session context. Summarize what changed in
+2-4 bullet points without prompting.
+
+**Attended mode — ask user:**
+```
+Solution points (what did you change?):
+Enter each point on a new line. Type 'done' when finished.
+
+1: [User enters first point]
+2: [User enters second point]
+3: [User enters third point]
+done
+```
+
+**Format each point:**
+- Start with `-` (bullet point)
+- Be specific about what changed
+- Include file names if relevant
+
+**Example:**
+```
+- Added non_zero trait to MoneyFaker with min_value=Decimal('0.01')
+- Updated test fixtures to ensure tax amounts and percentages >= 0.01
+- Removed @pytest.mark.flaky decorators
+```
+
+### Step 7: Generate Complete Commit Message
+
+**Title format:** If a project override defines `title-format`,
+use it to assemble the title line. Supported placeholders:
+- `<gitmoji>` — emoji from selected type
+- `<ticket>` — extracted ticket ID
+- `<description>` — user-provided description
+- `<conventional-type>` — label from mapping, lowercased
+
+Default format: `<gitmoji> <ticket> <description>`
+
+**Assemble message:**
+```
+<title per format>
+
+<problem explanation>
+
+Solution:
+<solution points>
+
+Fixes: <TICKET-ID>
+```
+
+**Example:**
+```
+✅ PAY-310 Fix flaky tests with non-zero tax amounts
+
+Tests in TestAddTireServiceIndividual and TestAddTireServiceMultiple
+were marked as flaky because they randomly failed when tax amounts
+or percentages were generated as zero by Faker.
+
+Solution:
+- Added non_zero trait to MoneyFaker with min_value=Decimal('0.01')
+- Updated test fixtures to ensure tax amounts and percentages >= 0.01
+- Removed @pytest.mark.flaky decorators
+
+Fixes: PAY-310
+```
+
+### Step 8: Validate Line Lengths (72 char limit)
+
+**IMPORTANT:** Before showing preview, validate ALL lines are ≤ 72 characters.
+
+**Validation command:**
+```bash
+# Check each line of the commit message
+echo "$COMMIT_MESSAGE" | awk '
+  length > 72 {
+    print "❌ Line " NR " too long (" length " chars): " $0
+    fail = 1
+  }
+  END { exit fail }
+'
+```
+
+**If any line exceeds 72 characters:**
+
+**Unattended mode:** Auto-wrap or shorten the offending lines
+(split long bullets, abbreviate paths, use shorter synonyms).
+Re-validate and proceed without prompting. If auto-fix is not
+possible, surface the error back to the orchestrator.
+
+**Attended mode:**
+1. Show which line(s) are too long with character count
+2. Ask user to shorten the offending line(s)
+3. Re-validate until all lines pass
+
+**Quick length check for a single line:**
+```bash
+echo "your line here" | awk '{print length " chars"}'
+```
+
+**Common fixes for long lines:**
+- Split into multiple bullet points
+- Use shorter synonyms
+- Move details to next line
+- Abbreviate file paths (just filename, not full path)
+
+**Example validation output:**
+```
+❌ Line 7 too long (77 chars): - Rename stages: base-os → system-base, base-python → python-dependencies
+
+Suggestion: Split into two lines or shorten:
+- Rename stages for clarity (system-base, python-dependencies)
+```
+
+### Step 9: Resolve Preview Gate and Confirm
+
+**REQUIRED (ADR-0016, GH-757):** Call
+`mcp__cli__resolve_gate(gate="artifact_preview",
+context={})` before deciding whether to show the preview.
+Do NOT branch on unattended/attended mode, `friction_level`, or
+`active_modes` for this step — the resolver reads session
+policy (including the solo-maintainer overlay) itself.
+
+1. `effect == "ask"` → Display the formatted message below and
+   fire the EXISTING `AskUserQuestion` widget (call spec:
+   [ask-message-preview.md](tool-calls/ask-message-preview.md)).
+   **This step is MANDATORY when the effect is `ask` — DO NOT
+   proceed to `git commit` without user approval; skipping the
+   widget in that case is a compliance violation.**
+2. `effect == "auto-advance"` → Skip the interactive prompt and
+   proceed directly to staging (Step 10) and commit creation
+   (Step 11) using the recommended option (create the commit as
+   shown). Surface the returned `record` line in the transcript.
+3. `effect == "skip"` → Skip the preview step entirely (no
+   display, no widget) and proceed directly to Step 10.
+4. Response has an `error` key → fail safe: treat as `ask` —
+   display the preview and fire the widget.
+
+**Display formatted message** (when effect is `ask`):
+```
+Preview of commit message:
+─────────────────────────────────
+<formatted message>
+─────────────────────────────────
+
+Create this commit? (y/n/edit)
+- y: Create commit
+- n: Cancel
+- edit: Modify the message
+```
+
+**If edit:**
+- Ask which part to edit (title/explanation/solution)
+- Re-prompt for that section
+- Show new preview
+
+### Step 9.5: Pre-format Python files (GH-224)
+
+When the change set includes `*.py` files, pre-format them
+**before staging** so the project's pre-commit hook has nothing
+to rewrite. Without this step, Black/isort/ruff inside the hook
+reformat staged files, fail the commit, and restore the changes
+unstaged — forcing a re-stage + retry loop that fires once per
+Python-touching commit.
+
+**Detect Python files in the change set:**
+
+```bash
+git diff --name-only -- '*.py'
+git diff --cached --name-only -- '*.py'
+```
+
+Union of the two lists = files that will end up in this commit
+after `git add -A`. If the union is empty, skip this step.
+
+**Choose one formatter path** (in order of preference):
+
+1. **`pre-commit run --files <files>`** — respects whatever the
+   project configures (Black, isort, ruff, mypy, etc.).
+   Available when `.pre-commit-config.yaml` exists at repo root.
+2. **`uv run ruff format <files>`** — when ruff is a dev dep and
+   the project uses ruff format.
+3. **`uv run black <files>` and `uv run isort <files>`** — when
+   Black + isort are the configured formatters.
+
+**Fall-through rule:** Formatter invocation must NOT block the
+commit. If the chosen formatter is missing, errors, or returns
+non-zero, log a one-line note ("pre-format skipped: <reason>")
+and continue to Step 10. The pre-commit hook will still run on
+`git commit`; the worst case is the original loop, which is no
+worse than the pre-GH-224 baseline.
+
+**Unattended mode:** Run the pre-format silently without
+prompting. Errors fall through per the rule above. No
+`AskUserQuestion` — this is a mechanical preparation step.
+
+### Step 10: Stage Files (if needed)
+
+**Pre-staging gate (GH-157):** If the index already contains
+staged files when this skill is invoked (`git diff --cached
+--name-only` returns non-empty), the caller may have staged
+manually and the staged set is now a hidden boundary the skill
+would silently accept.
+
+**Attended mode — REQUIRED: Call `AskUserQuestion`** (do NOT
+use plain text):
+- **Use existing staging (Recommended)** — commit only the
+  currently staged files; do not run `git add -A`
+- **Unstage and re-select** — run `git restore --staged .` and
+  follow the normal staging flow below
+
+**Unattended mode:** Honor pre-existing staging as-is when the
+orchestrator explicitly requested partial staging via pathspec;
+otherwise log a warning and proceed with `git add -A` on the
+union of staged and unstaged changes. Document the decision in
+the commit body if it deviates from the staged set.
+
+Audit GH-157 caught a session where manual `git reset HEAD` +
+selective `git add` set an irreversible boundary that the skill
+inherited without confirmation — remediation required invoking
+`Dev10x:git-commit-split` from scratch.
+
+**Hard rule: NEVER stage individual files by name** (e.g.,
+`git add file1.py file2.py`) to PICK files into a commit.
+Selective staging bypasses the skill contract — all changes
+in the working directory belong to this commit. Use
+`git add -A` or `git add .` as the staging primitive.
+
+**Escape valve — excluding unrelated paths.** When the working
+tree contains changes that genuinely do not belong in this
+commit (e.g., a session-scoped config touch in `.claude/`
+captured incidentally while editing `skills/`), prefer **one of**
+the following over selective `git add`:
+
+1. **Commit the unrelated paths first.** Re-invoke
+   `$Dev10x:git-commit` for the unrelated change with
+   its own message, then return to this commit with a clean
+   working tree. This is the default — keep commits atomic by
+   *time*, not by `git add` argument lists.
+2. **Pathspec exclusion.** When unrelated paths cannot be
+   committed first (e.g., generated noise that should stay
+   out of the commit altogether), pass an exclude pathspec
+   to `git add` so the staging primitive remains the same:
+   ```bash
+   git add -A -- ':!path/to/excluded' ':!other/path'
+   ```
+   This is NOT selective staging — it stages everything except
+   the named paths and is allowed by the contract.
+3. **Post-add unstage** (last resort). After `git add -A`,
+   remove specific paths from the index with
+   `git restore --staged <pathspec>`. Document in the commit
+   message body why those paths were excluded so the rationale
+   is preserved.
+
+Never use `git reset HEAD <path>` or `git rm --cached <path>`
+as exclusion shortcuts — they create the same selective-staging
+anti-pattern the hard rule prohibits.
+
+**Unattended mode:** Auto-stage all changes (`git add -A`)
+without prompting. The orchestrator's approved plan implies
+all current changes are intended for this commit. If the
+orchestrator wants to exclude paths, it MUST pass them via
+the pathspec-exclusion form above — the unattended default
+does not silently drop files.
+
+**Attended mode — if unstaged changes exist:**
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text).
+Options:
+- Stage all (Recommended) — `git add -A`
+- Only commit already staged files
+- Abort
+
+### Step 11: Create the Commit
+
+**Use Write tool + `-F` to preserve formatting (hookify blocks heredocs):**
+
+1. **REQUIRED:** Create a temp file via mktmp MCP tool:
+   `mcp__cli__mktmp(namespace='git',
+   prefix='commit-msg', ext='.txt')`
+   Store the returned `path` value.
+   **Fallback** (if MCP unavailable):
+   ```bash
+   /tmp/Dev10x/bin/mktmp.sh git commit-msg .txt
+   ```
+   **Do NOT use hardcoded paths** — hooks reject non-mktmp
+   paths and the commit will fail.
+
+2. **Read the empty file first** — the Write tool requires a prior Read
+   on the same path. Call `Read(<unique-path>)` before writing. The file
+   will be empty (mktmp creates it); this is expected.
+
+3. Write the commit message to that file using the Write tool:
+   ```
+   Write <unique-path>:
+   <gitmoji> <TICKET-ID> <description>
+
+   <problem explanation>
+
+   Solution:
+   <solution point 1>
+   <solution point 2>
+   <solution point 3>
+
+   Fixes: <TICKET-ID>
+   ```
+
+4. Create the commit from the file:
+   ```bash
+   git commit -F <unique-path>
+   ```
+
+**Verify success:**
+```bash
+if [ $? -eq 0 ]; then
+  echo "✅ Commit created successfully"
+  git log -1 --oneline
+else
+  echo "❌ Commit failed"
+  # Show error
+fi
+```
+
+**Error recovery:** If the hook blocks the commit, you are
+likely using a non-mktmp path or running outside the skill
+context. Restart via `$Dev10x:git-commit` with no args.
+Do NOT attempt to bypass hooks with `python3 subprocess` or
+`--no-verify`.
+
+### Step 12: Next Steps
+
+**Unattended mode:** Return control to the orchestrator
+immediately after a successful commit. Do not show next-step
+options or ask "what next?".
+
+**Attended mode — ask user:**
+```
+Commit created successfully!
+
+Next steps:
+1. Continue working
+2. Create another commit
+3. Create PR ($Dev10x:gh-pr-create)
+
+What would you like to do? (1/2/3/done)
+```
+
+**If 3 (Create PR):**
+- Use `Dev10x:gh-pr-create` skill
+- PR title will use this commit message
+
+## Important Notes
+
+- **No Co-Authoring:** Never add "Co-Authored-By: Claude" footer (per CLAUDE.md)
+- **72 char limit:** ALL lines strictly enforced (title AND body)
+- **Always validate:** Run `echo "line" | awk '{print length}'` before committing
+- **Ticket extraction:** Automatic from branch name
+- **Gitmoji format:** Use emoji character, not :code:
+- **Footer:** Always include `Fixes: TICKET-ID`
+- **Spacing:** One space after gitmoji, one space after ticket ID
+- **Never `git -C <path>`**: See Step 1 — use `cd` to repo root instead.
+- **Never `cd /path && git ...`**: The `&&` shifts the command prefix,
+  breaking allow-rule matching. Use a standalone `cd` call or absolute
+  paths. Each Bash call must contain exactly one command.
+- **Never chain `git add && git commit`**: Use two separate Bash tool
+  calls — one to stage, one to commit. Same rule applies to
+  `git add && git rebase --continue`. Each call must stand alone.
+- **Never stage individual files**: Use `git add -A` or `git add .`
+  exclusively. Selective staging bypasses the skill contract.
+- **Mandatory mktmp usage**: ALL temp files for commit messages
+  MUST be created via mktmp (MCP tool or script fallback).
+  Hardcoded paths are rejected by hooks and cause commit failure.
+
+## Integration with Other Skills
+
+```
+Dev10x:git-commit
+├── Used during development workflow
+├── Output: Properly formatted commit
+└── Can be followed by: Dev10x:gh-pr-create
+```
+
+## Example Usage
+
+### Example 1: Create commit with auto-extracted ticket
+
+**User request:**
+```
+$Dev10x:git-commit
+```
+
+**Current branch:** `janusz/PAY-310/fix-flaky-tests`
+
+**Workflow execution:**
+1. Check git status → Unstaged changes found
+2. Ask: "Stage all changes?" → User: Yes
+3. Stage files: `git add .`
+4. Extract ticket ID → `PAY-310`
+5. Ask commit type → User selects: 1 (Test)
+6. Ask description → User: "Fix flaky tests with non-zero tax amounts"
+7. Validate length → 51 chars ✓
+8. Ask problem explanation → User provides
+9. Ask solution points → User provides 3 points
+10. Generate message
+11. Show preview → User approves
+12. Create commit with heredoc
+13. Verify success → "✅ Commit created"
+14. Show: `git log -1 --oneline`
+
+**Result:**
+```
+✅ PAY-310 Fix flaky tests with non-zero tax amounts
+```
+
+### Example 2: Bug fix commit
+
+**User request:**
+```
+$Dev10x:git-commit
+```
+
+**Current branch:** `janusz/PAY-133/fix-motor-timeout`
+
+**Workflow execution:**
+1. Check status → Staged changes ready
+2. Extract ticket → `PAY-133`
+3. Ask type → User: 2 (Bug)
+4. Ask description → "Fix motor timeout in payment processing"
+5. Length check → 53 chars ✓
+6. Problem explanation → "MotorTimeoutException occurs when Square API is slow..."
+7. Solution points:
+   - Increase timeout from 5s to 15s
+   - Add retry with exponential backoff
+   - Improve error logging
+8. Preview → User approves
+9. Create commit
+10. Success!
+
+**Result:**
+```
+🐛 PAY-133 Fix motor timeout in payment processing
+```
+
+### Example 3: Commit with manual ticket ID
+
+**User request:**
+```
+$Dev10x:git-commit
+```
+
+**Current branch:** `feature/improve-search` (no ticket ID)
+
+**Workflow execution:**
+1. Check status → OK
+2. Try extract ticket → Failed (no standard format)
+3. Warn: "Could not extract ticket ID"
+4. Ask: "Ticket ID?" → User: `PAY-200`
+5. Ask type → User: 3 (Refactor)
+6. Ask description → "Refactor search to use Elasticsearch"
+7. Continue normally...
+
+**Result:**
+```
+♻️ PAY-200 Refactor search to use Elasticsearch
+```
+
+### Example 4: Technical commit without ticket
+
+**User request:**
+```
+$Dev10x:git-commit
+```
+
+**Current branch:** `fix-typo-in-readme`
+
+**Workflow execution:**
+1. Check status → OK
+2. Try extract ticket → Failed
+3. Ask: "Ticket ID?" → User: (press Enter for none)
+4. Ask type → User: 5 (Docs)
+5. Ask description → "Fix typo in README"
+6. Length check → 25 chars ✓
+7. Problem: "README had typo in installation section"
+8. Solution: "Fixed typo: 'instal' → 'install'"
+9. Generate WITHOUT ticket reference:
+   ```
+   📝 Fix typo in README
+
+   README had typo in installation section
+
+   Solution:
+   - Fixed typo: 'instal' → 'install'
+   ```
+10. Create commit
+
+**Result:**
+```
+📝 Fix typo in README
+```
+
+## Error Handling
+
+### Common Scenarios
+
+**"Not in a git repository":**
+- Error and stop
+- Suggest: Initialize git repo first
+
+**"No changes to commit":**
+- Show: `git status`
+- Suggest: Make changes first
+
+**"Cannot commit to develop/main/master":**
+- Error and stop
+- Suggest: Create feature branch first, or record the repo as
+  having no PR workflow via `Dev10x:friction-setup`
+  (`supervisor_review: none`) for single-author repos (GH-57)
+
+**"Title too long":**
+- Show character count
+- Ask for shorter description
+- Iterate until ≤ 72
+
+**"Pre-commit hook failed":**
+- Show hook error
+- Ask: "Fix issues and retry? (y/n)"
+- If yes: Return to Step 9 (stage files)
+
+**"Commit failed":**
+- Show git error
+- Suggest common fixes (conflicts, permissions, etc.)
+
+## Resources
+
+### references/gitmoji-guide.md
+
+Complete gitmoji reference with usage guidelines.
+
+### references/commit-examples.md
+
+Real commit message examples from the project.
+
+### references/gitmoji-defaults.yaml
+
+Default gitmoji-to-type mapping shipped with the plugin.
+
+### references/project-override.md
+
+Project-level gitmoji strategy overrides — schema, resolution
+order, and examples for `<Dev10x config>/gitmoji.yaml`.
+
+### references/semantic-release.md
+
+Auto-detection of gitmoji-to-release mappings from a project's
+semantic-release config (`release.config.mjs`, `.releaserc`, etc.).
+
+## Success Criteria
+
+A successful commit should:
+- ✅ Follow gitmoji convention
+- ✅ Include ticket reference (if applicable)
+- ✅ Have title ≤ 72 characters
+- ✅ Include problem explanation
+- ✅ List solution points
+- ✅ Include `Fixes:` footer (if ticket)
+- ✅ No co-authoring attribution
+- ✅ Be properly formatted for git log viewing

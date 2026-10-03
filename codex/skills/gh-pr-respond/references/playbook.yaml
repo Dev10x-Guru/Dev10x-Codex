@@ -1,0 +1,195 @@
+# playbook.yaml — Respond workflow plays for Dev10x:gh-pr-respond
+# Default location: <plugin-root>/skills/gh-pr-respond/references/playbook.yaml
+# User overrides (see references/config-resolution.md):
+#   1. .claude/Dev10x/playbooks/gh-pr-respond.yaml (project-local)
+#   2. ~/.config/Dev10x/playbooks/gh-pr-respond.yaml (global + repo match)
+#      → fallback: ~/.claude/memory/Dev10x/playbooks/gh-pr-respond.yaml
+# Managed by Dev10x:playbook skill.
+#
+# Play names match the mode detection in SKILL.md:
+#   single — one comment at a time (Mode A)
+#   batch  — all unaddressed comments on a PR/review (Mode B)
+
+defaults:
+  single:
+    prompt: >
+      Use when the input contains #discussion_r{id} — a specific
+      comment URL. Process that one comment, then check for remaining
+      unaddressed comments and offer to continue or switch to batch.
+    steps:
+      - subject: Process comment
+        type: detailed
+        prompt: >
+          Delegate to Dev10x:gh-pr-triage with the comment URL.
+          If VALID → delegate to Dev10x:gh-pr-fixup.
+          If not VALID → reply is posted, proceed to thread
+          resolution confirmation.
+        skills: [Dev10x:gh-pr-triage, Dev10x:gh-pr-fixup]
+      - subject: Confirm thread resolution
+        type: detailed
+        prompt: >
+          REQUIRED: Call resolve_gate(gate="thread_resolution",
+          context={author_type, valid_fixup_count}) first (Gate 1).
+          On effect=="ask", call AskUserQuestion with verdict and
+          reason. Options: "Resolve" / "Leave open". On
+          effect=="auto-advance", resolve without prompting and
+          surface the record line. Only fires for non-VALID
+          verdicts — VALID comments are handled entirely by
+          gh-pr-fixup.
+        condition: non-valid-verdict
+      - subject: Hide obsolete comment (cosmetic)
+        type: detailed
+        prompt: >
+          REQUIRED: Call resolve_gate(gate="comment_hide",
+          context={author_type, valid_fixup_count}) first (Gate 6).
+          On effect=="ask", call AskUserQuestion. After resolving a
+          thread, offer to minimize the root comment using the
+          minimizeComment GraphQL mutation with classifier OUTDATED.
+          Options: "Hide" / "Skip". On effect=="auto-advance",
+          minimize without prompting. Skip this gate if the thread
+          was left open. Minimization is NOT a disposition (GH-920)
+          — it is cosmetic noise reduction and never clears
+          gh-pr-merge Check 1b. The keyed "Re:" reply (GH-907) is
+          the disposition; never substitute hiding for it.
+        condition: thread-resolved
+      - subject: Check remaining comments
+        type: detailed
+        prompt: >
+          Query for other unaddressed root comments on the PR.
+          Filter by in_reply_to_id == null.
+      - subject: Offer to continue
+        type: detailed
+        prompt: >
+          REQUIRED: Call AskUserQuestion (Gate 2). Present
+          remaining comment count and summaries. Options:
+          "Next comment" / "Switch to batch mode" / "Stop".
+          Skip if no remaining comments.
+        condition: has-remaining
+
+  batch:
+    prompt: >
+      Use when the input is a PR URL, review URL, or PR number
+      without #discussion_r. Collects all unaddressed comments,
+      triages them in parallel, and presents a response plan for
+      user approval before executing.
+    steps:
+      - subject: Collect unaddressed comments
+        type: detailed
+        prompt: >
+          List all root comments (in_reply_to_id == null) on the
+          PR. If a review ID is specified, filter to that review.
+          Always check the review body for structured findings —
+          parse individual items (bullet points with severity
+          markers, numbered items with file:line refs) into
+          separate synthetic comments. Merge with inline comments.
+          Report "No unaddressed comments" only if both inline
+          and body findings are empty.
+      - subject: Triage all comments
+        type: detailed
+        prompt: >
+          Dispatch parallel triage subagents — up to 4 concurrent.
+          Each returns verdict (VALID | YAGNI | INVALID | QUESTION
+          | OUT_OF_SCOPE) and draft reply. For VALID, also assign a
+          priority (now | fast-follow) per the heuristics in
+          instructions.md § Mode B Step 2. Cluster YAGNI verdicts
+          on the same out-of-scope feature into named bundles.
+          Present results as a table with author, file:line,
+          summary, verdict, priority, and proposed response. List
+          YAGNI bundles below the table.
+      - subject: Get user approval
+        type: detailed
+        prompt: >
+          REQUIRED: Call resolve_gate(gate="triage_response",
+          context={author_type, valid_fixup_count}) first (Gate 3).
+          On effect=="ask", call AskUserQuestion. Options:
+          "Approve all" / "Review one-by-one" / "Skip". On
+          effect=="auto-advance", proceed as "Approve all" without
+          prompting and surface the record line. User may provide
+          corrections in free text (verdict override, priority
+          flip, YAGNI bundle membership) when the gate asks.
+      - subject: Execute approved responses
+        type: detailed
+        prompt: >
+          Route by verdict + priority. VALID+now → delegate to
+          Dev10x:gh-pr-fixup (one fixup commit per comment, or
+          bundled per § Bundled Fixup Mode). VALID+fast-follow →
+          batch into a single follow-up ticket via
+          Dev10x:ticket-create, reply on each thread linking the
+          ticket, skip fixup in this batch. YAGNI bundles → fire
+          Gate 7 (Step 1d-style, resolve_gate(gate="yagni_routing"))
+          per bundle and route per its effect. INVALID/QUESTION/
+          OUT_OF_SCOPE → post reply via MCP tool. Do NOT resolve
+          threads yet.
+        skills: [Dev10x:gh-pr-fixup, Dev10x:ticket-create]
+      - subject: Resolve threads
+        type: detailed
+        prompt: >
+          REQUIRED: Call resolve_gate(gate="thread_resolution",
+          context={author_type, valid_fixup_count}) first (Gate 4).
+          Collect all replied-to but unresolved threads. On
+          effect=="ask", call AskUserQuestion. Options:
+          "Resolve all" / "Review one-by-one" / "Leave all open".
+          If "Review one-by-one": per-thread confirmation. On
+          effect=="auto-advance", resolve all listed threads
+          without prompting. Resolve only user-approved (or
+          auto-advanced) threads via GraphQL.
+      - subject: Hide obsolete comments (cosmetic)
+        type: detailed
+        prompt: >
+          After resolving threads, offer to minimize resolved
+          comments. REQUIRED: Call resolve_gate(gate="comment_hide",
+          context={author_type, valid_fixup_count}) first (Gate 6).
+          On effect=="ask", call AskUserQuestion. Options:
+          "Hide all resolved" / "Review one-by-one" / "Skip". On
+          effect=="auto-advance", minimize all resolved comments
+          without prompting — still invoke minimize_comments
+          (GH-208). Uses minimizeComment GraphQL mutation with
+          classifier OUTDATED. Skip if no threads were resolved.
+          Minimization is NOT a disposition (GH-920) — it is
+          cosmetic and never clears gh-pr-merge Check 1b. The keyed
+          "Re:" reply (GH-907) plus thread resolution are the
+          disposition and must already have happened.
+        condition: has-resolved-threads
+      - subject: Summary
+        type: detailed
+        prompt: >
+          Report counts by verdict type, resolution status, and
+          hiding status. Include fixup commit count.
+
+  post-response:
+    prompt: >
+      Use after all comments are processed and fixup commits exist.
+      Executes the full shipping pipeline: groom → push → ready →
+      monitor → merge. Skip if no fixup commits were created.
+    steps:
+      - subject: Groom commit history
+        type: detailed
+        skills: [Dev10x:git-groom]
+        prompt: Squash fixup commits into clean history.
+      - subject: Push changes
+        type: detailed
+        skills: [Dev10x:git]
+        prompt: Push with --force-with-lease.
+      - subject: Mark PR ready
+        type: detailed
+        prompt: >
+          Run `gh pr ready` if the PR is still a draft. Skip if
+          already marked ready.
+      - subject: Monitor CI
+        type: detailed
+        skills: [Dev10x:gh-pr-monitor]
+        prompt: >
+          Watch CI. Fix failures with fixup commits if needed.
+          Auto-advance when green.
+      - subject: Merge PR
+        type: detailed
+        skills: [Dev10x:gh-pr-merge]
+        prompt: >
+          When CI passes and no new review comments exist,
+          delegate to Dev10x:gh-pr-merge — never run raw
+          `gh pr merge`. In solo-maintainer mode the skill
+          merges automatically; otherwise it stops and reports
+          ready-to-merge status.
+        condition: ci-green-no-comments
+
+overrides: []

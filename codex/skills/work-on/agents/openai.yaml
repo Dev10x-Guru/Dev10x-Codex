@@ -1,0 +1,4 @@
+interface:
+  display_name: "Work On"
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plugin Doctor"
+policy:
+  allow_implicit_invocation: false
