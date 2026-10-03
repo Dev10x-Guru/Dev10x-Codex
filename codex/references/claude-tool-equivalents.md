@@ -48,9 +48,25 @@ folder of this skill, `../<skill>/SKILL.md` — and follow it.
 ## Subagents — `Agent(...)`, `subagent_type`, `run_in_background`, `SendMessage`
 
 Use `spawn_agent` and collect the result with `wait_agent`.
-Model hints (`haiku`, `sonnet`, `opus`) do not apply in Codex.
-The `SendMessage(to="main")` delivery protocol is not needed: the
-result arrives through `wait_agent`.
+
+- A named Dev10x agent — `subagent_type="Dev10x:code-reviewer"`, or
+  a bare `code-reviewer`, `reviewer-*`, `architect-*`,
+  `spec-reviewer`, `adr-reviewer` — is the Codex agent role of the
+  same name with the `Dev10x:` prefix, once `codex/agents/` is
+  installed (see the Dev10x-Codex `docs/codex.md`).
+  If that role is not offered, spawn a default agent and give it the
+  `developer_instructions` from `<plugin-root>/codex/agents/<name>.toml`.
+- `general-purpose`, `Explore` and any other unnamed type mean the
+  default Codex agent with the prompt as written.
+- Model hints (`haiku`, `sonnet`, `opus`) do not apply: each Dev10x
+  role already sets its own reasoning effort.
+- `isolation="worktree"`, `mode` and `run_in_background` have no
+  Codex flag; agents share your working directory, so give parallel
+  agents disjoint files.
+- The `SendMessage(to="main")` delivery protocol is not needed, even
+  where a prompt template asks for it: the result arrives through
+  `wait_agent`.
+
 When spawning is not available, do the work yourself, in order.
 
 ## Waiting and polling — `Monitor`, `ScheduleWakeup`, `CronCreate`
