@@ -16,6 +16,7 @@ from dev10x.skills.codex.translate import (
     PLUGIN_ROOT_PLACEHOLDER,
     TOOL_EQUIVALENTS_RELPATH,
     VERIFIED_SKILLS,
+    InvalidPluginRoot,
     InvalidSkillFile,
     InvalidSkillName,
     codex_description,
@@ -28,6 +29,7 @@ from dev10x.skills.codex.translate import (
     stale_paths,
     translate_skills,
     unknown_skill_mentions,
+    write_tree,
 )
 
 REPO_ROOT = Path(codex_pkg.__file__).resolve().parents[4]
@@ -85,7 +87,6 @@ def plugin(tmp_path: Path) -> Path:
     )
     (tmp_path / "skills" / "empty-leftover" / "__pycache__").mkdir(parents=True)
     write(tmp_path / "references" / "git-commits.md", "guide\n")
-    (tmp_path / ".codex-plugin").mkdir()
     return tmp_path
 
 
@@ -253,16 +254,20 @@ class TestRewriteLinks:
 
 
 class TestCodexDescription:
+    source = PurePosixPath("skills/x/SKILL.md")
+
     def test_folds_whitespace_and_replaces_angle_brackets(self) -> None:
-        assert codex_description("Use\n  <thing>\n") == "Use ‹thing›"
+        assert codex_description("Use\n  <thing>\n", source=self.source) == "Use ‹thing›"
 
     def test_long_description_is_cut_at_a_word(self) -> None:
-        result = codex_description("word " * 400)
+        result = codex_description("word " * 400, source=self.source)
         assert len(result) <= DESCRIPTION_MAX_LENGTH
         assert result.endswith("word…")
 
-    def test_missing_description_becomes_empty(self) -> None:
-        assert codex_description(None) == ""
+    @pytest.mark.parametrize("description", [None, "", "   ", ["a"], 7])
+    def test_unusable_description_raises_naming_the_source(self, description: object) -> None:
+        with pytest.raises(InvalidSkillFile, match="skills/x/SKILL.md"):
+            codex_description(description, source=self.source)
 
 
 class TestTranslateSkills:
@@ -345,6 +350,15 @@ class TestTranslateSkills:
         with pytest.raises(InvalidSkillFile, match="skills/broken/SKILL.md"):
             translate_skills(plugin)
 
+    @pytest.mark.parametrize("make_skills_dir", [True, False])
+    def test_root_without_any_skill_is_refused(
+        self, tmp_path: Path, make_skills_dir: bool
+    ) -> None:
+        if make_skills_dir:
+            (tmp_path / "skills" / "no-skill-file").mkdir(parents=True)
+        with pytest.raises(InvalidPluginRoot, match="holds no skill folders"):
+            translate_skills(tmp_path)
+
 
 class TestStalePaths:
     def test_missing_output_is_all_stale(self, plugin: Path) -> None:
@@ -353,8 +367,7 @@ class TestStalePaths:
 
     def test_written_output_is_fresh_until_an_extra_file_appears(self, plugin: Path) -> None:
         tree = translate_skills(plugin)
-        for relative, content in tree.files.items():
-            write(plugin / relative, content)
+        write_tree(plugin, tree)
         assert stale_paths(plugin, tree) == []
         write(plugin / CODEX_SKILLS_RELPATH / "orphan" / "SKILL.md", "old\n")
         assert stale_paths(plugin, tree) == [CODEX_SKILLS_RELPATH / "orphan" / "SKILL.md"]
@@ -364,8 +377,7 @@ class TestStalePaths:
 
     def test_finder_metadata_and_other_dotfiles_are_ignored(self, plugin: Path) -> None:
         tree = translate_skills(plugin)
-        for relative, content in tree.files.items():
-            write(plugin / relative, content)
+        write_tree(plugin, tree)
         (plugin / CODEX_SKILLS_RELPATH / ".DS_Store").write_bytes(b"\x00\x01\xff\xfe")
         (plugin / CODEX_SKILLS_RELPATH / "git" / ".cache").mkdir(parents=True)
         (plugin / CODEX_SKILLS_RELPATH / "git" / ".cache" / "x").write_bytes(b"\xff")
@@ -387,45 +399,46 @@ class TestCodexSkillsCommand:
         fresh = runner.invoke(codex_skills, ["--root", str(plugin), "--check"])
         assert fresh.exit_code == 0
 
-    def test_writing_removes_skills_that_no_longer_exist_upstream(self, plugin: Path) -> None:
-        write(plugin / CODEX_SKILLS_RELPATH / "orphan" / "SKILL.md", "old\n")
-        CliRunner().invoke(codex_skills, ["--root", str(plugin)])
-        assert not (plugin / CODEX_SKILLS_RELPATH / "orphan").exists()
-
-    def test_root_without_a_codex_plugin_manifest_is_refused(self, tmp_path: Path) -> None:
+    def test_root_without_skills_is_refused_and_output_kept(self, tmp_path: Path) -> None:
         write(tmp_path / "codex" / "skills" / "keep" / "SKILL.md", "keep\n")
         result = CliRunner().invoke(codex_skills, ["--root", str(tmp_path)])
         assert result.exit_code == 2
-        assert "not a Dev10x plugin checkout" in result.output
+        assert "holds no skill folders" in result.output
         assert (tmp_path / "codex" / "skills" / "keep" / "SKILL.md").exists()
 
-    def test_empty_upstream_skills_never_wipe_the_output(self, tmp_path: Path) -> None:
-        (tmp_path / ".codex-plugin").mkdir()
-        (tmp_path / "skills").mkdir()
-        write(tmp_path / "codex" / "skills" / "keep" / "SKILL.md", "keep\n")
-        result = CliRunner().invoke(codex_skills, ["--root", str(tmp_path)])
-        assert result.exit_code == 1
-        assert "refusing to empty" in result.output
-        assert (tmp_path / "codex" / "skills" / "keep" / "SKILL.md").exists()
+    def test_invalid_skill_file_is_reported_by_path(self, plugin: Path) -> None:
+        write(plugin / "skills" / "broken" / "SKILL.md", "# no front matter\n")
+        result = CliRunner().invoke(codex_skills, ["--root", str(plugin), "--check"])
+        assert result.exit_code == 2
+        assert "ERROR: skills/broken/SKILL.md" in result.output
+
+
+class TestWriteTree:
+    def test_writing_removes_skills_that_no_longer_exist_upstream(self, plugin: Path) -> None:
+        write(plugin / CODEX_SKILLS_RELPATH / "orphan" / "SKILL.md", "old\n")
+        write_tree(plugin, translate_skills(plugin))
+        assert not (plugin / CODEX_SKILLS_RELPATH / "orphan").exists()
 
     def test_failed_write_keeps_the_previous_output_and_leaves_no_staging(
         self, plugin: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        tree = translate_skills(plugin)
         write(plugin / CODEX_SKILLS_RELPATH / "keep" / "SKILL.md", "keep\n")
 
         def fail_write(self: Path, *args: object, **kwargs: object) -> int:
             raise OSError("disk full")
 
         monkeypatch.setattr(Path, "write_text", fail_write)
-        result = CliRunner().invoke(codex_skills, ["--root", str(plugin)])
+        with pytest.raises(OSError, match="disk full"):
+            write_tree(plugin, tree)
         monkeypatch.undo()
-        assert isinstance(result.exception, OSError)
         assert (plugin / CODEX_SKILLS_RELPATH / "keep" / "SKILL.md").read_text() == "keep\n"
         assert [p.name for p in (plugin / "codex").iterdir()] == ["skills"]
 
     def test_written_output_is_world_readable(self, plugin: Path) -> None:
-        CliRunner().invoke(codex_skills, ["--root", str(plugin)])
-        assert (plugin / CODEX_SKILLS_RELPATH).stat().st_mode & 0o777 == 0o755
+        output = write_tree(plugin, translate_skills(plugin))
+        assert output == plugin / CODEX_SKILLS_RELPATH
+        assert output.stat().st_mode & 0o777 == 0o755
 
 
 class TestCommittedCodexSkills:

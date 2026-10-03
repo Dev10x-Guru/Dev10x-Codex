@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import posixpath
 import re
+import shutil
+import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -66,6 +68,10 @@ class InvalidSkillFile(ValueError):
     pass
 
 
+class InvalidPluginRoot(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class CodexSkillTree:
     files: dict[PurePosixPath, str]
@@ -122,6 +128,10 @@ def codex_path_for(upstream: PurePosixPath) -> PurePosixPath:
     return CODEX_SKILLS_RELPATH / upstream.relative_to(UPSTREAM_SKILLS_RELPATH)
 
 
+def _relative(path: PurePosixPath, start: PurePosixPath) -> str:
+    return posixpath.relpath(path.as_posix(), start.as_posix())
+
+
 def _normalize(path: PurePosixPath) -> PurePosixPath | None:
     normalized = PurePosixPath(posixpath.normpath(path.as_posix()))
     if normalized.parts and normalized.parts[0] == "..":
@@ -146,14 +156,19 @@ def rewrite_links(
         if resolved is None or not exists(resolved):
             return match.group(0)
         mapped = codex_path_for(resolved) if resolved in copied else resolved
-        relative = posixpath.relpath(mapped.as_posix(), target.parent.as_posix())
+        relative = _relative(mapped, target.parent)
         return f"{match.group(1)}{relative}{hash_sign}{anchor}{match.group(3)}"
 
     return _MARKDOWN_LINK_RE.sub(replace, text)
 
 
-def codex_description(description: object) -> str:
-    folded = " ".join(rewrite_text(str(description or "")).split())
+def codex_description(description: object, *, source: PurePosixPath) -> str:
+    if not isinstance(description, str) or not description.strip():
+        raise InvalidSkillFile(
+            f"{source}: front matter must be a YAML mapping with a non-empty "
+            "description — Codex lists a skill by its description"
+        )
+    folded = " ".join(rewrite_text(description).split())
     folded = folded.replace("<", "‹").replace(">", "›")
     if len(folded) <= DESCRIPTION_MAX_LENGTH:
         return folded
@@ -172,7 +187,7 @@ def render_front_matter(*, name: str, description: str, upstream: PurePosixPath)
 
 
 def render_preamble(*, directory: str, target: PurePosixPath, verified: bool) -> str:
-    equivalents = posixpath.relpath(TOOL_EQUIVALENTS_RELPATH.as_posix(), target.parent.as_posix())
+    equivalents = _relative(TOOL_EQUIVALENTS_RELPATH, target.parent)
     upstream_dir = (UPSTREAM_SKILLS_RELPATH / directory).as_posix()
     lines = [
         f"> **Running in Codex.** Generated from `{upstream_dir}/` by "
@@ -214,9 +229,21 @@ def _copied_files(skill_dir: Path, upstream_dir: PurePosixPath) -> list[PurePosi
 
 def _skill_directories(root: Path) -> list[Path]:
     skills_root = root / UPSTREAM_SKILLS_RELPATH
-    return sorted(
-        path for path in skills_root.iterdir() if path.is_dir() and (path / SKILL_FILE).is_file()
+    directories = (
+        sorted(
+            path
+            for path in skills_root.iterdir()
+            if path.is_dir() and (path / SKILL_FILE).is_file()
+        )
+        if skills_root.is_dir()
+        else []
     )
+    if not directories:
+        raise InvalidPluginRoot(
+            f"{skills_root} holds no skill folders with a {SKILL_FILE} — "
+            "refusing to translate an empty plugin"
+        )
+    return directories
 
 
 def translate_skills(root: Path) -> CodexSkillTree:
@@ -249,16 +276,12 @@ def translate_skills(root: Path) -> CodexSkillTree:
                 warnings.append(f"{source}: mentions Dev10x:{unknown}, which has no skill")
             if source.name == SKILL_FILE and source.parent.name == name:
                 front_matter, body = split_front_matter(text)
-                description = front_matter.get("description")
-                if not isinstance(description, str) or not description.strip():
-                    raise InvalidSkillFile(
-                        f"{source}: front matter must be a YAML mapping with a non-empty "
-                        "description — Codex lists a skill by its description"
-                    )
                 files[target] = (
                     render_front_matter(
                         name=name,
-                        description=codex_description(description),
+                        description=codex_description(
+                            front_matter.get("description"), source=source
+                        ),
                         upstream=source,
                     )
                     + "\n"
@@ -276,18 +299,39 @@ def translate_skills(root: Path) -> CodexSkillTree:
     return CodexSkillTree(files=files, warnings=warnings)
 
 
+def _is_hidden(relative: PurePosixPath) -> bool:
+    return any(part.startswith(".") for part in relative.parts)
+
+
 def read_tree(root: Path) -> dict[PurePosixPath, str]:
     codex_root = root / CODEX_SKILLS_RELPATH
     if not codex_root.is_dir():
         return {}
-    return {
-        CODEX_SKILLS_RELPATH / PurePosixPath(path.relative_to(codex_root).as_posix()): (
-            path.read_text(encoding="utf-8")
-        )
-        for path in sorted(codex_root.rglob("*"))
-        if path.is_file()
-        and not any(part.startswith(".") for part in path.relative_to(codex_root).parts)
-    }
+    tree: dict[PurePosixPath, str] = {}
+    for path in sorted(codex_root.rglob("*")):
+        relative = PurePosixPath(path.relative_to(codex_root).as_posix())
+        if path.is_file() and not _is_hidden(relative):
+            tree[CODEX_SKILLS_RELPATH / relative] = path.read_text(encoding="utf-8")
+    return tree
+
+
+def write_tree(root: Path, tree: CodexSkillTree) -> Path:
+    output = root / CODEX_SKILLS_RELPATH
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".skills-", dir=output.parent))
+    try:
+        for relative, content in sorted(tree.files.items()):
+            destination = staging / relative.relative_to(CODEX_SKILLS_RELPATH)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(content, encoding="utf-8")
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    staging.chmod(0o755)
+    if output.exists():
+        shutil.rmtree(output)
+    staging.rename(output)
+    return output
 
 
 def stale_paths(root: Path, tree: CodexSkillTree) -> list[PurePosixPath]:
