@@ -46,6 +46,10 @@ Each one opens with a short Codex note linking
 Code tools a skill names — `AskUserQuestion`, `TaskCreate`, `Agent`,
 `Monitor` — to their Codex equivalents.
 
+Where a skill asks you to choose, Codex uses `request_user_input`
+when it offers that tool and otherwise asks in plain text with
+numbered options, so no Codex feature flag needs enabling.
+
 ## Prerequisites
 
 - Codex CLI **0.157** or newer (`codex --version`)
@@ -142,6 +146,12 @@ codex execpolicy check --rules ~/.codex/rules/dev10x.rules git status
 
 The baseline never allows `rm`, `dd` or `sudo`.
 The guardrail hooks still run on every allowed command.
+
+Scripts inside the Dev10x skills are not in the baseline.
+They live under the versioned plugin cache path, which a Codex prefix
+rule cannot match across releases, so Codex asks before running one.
+The skills reach most script-backed work through MCP tools instead,
+and those need no approval.
 
 ## Upgrading from the old Dev10x skills
 
