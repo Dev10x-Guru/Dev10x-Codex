@@ -11,7 +11,6 @@ from dev10x.commands.skill import codex_agents
 from dev10x.skills.codex.agents import (
     CODEX_AGENTS_RELPATH,
     DEFAULT_EFFORT,
-    DEFERRED_AGENTS,
     InvalidAgentFile,
     agent_tools,
     codex_role_description,
@@ -24,6 +23,7 @@ from dev10x.skills.codex.agents import (
     toml_string,
     translate_agents,
 )
+from dev10x.skills.codex.catalog import DEFERRED_AGENTS
 from dev10x.skills.codex.translate import InvalidPluginRoot
 from dev10x.skills.codex.tree import read_tree, stale_paths, write_tree
 

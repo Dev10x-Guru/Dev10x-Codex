@@ -76,7 +76,7 @@ Read the warnings each command prints:
 - **A new Claude Code tool** named in skills (a new `Agent` flag, a new
   built-in) needs a line in the equivalents reference.
 - **A new upstream agent** becomes a Codex role on its own; add it to
-  `DEFERRED_AGENTS` in `src/dev10x/skills/codex/agents.py` only when it
+  `DEFERRED_AGENTS` in `src/dev10x/skills/codex/catalog.py` only when it
   belongs to deferred work.
 
 ## 4. Extend the approval baseline
