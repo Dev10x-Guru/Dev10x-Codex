@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import posixpath
 import re
-import shutil
-import tempfile
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 import yaml
 
 from dev10x.skills.codex.catalog import VERIFIED_SKILLS
+from dev10x.skills.codex.tree import GeneratedTree, is_hidden
 
 UPSTREAM_SKILLS_RELPATH = PurePosixPath("skills")
 CODEX_SKILLS_RELPATH = PurePosixPath("codex") / "skills"
@@ -70,12 +68,6 @@ class InvalidSkillFile(ValueError):
 
 class InvalidPluginRoot(ValueError):
     pass
-
-
-@dataclass(frozen=True)
-class CodexSkillTree:
-    files: dict[PurePosixPath, str]
-    warnings: list[str] = field(default_factory=list)
 
 
 def codex_skill_name(directory: str) -> str:
@@ -219,7 +211,7 @@ def _copied_files(skill_dir: Path, upstream_dir: PurePosixPath) -> list[PurePosi
     files: list[PurePosixPath] = []
     for path in sorted(skill_dir.rglob("*")):
         relative = PurePosixPath(path.relative_to(skill_dir).as_posix())
-        if not path.is_file() or path.suffix not in COPIED_SUFFIXES or _is_hidden(relative):
+        if not path.is_file() or path.suffix not in COPIED_SUFFIXES or is_hidden(relative):
             continue
         if relative.parts[0] in UPSTREAM_ONLY_DIRS or "__pycache__" in relative.parts:
             continue
@@ -246,7 +238,7 @@ def _skill_directories(root: Path) -> list[Path]:
     return directories
 
 
-def translate_skills(root: Path) -> CodexSkillTree:
+def translate_skills(root: Path) -> GeneratedTree:
     directories = _skill_directories(root)
     known = [directory.name for directory in directories]
     sources: dict[str, list[PurePosixPath]] = {
@@ -296,48 +288,4 @@ def translate_skills(root: Path) -> CodexSkillTree:
             directory=name, implicit=verified
         )
 
-    return CodexSkillTree(files=files, warnings=warnings)
-
-
-def _is_hidden(relative: PurePosixPath) -> bool:
-    return any(part.startswith(".") for part in relative.parts)
-
-
-def read_tree(root: Path) -> dict[PurePosixPath, str]:
-    codex_root = root / CODEX_SKILLS_RELPATH
-    if not codex_root.is_dir():
-        return {}
-    tree: dict[PurePosixPath, str] = {}
-    for path in sorted(codex_root.rglob("*")):
-        relative = PurePosixPath(path.relative_to(codex_root).as_posix())
-        if path.is_file() and not _is_hidden(relative):
-            tree[CODEX_SKILLS_RELPATH / relative] = path.read_text(encoding="utf-8")
-    return tree
-
-
-def write_tree(root: Path, tree: CodexSkillTree) -> Path:
-    output = root / CODEX_SKILLS_RELPATH
-    output.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=".skills-", dir=output.parent))
-    try:
-        for relative, content in sorted(tree.files.items()):
-            destination = staging / relative.relative_to(CODEX_SKILLS_RELPATH)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_text(content, encoding="utf-8")
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-    staging.chmod(0o755)
-    if output.exists():
-        shutil.rmtree(output)
-    staging.rename(output)
-    return output
-
-
-def stale_paths(root: Path, tree: CodexSkillTree) -> list[PurePosixPath]:
-    current = read_tree(root)
-    return sorted(
-        path
-        for path in current.keys() | tree.files.keys()
-        if current.get(path) != tree.files.get(path)
-    )
+    return GeneratedTree(output=CODEX_SKILLS_RELPATH, files=files, warnings=warnings)

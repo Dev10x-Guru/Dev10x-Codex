@@ -438,10 +438,9 @@ def codex_skills(*, root_path: Path | None, check: bool) -> None:
         InvalidPluginRoot,
         InvalidSkillFile,
         InvalidSkillName,
-        stale_paths,
         translate_skills,
-        write_tree,
     )
+    from dev10x.skills.codex.tree import stale_paths, write_tree
     from dev10x.skills.permission.enumerate_mcp import plugin_root
 
     root = root_path or plugin_root()

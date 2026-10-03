@@ -22,15 +22,13 @@ from dev10x.skills.codex.translate import (
     codex_description,
     codex_skill_name,
     display_name,
-    read_tree,
     rewrite_links,
     rewrite_text,
     split_front_matter,
-    stale_paths,
     translate_skills,
     unknown_skill_mentions,
-    write_tree,
 )
+from dev10x.skills.codex.tree import read_tree, stale_paths, write_tree
 
 REPO_ROOT = Path(codex_pkg.__file__).resolve().parents[4]
 CODEX_VALIDATOR_KEYS = {"name", "description", "license", "allowed-tools", "metadata"}
@@ -373,7 +371,7 @@ class TestStalePaths:
         assert stale_paths(plugin, tree) == [CODEX_SKILLS_RELPATH / "orphan" / "SKILL.md"]
 
     def test_read_tree_of_absent_output_is_empty(self, tmp_path: Path) -> None:
-        assert read_tree(tmp_path) == {}
+        assert read_tree(tmp_path, CODEX_SKILLS_RELPATH) == {}
 
     def test_hidden_upstream_files_are_neither_translated_nor_reported_stale(
         self, plugin: Path
@@ -454,7 +452,7 @@ class TestWriteTree:
 class TestCommittedCodexSkills:
     @pytest.fixture(scope="class")
     def committed(self) -> dict[PurePosixPath, str]:
-        return read_tree(REPO_ROOT)
+        return read_tree(REPO_ROOT, CODEX_SKILLS_RELPATH)
 
     def test_committed_tree_matches_upstream_skills(self) -> None:
         stale = stale_paths(REPO_ROOT, translate_skills(REPO_ROOT))
