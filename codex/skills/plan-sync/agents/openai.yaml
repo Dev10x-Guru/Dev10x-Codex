@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan Sync"
+policy:
+  allow_implicit_invocation: false

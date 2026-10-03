@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skill Create"
+policy:
+  allow_implicit_invocation: false

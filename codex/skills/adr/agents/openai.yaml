@@ -1,0 +1,4 @@
+interface:
+  display_name: "ADR"
+policy:
+  allow_implicit_invocation: false

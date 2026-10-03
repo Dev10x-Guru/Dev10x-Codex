@@ -1,0 +1,549 @@
+# Create Pull Request for Ticket (Instructions)
+
+## Overview
+
+This skill automates the creation of a GitHub pull request for the
+current branch with issue tracker integration (GitHub Issues, Linear,
+or JIRA). It handles pushing the branch, creating the PR with
+appropriate title and body, adding checklist comments, and opening the
+PR in your browser.
+
+## Orchestration
+
+This skill follows `references/task-orchestration.md` patterns
+(Tier: Standard).
+
+**Auto-advance:** Complete each step and immediately start the next — no checkpoints the resolver did not ask for.
+Never pause between steps to ask "should I continue?".
+
+**REQUIRED: Create tasks before ANY work.** Execute these
+`TaskCreate` calls at startup:
+
+1. `TaskCreate(subject="Verify git state", description="Check branch, commits, base branch", activeForm="Verifying git state")`
+2. `TaskCreate(subject="Generate PR body", description="Source JTBD, build commit list, compose body", activeForm="Generating PR body")`
+3. `TaskCreate(subject="Run pre-PR checks", description="Run ruff, black, mypy, pytest if Python", activeForm="Running pre-PR checks")`
+4. `TaskCreate(subject="Push and create PR", description="Push branch, create draft PR on GitHub", activeForm="Creating PR")`
+
+Set sequential dependencies: generate blocked by verify, checks
+blocked by generate, push blocked by checks.
+
+**Task creation in unattended mode:** All 4 startup tasks MUST
+be created regardless of mode. When a task's work is auto-skipped
+(e.g., "Run pre-PR checks" on a non-Python project), still create
+the task via `TaskCreate` and immediately mark it `completed`
+with description "Auto-skipped: non-Python project" (or the
+appropriate reason). This preserves supervisor visibility into
+the full workflow.
+
+**Unattended mode:** When this skill is invoked by an
+orchestrating skill (e.g., `Dev10x:work-on`, `Dev10x:git-promote`,
+`test:fix-flaky`) and the orchestrator has already approved the
+work plan, all interactive decision gates are bypassed:
+- PR preview gate → skip (orchestrator already approved the plan)
+- Title → auto-generate from commit(s) (single-commit: use
+  title; multi-commit: derive from JTBD "so [beneficiary] can" clause)
+- Job Story → auto-generate inline for simple changes; reuse
+  session context for complex ones (skip full `Dev10x:jtbd` skill)
+- Pre-PR checks → still run (safety gate, not interactive)
+- Browser open → skip
+- Next steps → return control to orchestrator immediately
+
+**Task reduction in unattended mode:** Reduce `TaskCreate` calls
+to at most 1 task (`"Create PR"`) instead of decomposing into
+the full 4-task sequence. The orchestrator already tracks
+high-level progress.
+
+Detection: unattended mode activates when **both** conditions
+are met:
+1. The skill is invoked via `$Dev10x:gh-pr-create` (not
+   directly by the user via `$Dev10x:gh-pr-create`)
+2. The caller is executing a plan step with an active task
+   list (i.e., an orchestrating skill like `work-on`)
+
+When either condition is absent, default to **attended mode**
+with all interactive gates. When in doubt, default to attended.
+
+**Decision gates (attended mode) — REQUIRED: Call
+`AskUserQuestion`** (do NOT use plain text) at each of these
+points. In unattended mode, these gates are skipped:
+
+- **PR preview approval (MANDATORY in attended mode):**
+  **REQUIRED: Call `AskUserQuestion`** (do NOT use plain text,
+  call spec: [ask-pr-preview.md](tool-calls/ask-pr-preview.md))
+  after generating the PR body. This blocks execution until the
+  user responds. **DO NOT skip this gate in attended mode —
+  proceeding directly to `create_pr` without user approval is
+  a compliance violation.**
+  Options:
+  - Create PR (Recommended) — Push branch and create draft PR as shown
+  - Edit title/body — I want to revise before creating
+  - Abort — Cancel PR creation
+
+## Scripts
+
+All multi-line commands live in `<plugin-root>/skills/gh-pr-create/scripts/`:
+
+| Script | Purpose |
+|--------|---------|
+| `detect-base-branch.sh` | Auto-detect base branch (develop → main fallback) |
+| `verify-state.sh` | Validate branch, commits, and base branch ancestry |
+| `generate-commit-list.sh` | Generate linked commit list for PR body |
+| `pre-pr-checks.sh` | Run ruff, black, mypy, pytest before push |
+| `create-pr.sh` | Push branch, create draft PR with body including checklist |
+| `post-summary-comment.sh` | _(deprecated — checklist is now in PR body)_ |
+
+## Prerequisites Check
+
+**IMPORTANT:** Before executing this workflow, verify required tools:
+
+1. Check if `gh` CLI is installed and authenticated:
+   ```bash
+   gh auth status
+   ```
+   If not authenticated, inform the user to run `gh auth login`
+
+2. Verify we're in a git repository with a remote:
+   ```bash
+   git remote get-url origin
+   ```
+
+3. **Worktree check** — `verify-state.sh` reads git state from the current working
+   directory. If the session is rooted in the main repo but the branch lives in a
+   worktree, run it with `GIT_DIR` pointing to the worktree — BUT that env var
+   prefix breaks `Bash(~/.claude/skills:*)` allow-rule matching. Instead, pass
+   the worktree path as an argument when the script supports it, or use a subshell:
+   ```bash
+   # When invoking from main repo for a branch checked out in a worktree:
+   # ❌  GIT_DIR=... verify-state.sh   (env prefix breaks allow rules)
+   # ✅  Run the script from within the worktree context
+   # Note: env var prefix is still subject to permission friction. The
+   # cleanest alternative is to invoke pr:create while CWD is inside the
+   # worktree, not the main repo.
+   ```
+
+## When to Use This Skill
+
+Use this skill when:
+- Ready to create a PR for your current feature branch
+- Have committed changes that need review
+- Want to link a PR to an issue tracker ticket
+- Need to create a draft PR for early feedback
+- **Updating an existing PR** (pass PR number or URL as argument)
+
+### Update Existing PR Mode
+
+When a PR number or URL is provided as argument, switch to "update" mode:
+- Skip Steps 1-3 (branch check, ticket extraction) — use the existing PR's info
+- Steps 4-5 still apply (source JTBD, generate body)
+- Skip Step 6 (pre-PR checks) and Step 7 (push) — PR already exists
+- Step 8 becomes "Update PR" using `gh pr edit`
+- Steps 8-9 still apply (re-mark N/A checklist items, open browser, display summary)
+
+## Workflow
+
+### Step 1: Verify Current State and Extract Ticket
+
+**Primary (MCP tool):** Call
+`mcp__cli__verify_pr_state` to validate branch
+state. Parse `BRANCH_NAME` and `ISSUE` from the response.
+
+**MCP server unavailable.** If the tool is listed as "no longer
+available" in system-reminders, STOP and ask the user to reconnect
+via `/mcp` or a session restart. Do NOT fall back to the wrapper
+script or env-level bypasses — see
+`references/mcp-unavailable-escape-hatch.md`.
+
+**Fallback (script):** Only when the MCP server is healthy but the
+tool call errored for another reason:
+
+```bash
+<plugin-root>/skills/gh-pr-create/scripts/verify-state.sh
+```
+
+This validates:
+- Not on develop/main/master
+- No uncommitted changes
+- Has commits ahead of develop
+- Branch does not include master-only commits (would cause PR to target master)
+- No merge conflicts with base branch (requires Git 2.38+; suggests rebase if conflicts found)
+
+On success, outputs `BRANCH_NAME=<name>` and `ISSUE=<ticket-id>`.
+
+**Verify base branch from live git data** — do not trust memory alone:
+```bash
+git symbolic-ref refs/remotes/origin/HEAD
+```
+Use whatever branch this returns as the PR base.
+
+### Step 2: Generate PR Title
+
+**Single-commit PRs:** Use the commit title directly:
+
+```bash
+TITLE=$(git log -1 --format=%s)
+```
+
+**Multi-commit PRs:** The most recent commit title often describes the
+last incremental step, not the overall change. Instead:
+
+1. List all commit titles in the branch:
+   ```bash
+   git log origin/$BASE_BRANCH..HEAD --reverse --format=%s
+   ```
+2. Check if the JTBD "so [beneficiary] can" clause (from Step 3)
+   suggests a better title — choose a frame per § Title Frames below
+   and prefix the ticket's gitmoji (e.g., "so the merchant can reuse
+   outbox for SMS" → `♻️ PROJ-551 Enable outbox reuse for SMS`).
+3. If no JTBD is available yet, select the commit title that best
+   describes the **overall outcome** of the PR, not an intermediate
+   step.
+4. Present the candidate title to the user for approval.
+
+**Guiding Principle:** The PR title should describe the user-facing
+outcome, not the implementation detail.
+
+#### Title Frames (GH-1225)
+
+**Do not transpose the "so X can" clause mechanically.** Read
+literally, "so [beneficiary] can [outcome]" has exactly one imperative
+form — "Let [beneficiary] [outcome]" — so following the clause word by
+word produces a monoculture. A 17-PR `tt:safe-to-ship` release bundle
+came back with 11 titles opening "Let", which is a list an approver
+cannot skim.
+
+Pick the frame that carries the most information about *this* change:
+
+| Frame | Shape | Use when |
+|-------|-------|----------|
+| Outcome | `Enable <outcome>` | a capability appears |
+| Prevention | `Prevent <failure>` / `Stop <symptom>` | a bug fix; name the symptom the reader recognises |
+| Actor | `Let <human role> <outcome>` | the beneficiary is a person AND naming them is what distinguishes this PR |
+| Subject | `<subject> now <behaviour>` | the changed thing is the distinguishing part |
+
+The Actor frame is one option among four, not the default. Reach for it
+when the *role* is the news; when the outcome is the news, the Outcome
+or Prevention frame says more in the same width. For commit titles the
+same choice is made from the ROI bucket and the shape of the change —
+see `Dev10x:git-commit` Step 2.5, whose shape table and title checks
+(generated-only diffs, sibling PRs, revert and re-land subjects) apply
+to PR titles as well.
+
+**The title actor must be a human role.** The trace-upward rule that
+governs Job Stories governs titles too — it was being applied to the
+story and then dropped at the title. "the CRM", "the schema poller",
+"the client" are systems: none of them benefits from anything, so a
+title naming one as actor tells the approver nothing. Trace upward to
+whoever actually gains (the dealer, the service writer, the wholesaler)
+or switch to a frame with no actor slot.
+
+**Sibling PRs must be distinguishable.** In a release bundle, no two
+titles may share their first two words, and a verb-only difference
+("create" vs "look up" on otherwise identical titles) does not count as
+distinct. When two PRs collide, re-frame one of them — the collision
+means at least one title is describing the shared mechanism rather than
+its own change.
+
+**Name the ROI bucket.** Memo 006 (GH-276) requires every release title
+to be readable as one of Risk, Cost, Revenue, Time-to-value, Retention,
+or Platform integrity. It need not appear as a literal word, but an
+approver must be able to name it from the title alone. A title that
+maps to no bucket is describing the implementation — re-frame it.
+
+### Step 3: Source or Generate Job Story
+
+The PR body must start with a JTBD Job Story. Look for an existing one
+before generating a new one.
+
+**Step 3a: Detect issue tracker**
+
+Call the MCP tool with the ISSUE extracted from the branch name:
+
+`mcp__cli__detect_tracker(ticket_id="$ISSUE")`
+
+Parse `tracker` and `fixes_url` from the response.
+
+**Step 3b: Search for existing Job Story**
+
+Dispatch based on TRACKER:
+
+| TRACKER | How to search |
+|---------|--------------|
+| `github` | `<plugin-root>/skills/gh-context/scripts/gh-issue-get.sh` for body, `<plugin-root>/skills/gh-context/scripts/gh-issue-comments.sh` for comments |
+| `linear` | Linear MCP tools for description and comments |
+| `jira` | JIRA API for description |
+| `unknown` | Skip ticket search, rely on commit messages |
+
+Search each source for the `**When**` / `**[actor] wants to**` /
+`**so [beneficiary] can**` pattern (legacy first-person
+`**I want to**` / `**so I can**` also matches).
+For localized tickets, also search for translated structural labels in
+the project language. If a ticket or PR uses BDD/Gherkin-derived
+keywords, validate translations against Cucumber's official language
+reference: https://cucumber.io/docs/gherkin/languages/
+
+**Step 3c: Check commit messages (fallback)**
+
+If no Job Story found in the ticket:
+
+```bash
+git log origin/$BASE_BRANCH..HEAD --format=%B
+```
+
+**Step 3d: Generate a new one**
+
+If none found, generate a Job Story:
+
+- Use the project or ticket language for the Job Story and user-story
+  prose.
+- **For simple/trivial fixes** (flaky tests, typos, single-line changes):
+  generate the Job Story inline in
+  `**When** / **[actor] wants to** / **so [beneficiary] can**`
+  format without invoking the full `Dev10x:jtbd` skill.
+- **For features, bug fixes, and multi-commit PRs**: follow the `Dev10x:jtbd`
+  base skill workflow:
+  1. Gather context (ticket, parent ticket, diff)
+  2. Identify the situation (who, trigger, current pain)
+  3. Draft using format: `**When** [situation], **[actor] wants to** [motivation], **so [beneficiary] can** [expected outcome].`
+  4. Present draft and ask user: "Apply this Job Story to the PR? (y/edit/n)"
+
+### Step 4: Generate PR Body
+
+The PR body must be **compact** to minimize notification preview size.
+It starts with the Job Story, followed by a commit list with links and
+the issue tracker reference.
+
+**Generate commit list (for preview before PR creation):**
+
+`mcp__cli__generate_commit_list(pr_number="PLACEHOLDER")`
+
+**NEVER call `generate-commit-list.sh` directly** — use the MCP tool
+above. The script is an internal implementation detail.
+
+**Body format (Job Story + separator + commit list + issue link + separator + checklist):**
+```markdown
+**When** [situation], **[actor] wants to** [motivation], **so [beneficiary] can** [expected outcome].
+
+---
+
+[`b3a015a8`](REPO_URL/pull/NUMBER/commits/FULL_HASH) ✨ PROJ-36 Enable feature
+[`fec49998`](REPO_URL/pull/NUMBER/commits/FULL_HASH) ♻️ PROJ-36 Refactor module
+
+Fixes: {fixes_url from detect_tracker MCP tool}
+
+---
+
+{.github/checklist.md contents with TICKET-ID substituted}
+```
+
+If FIXES_URL is empty (unknown tracker), omit the `Fixes:` line entirely.
+
+### Step 5: Run Pre-PR Checks
+
+```bash
+<plugin-root>/skills/gh-pr-create/scripts/pre-pr-checks.sh
+```
+
+Automatically skips if no Python files changed. Runs ruff, formatting,
+mypy, and pytest. Exits on first failure.
+
+**STOP on failure (REQUIRED):**
+
+If `pre-pr-checks.sh` exits non-zero, or
+`mcp__cli__pre_pr_checks` returns
+`{"error": "..."}` or any non-success structure:
+
+1. STOP the PR creation workflow immediately
+2. Display the error output to the user
+3. Suggest fix commands or delegate to the appropriate skill
+   (`$Dev10x:py-test` for pytest failures, project lint runner for
+   ruff/black, etc.)
+
+Do NOT attempt to debug by running `uv run mypy`, `.venv/bin/mypy`,
+`ruff check`, `black --check`, or any other lint/test tool directly
+in the main session. The check failure is the signal to halt — not
+to investigate. The agent must hand control back to the user (or to
+a test/lint skill) instead of looping on raw tool invocations. This
+applies whether the failure was reported by the script path or the
+MCP tool path.
+
+### Step 6: Push and Create Draft PR
+
+**Strict order: push FIRST, then create PR (GH-159).** The
+push must complete successfully before `create_pr` runs.
+Audit GH-159 caught a session where `create_pr` ran before
+any successful `push_safe`; GitHub accepted the PR but a
+PostToolUse hook had silently rewound HEAD between commits,
+and subsequent `push_safe` calls returned `{}` while the
+remote and local refs diverged. Recovery required
+`git reflog` and `git reset --hard <sha>`.
+
+Verification before `create_pr`:
+
+1. Run `mcp__cli__push_safe` (or the wrapper
+   script) and confirm a non-error return.
+2. Sanity-check the remote ref with
+   `git ls-remote --heads origin <branch>` — local HEAD SHA
+   must match the remote ref.
+3. ONLY then invoke `create_pr`.
+
+If push verification fails, STOP. Do NOT fall back to a raw
+`git push` (it is hook-blocked) and do NOT call `create_pr`
+on an unpushed branch.
+
+```bash
+<plugin-root>/skills/gh-pr-create/scripts/create-pr.sh "$TITLE" "$JOB_STORY" "$ISSUE" "$FIXES_URL"
+```
+
+This script:
+1. Pushes the branch with upstream tracking (fails fast if
+   push does not succeed)
+2. Creates a draft PR targeting `develop` with plain commit
+   list + checklist template
+3. Gets the PR number
+4. Updates the body with linked commits (using `generate-commit-list.sh`)
+5. Outputs the PR number
+
+### Step 6b: Cross-Fork PRs (GH-473)
+
+When contributing to an external repo from your own fork (the head
+repo differs from the base repo), pass the fork owner via the
+`head_repo` parameter so the wrapper opens the PR with
+`--head <head_repo>:<branch>` — instead of dropping to a raw
+`gh pr create --head` that bypasses the Job Story, commit list,
+summary comment, and notify flow.
+
+```
+mcp__cli__create_pr(
+    title=..., job_story=..., issue_id=...,
+    head_repo="<fork-owner>",   # e.g. "octocat"
+)
+```
+
+With `head_repo` set, `create-pr.sh` pushes the head branch to the
+fork owner's remote (matched by remote-URL owner, then a `fork`
+remote, then `origin`) and adds `--head <fork-owner>:<branch>` to
+`gh pr create`. All wrapper behavior (JTBD body, linked commit
+list, `Fixes:` line, summary comment) is preserved.
+
+**Detect-fork-remote heuristic.** Before setting `head_repo`,
+confirm the head differs from the base. Inspect the remotes:
+
+```bash
+git remote -v
+```
+
+The base/upstream owner is the owner of `origin`'s URL; the fork
+owner is the owner of whichever remote you push to (often a remote
+literally named `fork`, or one whose URL owner is your GitHub
+login). When the two owners differ, infer `head_repo=<fork-owner>`
+and **confirm the inferred head with the user** before creating the
+PR (same confirm-before-act pattern as base-branch detection). For
+same-repo PRs the owners match — omit `head_repo` entirely.
+
+### Step 7: Mark N/A Checklist Items in PR Body
+
+Analyze `git diff origin/$BASE_BRANCH..HEAD` to determine which checklist items
+don't apply to this PR, then update the PR body with strikethroughs:
+
+**N/A detection heuristics:**
+- No `migrations/` files in diff → strike migration items
+- No new env var references → strike environment variable items
+- No schema-breaking changes → strike breaking changes items
+
+**Strike-through format:** Replace `- [ ] item text` with `- ~item text~`
+
+**Update PR body:** Call the `update_pr` MCP tool. It wraps the
+REST PATCH endpoint internally (avoiding the `gh pr edit` GraphQL
+Projects-classic deprecation that exits 1 on success — GH-41) and
+is auto-permitted under `mcp__cli__*`:
+
+```
+mcp__cli__update_pr(
+    pr_number=<N>,
+    body=<updated_body>,
+)
+```
+
+Returns `{pr_number, url}`. Pass `repo` only when not detectable
+from CWD.
+
+### Step 8: Open PR in Browser
+
+```bash
+gh pr view --web
+```
+
+### Step 9: Display Summary
+
+Show a success message with PR details:
+
+```
+✅ Pull Request Created
+
+Title: 🐛 PROJ-123 Fix timeout handling
+Branch: user/PROJ-123/fix-timeout
+Status: Draft
+Issue: {FIXES_URL}
+PR URL: https://github.com/owner/repo/pull/456
+
+Next steps:
+- Review the PR in your browser
+- Wait for CI checks to complete
+- Mark as "Ready for review" when done
+- Request reviewers if needed
+```
+
+## Important Notes
+
+- **DO NOT use raw `git push` or `gh pr create` commands.**
+  Always use `$Dev10x:git` for push and the MCP tool
+  `mcp__cli__create_pr` (or the `create-pr.sh`
+  script as fallback) for PR creation. Raw commands bypass
+  protected branch checks and body formatting. Audit sessions
+  GH-448 and GH-446 confirmed this regression pattern.
+- Create PRs as drafts initially — **exception:** when
+  `mcp__cli__supervisor_review_status()` reports
+  `supervisor_review: "none"`, pass `draft=False` to `create_pr` so the
+  PR is immediately ready-for-review. Nobody reads this project's PRs
+  before merge, so leaving the PR draft just adds a manual flip step
+  (GH-184). Do NOT read `friction.yaml`, `active_modes`, or any session
+  file to answer this — that tool owns the precedence, exactly as
+  `resolve_gate` owns the rest of the gate policy (ADR-0022 D-2).
+- **Auto-merge warning at creation (GH-848 F4).** Call
+  `mcp__cli__resolve_gate(gate="merge", context={})`.
+  When it returns `effect: "auto-advance"` — or auto-merge is already
+  armed on the PR — the PR will merge itself on green, so say so
+  plainly in the creation summary: "This PR is on an auto-merge path:
+  it will merge itself once CI passes, without a further checkpoint."
+  This makes the autonomous shipping visible to a supervisor who may
+  still want to review. Any other effect means a checkpoint remains and
+  the warning is omitted. Do NOT re-derive this from preset, overlay,
+  or `active_modes` values — the resolver already applied them.
+- **Milestone-bundle PRs:** when a single PR ships multiple
+  issues (e.g., closing several sub-tickets of a milestone),
+  pass the issue numbers as `closes=[N, M, ...]` to `create_pr`.
+  The script emits a `Closes #N` block after the commit list
+  and before the trailer, which GitHub uses to auto-close the
+  constituent issues on merge (GH-186). Without this, only the
+  primary `issue_id` (Fixes: link) auto-closes.
+- **Base branch is auto-detected** — `detect-base-branch.sh` checks for
+  `develop`/`development` first, falls back to `main`/`master`/`trunk`.
+  Pass `--force` to `verify-state.sh` to override when a dev branch exists
+  but you intentionally target a different base.
+- Ensure branch is pushed before creating PR
+- Handle existing PR case gracefully
+- Link to issue tracker ticket in PR body (when FIXES_URL is available)
+- **PR body starts with the Job Story** — sourced from ticket description,
+  ticket comments, or generated fresh using the `Dev10x:jtbd` base skill.
+- **PR body contains the checklist** — Job Story + separator + commit
+  list + issue tracker link + separator + checklist.
+- Open PR in browser for immediate review
+
+## Integration with Other Skills
+
+This skill is designed to be used standalone or as part of larger workflows:
+
+- **ticket:work-on**: Could add an optional final step to create PR when work is done
+- **Dev10x:git-promote**: Uses this skill for Push and Create PR
+- **test:fix-flaky**: Uses this skill for Create PR
+- **Standalone usage**: User manually invokes when ready to create PR

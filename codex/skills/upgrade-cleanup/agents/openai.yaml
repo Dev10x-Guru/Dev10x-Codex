@@ -1,0 +1,4 @@
+interface:
+  display_name: "Upgrade Cleanup"
+policy:
+  allow_implicit_invocation: false

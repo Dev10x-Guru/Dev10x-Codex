@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Notes"
+policy:
+  allow_implicit_invocation: false

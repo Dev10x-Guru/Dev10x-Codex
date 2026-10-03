@@ -1,0 +1,129 @@
+---
+name: py-test
+description: 'Run pytest with coverage enforcement. Verifies test suite passes with 100% coverage for new code. Reports pass/fail status and coverage percentage with full output only on failures. TRIGGER when: code changes need test verification before committing, explicitly asked to run tests, or creating a pull request. DO NOT TRIGGER when: no Python code changed, or running non-pytest test frameworks.'
+metadata:
+  upstream: skills/py-test/SKILL.md
+---
+
+> **Running in Codex.** Generated from `skills/py-test/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/py-test/`.
+
+# Python Test Verifier
+
+## Overview
+
+Run the test suite and verify all tests pass with 100% coverage
+for new code. Reports concise summaries — detailed output only on
+failures.
+
+## When to Use
+
+- Code changes need test verification before committing
+- Before creating a pull request
+- Explicitly asked to run tests or check coverage
+- After implementing fixes to verify they work
+
+## Workflow
+
+### Step 1: Run Tests
+
+**Preferred — MCP tool** (works in every session, including
+worktrees where `pytest` is not on PATH and the Bash hook blocks
+every direct invocation form, GH-238):
+
+```
+mcp__cli__run_tests()
+```
+
+Pass extra pytest args via the `args` parameter, e.g.
+`args=["src/dev10x/runner/"]` or `args=["-k", "name"]`. The tool
+returns a structured payload: `returncode`, `summary`, `passed`,
+`failed`, `skipped`, `coverage_percent`, `failed_tests`,
+`missing_coverage`, `extras`, `retried_with_extras`, `stdout`,
+`stderr`. The subprocess is launched from the MCP server so the
+PreToolUse hook does not apply.
+
+**The tool resolves the project's dependency extra itself
+(GH-1198).** It reads `[project.optional-dependencies]` from
+`pyproject.toml` and adds the group that declares pytest, so a suite
+whose test dependencies live under a `dev` extra runs green without
+anyone typing `--extra dev`. `extras` reports what it applied. When
+resolution finds nothing and the run dies at collection on a
+`ModuleNotFoundError`, it retries once with `--extra dev` and sets
+`retried_with_extras` — read that as a signal the project's extras
+are named unusually, not as a normal outcome.
+
+Before this, the sanctioned wrapper could not run such a suite at
+all, so the agent fell back to the raw command the routing table
+forbids — and kept using it for every iteration of the fix-test
+loop. **If you find yourself reaching for a raw `pytest` because
+the wrapper failed on a missing import — or timed out — that is a
+bug in the wrapper: file it rather than working around it.**
+
+**The default timeout is the transport ceiling (GH-1331).**
+`run_tests()` defaults `timeout` to `MAX_TOOL_CALL_SECONDS` (1080s)
+— the largest value the MCP transport is clamped to anyway
+(GH-1288) — so omitting the parameter already asks for the most
+the wrapper can serve. A run that still times out at that ceiling
+means the full suite genuinely needs longer than one tool call can
+give it: narrow with `args=["-k", "name"]` / a path, or split the
+suite across calls. On timeout the payload carries `verdict`,
+`elapsed`, `timeout_clamped`, and whatever `stdout`/`stderr` pytest
+produced before the cut-off, so a slow-but-green run is
+distinguishable from a hang.
+
+**Fallback — Bash** (only when the MCP server is unavailable):
+
+```bash
+pytest --cov --cov-report=term-missing
+```
+
+Inside a worktree (`.git` is a file, not a directory), prefix
+with `uv run`, and add the extra that carries the test
+dependencies if the project declares one:
+
+```bash
+uv run --extra dev pytest --cov --cov-report=term-missing
+```
+
+### Step 2: Parse Results
+
+Extract:
+- Total tests run
+- Tests passed/failed
+- Coverage percentage
+- Uncovered lines (if any)
+
+### Step 3: Report Summary
+
+**If all tests pass:**
+```
+Tests: 150 passed
+Coverage: 100%
+```
+
+**If tests fail:**
+```
+Tests: 148 passed, 2 failed
+
+Failed tests:
+1. test_calculate_total - AssertionError: expected 100, got 99
+2. test_validate_input - ValueError: invalid input
+
+Coverage: 98% (missing: src/service.py:45-48)
+```
+
+## Coverage Enforcement
+
+If coverage is below 100% for files changed in the current branch,
+the branch introduced the regression. Report the failure and fix
+the gap — do not ask the user whether to proceed with coverage
+below 100%.
+
+## Important Notes
+
+- Always run tests before committing
+- Ensure 100% coverage for new code
+- Fix failing tests before creating PR
+- Use `-v` flag for verbose output when debugging

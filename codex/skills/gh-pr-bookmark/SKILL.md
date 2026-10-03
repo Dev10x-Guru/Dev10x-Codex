@@ -1,0 +1,74 @@
+---
+name: gh-pr-bookmark
+description: 'Post a rich session bookmark comment on a PR — captures session ID, review thread status, current state, and next steps so the next session can pick up where this one left off. TRIGGER when: pausing or ending session with an open PR that has in-progress work. DO NOT TRIGGER when: no PR exists, or session-wrap-up handles bookmarking automatically.'
+metadata:
+  upstream: skills/gh-pr-bookmark/SKILL.md
+---
+
+> **Running in Codex.** Generated from `skills/gh-pr-bookmark/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/gh-pr-bookmark/`.
+> Not yet verified in Codex (tracked in Dev10x-Codex#24): expect gaps and confirm before any step that writes to GitHub or rewrites history.
+
+# Dev10x:gh-pr-bookmark — PR Session Bookmark
+
+**Announce:** "Using Dev10x:gh-pr-bookmark to save session state to the PR."
+
+## Orchestration
+
+This skill follows `references/task-orchestration.md` patterns.
+Create a task at invocation, mark completed when done:
+
+**REQUIRED: Create a task at invocation.** Execute at startup:
+
+1. `TaskCreate(subject="Post PR session bookmark", activeForm="Bookmarking PR")`
+
+Mark completed when done: `TaskUpdate(taskId, status="completed")`
+
+## Overview
+
+Thin wrapper around `Dev10x:park` that pre-selects the **PR session
+bookmark** target. Use at end-of-session or when pausing work on a PR.
+`Dev10x:park` posts the comment AND appends a `source: pr-bookmark`
+entry to the project task index so the bookmark is discoverable
+locally by `Dev10x:park-discover` (GH-85). The index write goes
+through `mcp__cli__task_index_append`; it used to be a
+Write/Edit of `.claude/Dev10x/session.yaml`, which tripped the
+self-settings consent gate on every bookmark (ADR-0018 D5, GH-1009).
+
+## Workflow
+
+### 1. Detect PR
+
+```
+mcp__cli__pr_detect(arg="")
+```
+
+The MCP wrapper resolves the current branch's PR. Treat an
+`{"error": ...}` response as "no open PR" — tell the user and stop.
+
+### 2. Delegate to Dev10x:park
+
+Invoke `Dev10x:park` with:
+- **Item**: the user's description (or "Continuing PR review" if none)
+- **Pre-selected target**: `PR session bookmark`
+
+Skip the target selection prompt — this skill always routes to the
+PR session bookmark target in `Dev10x:park`.
+
+### 3. Done
+
+`Dev10x:park` handles data gathering, composition, posting, and
+confirmation.
+
+## Usage
+
+```
+$Dev10x:gh-pr-bookmark                          # bookmark current PR
+$Dev10x:gh-pr-bookmark Wait for CI then merge   # bookmark with custom note
+```
+
+## See Also
+
+- `Dev10x:park` — full deferral router with all targets
+- `Dev10x:session-wrap-up` — end-of-session orchestrator that may call this

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skill Audit Queue"
+policy:
+  allow_implicit_invocation: false

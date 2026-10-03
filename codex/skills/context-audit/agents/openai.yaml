@@ -1,0 +1,4 @@
+interface:
+  display_name: "Context Audit"
+policy:
+  allow_implicit_invocation: false

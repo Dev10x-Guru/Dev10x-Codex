@@ -1,0 +1,1480 @@
+# Dev10x:fanout — Parallel Work Stream Orchestrator (Instructions)
+
+**Announce:** "Using Dev10x:fanout to process [N] work items
+in parallel."
+
+## Overview
+
+This skill processes multiple independent work items
+concurrently, honoring dependency order and minimizing merge
+conflict risk. It is the multi-item counterpart to
+`Dev10x:work-on` (which handles a single work item).
+
+**When to use fanout vs work-on:**
+- **work-on**: Single ticket, PR, or investigation. Also
+  handles multiple issues bundled into one PR with atomic
+  commits (user requests "one PR" or "bundle these").
+- **fanout**: Multiple PRs to merge, multiple issues to
+  implement as separate PRs, or a mix of both
+
+**Default mode:** Fully autonomous with auto-advancement.
+No confirmation gates between items unless a genuine
+dependency or conflict is detected.
+
+## Orchestration
+
+This skill follows `references/task-orchestration.md` patterns.
+
+**Auto-advance:** Complete each item, immediately start the
+next — no checkpoints the resolver did not ask for. Never pause
+between items to ask "should I continue?"
+
+**REQUIRED: Create tasks before ANY work.** Execute
+`TaskCreate` calls at startup — one per phase:
+
+1. `TaskCreate(subject="Scan: discover work items", activeForm="Scanning")`
+2. `TaskCreate(subject="Classify: dependency and conflict analysis", activeForm="Classifying")`
+3. `TaskCreate(subject="Execute: process work streams", activeForm="Processing")`
+4. `TaskCreate(subject="Monitor: track PRs through merge", activeForm="Monitoring")`
+5. `TaskCreate(subject="Verify: confirm all items resolved", activeForm="Verifying")`
+6. `TaskCreate(subject="Audit: review session skill usage", activeForm="Auditing")`
+
+## Phase 0: Session Posture (GH-689, ADR-0022)
+
+**At the very start** — before Phase 1 — make sure this project has
+a review posture, so every gate the swarm reaches has a policy to
+resolve against. There is no friction-level question: `adaptive` is
+the sole shipped baseline (ADR-0022 D-1), so this skill must not
+offer a `strict` / `guided` / `adaptive` picker.
+
+1. Call `mcp__cli__supervisor_review_status()`.
+2. `pinned: true` — this checkout already has a posture in the
+   global `~/.config/Dev10x/friction.yaml` (set by a prior
+   invocation, `Dev10x:afk`, or `Dev10x:friction-setup`). Adopt it
+   silently and continue to Phase 1.
+3. `pinned: false` — delegate to `$Dev10x:friction-setup`,
+   which owns both the blocking review-policy question and the
+   locked write. Continue to Phase 1 when it returns, whatever the
+   answer — a dismissal leaves the safe default
+   (`supervisor_review: required`) in place.
+
+**Never write `friction.yaml` from this skill** — not with the Write
+tool, not under the repo's `.claude/` tree (ADR-0018). The pin tools
+lock and atomically write (GH-827); the PreCompact hook reads the
+resolved policy to inject posture context into recovery summaries.
+
+Posture is settled once per swarm. Nested `Dev10x:work-on`
+delegations skip their own Phase 0 and inherit it.
+
+## Phase 1: Scan
+
+Discover all open work items in the current repo or
+specified scope.
+
+**Default scan** (no arguments): Fetch both open PRs and
+open issues:
+```
+gh pr list --state open --json number,title,headRefName,isDraft,mergeable
+gh issue list --state open --json number,title,labels
+```
+
+**Issue fetching:** Use MCP `mcp__cli__issue_get`
+as the primary tool for fetching individual issue details. Fall
+back to `gh issue view` only when the MCP tool is unavailable.
+MCP calls avoid permission friction and provide structured
+responses.
+
+**With arguments**: Accept a space-separated list of URLs,
+issue numbers, or PR numbers. Classify each argument
+independently:
+
+| Pattern | Type | Action |
+|---------|------|--------|
+| `https://github.com/{owner}/{repo}/issues` | `scope:issues` | Restrict scan to issues only |
+| `https://github.com/{owner}/{repo}/pulls` | `scope:pulls` | Restrict scan to PRs only |
+| `https://github.com/{owner}/{repo}/milestone/{N}` | `scope:milestone` | Fetch milestone title, list issues |
+| `https://github.com/{owner}/{repo}/issues/{N}` | `item:issue` | Fetch specific issue |
+| `https://github.com/{owner}/{repo}/pull/{N}` | `item:pr` | Fetch specific PR |
+| `#N` or bare number | `item` | Classify per `Dev10x:work-on` Phase 1 rules |
+| `PRs`, `issues` (bare keyword) | `scope` | Restrict scan to matching type (same as scope URL) |
+| Free text (anything else) | `note` | Parse intent to infer scope and work items (see below) |
+
+**Free-text input:** When an argument doesn't match any URL,
+number, or keyword pattern, treat it as a `note`. Analyze the
+text to infer the user's intent:
+
+- Identify scope hints (e.g., "merge all open PRs" → `scope:pulls`,
+  "triage the bug reports" → `scope:issues`)
+- Extract implicit item references (e.g., "fix the timeout bug
+  from last week" → search recent issues)
+- Determine parallelism intent (e.g., "split this into parallel
+  tasks" → plan parallel processing)
+
+Classification follows `Dev10x:work-on` Phase 1 `note` handling.
+When scope cannot be inferred, default to scanning both PRs and
+issues.
+
+**Scope keywords and URLs** constrain the default scan.
+When a scope URL is present, run only the matching `gh` command
+instead of both:
+
+- `scope:issues` → run `gh issue list` only, skip `gh pr list`
+- `scope:pulls` → run `gh pr list` only, skip `gh issue list`
+
+Scope URLs and specific items can be mixed. When both are
+present, the scope restricts the default scan while specific
+items are fetched regardless of scope:
+
+```
+$Dev10x:fanout https://github.com/org/repo/issues #42
+```
+→ Scan issues only (`gh issue list`) + fetch PR #42 explicitly.
+
+Create one subtask per discovered item under the Phase 1
+parent task.
+
+## Phase 2: Classify
+
+For each work item, determine:
+
+1. **Type**: PR-continuation, feature, bugfix, investigation
+2. **Files touched**: Read the PR diff or issue description
+   to identify affected files/directories
+3. **Dependency edges**: If item A's target files overlap
+   with item B's, they conflict — order matters
+4. **Priority**: PRs before issues (PRs are closer to done).
+   Within PRs: ready-to-merge first, then draft with CI
+   passing, then draft needing work.
+
+### Provenance Check (GH-876 F2)
+
+Classification from title/label/body alone is not enough for issues
+that **claim a capability is missing, unwired, dormant, or not yet
+delivered** ("X is not called anywhere", "wire up Y", "Z is a TODO",
+"stub only"). Such claims are frequently stale — the capability may
+already have shipped in a later PR (a superseded follow-up), or the
+issue may be blocked on a prerequisite that does not exist yet.
+Routing either into an implementation lane wastes a worktree.
+
+Before routing any issue whose body uses that language, run a
+lightweight provenance check:
+
+1. **`git log` the named path/symbol** on `origin/<base>` — was the
+   change already made? (`git log --oneline -S"<symbol>"` or on the
+   file path.)
+2. **`rg` for the symbol** across the repo — does the "missing" code
+   already exist and get called?
+3. **Confirm any named prerequisite exists** before treating the
+   issue as ready.
+
+Record the result on the item: `LIVE` (proceed), `ALREADY_DELIVERED`
+(surface to the supervisor for close-as-done, do NOT implement), or
+`BLOCKED_ON_PREREQ` (defer, name the missing prerequisite). Never
+silently drop an issue — surface the finding.
+
+### Conflict Analysis
+
+Build a conflict graph:
+
+```
+For each pair (A, B):
+  if files_touched(A) ∩ files_touched(B) ≠ ∅:
+    mark A ↔ B as conflicting
+```
+
+**Conflicting items** must run sequentially — the first to
+merge wins, and later items rebase before continuing.
+
+**Non-conflicting items** can run in parallel.
+
+### Execution Order
+
+1. **PRs ready to merge** — mark ready, monitor CI, merge
+2. **PRs needing fixes** — fix review comments, rebase,
+   push, monitor, merge
+3. **Issues with no conflicts** — implement in parallel
+   worktrees
+4. **Issues with conflicts** — implement sequentially in
+   dependency order
+
+Present the execution plan as a numbered list showing
+parallel groups and sequential chains:
+
+```
+Parallel group 1: PR #42 (ready), PR #55 (needs fixes)
+Sequential chain: Issue #10 → Issue #15 (shared files)
+Parallel group 2: Issue #20, Issue #25 (independent)
+```
+
+### Base Re-Sync Across Items (GH-626)
+
+The base branch advances while a fanout runs, so an item branched
+early can be working against a stale base by the time it ships —
+producing merge conflicts and superseded-duplicate work that only
+surface at merge time. Keep each item on a fresh base:
+
+1. **Branch each item from a freshly-fetched `origin/<base>`.**
+   Resolve `<base>` via `mcp__cli__detect_base_branch`
+   (develop → main fallback) and create the branch via
+   `$Dev10x:ticket-branch` (which already fetches and
+   branches from `origin/<base>`) — never a stale local ref.
+2. **After any item merges, rebase the remaining in-flight items
+   onto the new base before continuing** — via
+   `$Dev10x:git-groom` / the rebase wrapper, never raw
+   `git rebase`. This generalizes the conflict-driven "later items
+   rebase before continuing" rule above to *all* in-flight items,
+   not only ones with a detected file overlap.
+3. After any force-push from a pre-review rebase, re-monitor CI.
+
+**Critical constraint — never rebase once review fixups exist.**
+This re-sync applies **only before reviews start** on a given
+item. Once fixup commits are addressing in-progress review
+threads, a rebase rewrites the base SHAs that review-thread
+permalinks reference (`/pull/N/commits/<sha>` → 404) and destroys
+the per-comment audit trail. This is the same invariant
+`Dev10x:git-groom` enforces in **Phase 0 (refuse pre-merge groom
+with open unresolved threads, GH-68 Fix E)**:
+
+- **Suppress** the re-sync for any item whose PR has an unresolved
+  review thread or a review fixup.
+- Such an item stays on its original base; only true merge
+  conflicts at that point are resolved in place, never a wholesale
+  rebase that orphans review permalinks.
+
+### Supervisor Gate
+
+**Implicit approval bypass:** If the user's original input
+contains explicit ordering or parallelism instructions,
+skip the approval gate and proceed.
+
+Otherwise:
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text).
+Options:
+- Approve plan (Recommended) — Start execution
+- Edit — Describe changes to ordering or grouping
+
+## Phase 3: Execute
+
+Process items according to the approved plan.
+
+**REQUIRED: Create one subtask per work item** under the Phase 3
+parent task before starting any execution. Each subtask tracks
+the lifecycle of a single issue or PR:
+
+```
+TaskCreate(subject="Process: PR #42 — fix payment routing",
+    parentTaskId=phase3TaskId,
+    metadata={"type": "pr-continuation", "item": "#42"})
+TaskCreate(subject="Process: GH-10 — add retry mechanism",
+    parentTaskId=phase3TaskId,
+    metadata={"type": "feature", "item": "GH-10"})
+```
+
+Mark each subtask `in_progress` when starting and `completed`
+when the item's PR is merged or work is handed off.
+
+### Pre-Item Self-Check (REQUIRED)
+
+Before processing **each** work item, execute this two-step gate:
+
+1. **Branch verification:** Run `git symbolic-ref --short HEAD`
+   and confirm the current branch matches the expected item.
+   If it does not, create or switch to the correct branch
+   before proceeding. This prevents commits landing on the
+   wrong branch when processing items sequentially.
+   **NEVER use raw `git checkout -b`** — always delegate to
+   `$Dev10x:ticket-branch` for branch creation.
+   Raw checkout bypasses naming conventions, worktree detection,
+   and base-branch validation.
+
+2. **Delegation check:** STOP and ask yourself: "Am I about to
+   implement this item directly?" If yes, invoke
+   `$Dev10x:work-on (args: "<item-url>")` instead.
+   Fanout is an **orchestrator**, not an implementor.
+
+Skipping either step causes cascading errors — wrong-branch
+commits require destructive `git reset --hard` cleanup, and
+inline implementation bypasses work-on's structured lifecycle
+(branch setup, code review, shipping pipeline).
+
+### Post-Item Delegation Verification (REQUIRED)
+
+After completing **each** work item, verify that
+`$Dev10x:work-on` was invoked for that item. If not,
+this is a compliance violation — do NOT proceed to the next
+item. The same rule applies to merge operations: each PR
+MUST use `$Dev10x:gh-pr-merge`, never raw `gh pr merge`.
+
+**Post-item comment check (GH-829):** After each item's PR is
+merged, call `mcp__cli__pr_comments(pr_number=N)`
+and verify zero unaddressed comments. If comments exist, invoke
+`$Dev10x:gh-pr-respond (args: "{pr_url}")` before advancing
+to the next item. This catches unaddressed comments early —
+agents degrade after item 3+ and skip per-item acceptance
+criteria under auto-advance pressure. The Phase 5 enforcement
+loop is a safety net; this per-item check is the primary gate.
+
+Fanout agents degrade after the first 1–2 items, falling back
+to inline implementation and raw CLI commands for the rest of
+the batch. This check catches the drift before it cascades.
+
+### Agent Isolation Matrix (GH-36)
+
+Native `Agent` isolation supersedes the prior Permission-Aware
+Dispatch table. Background agents now have full `Tools: *`
+(Skill, Write, Edit, Bash, MCP) when dispatched as
+`general-purpose`, and `isolation: "worktree"` provides a
+per-agent temp worktree with automatic cleanup. The historic
+"write-requiring tasks must run in the main session"
+constraint no longer applies for the dispatch surface this
+skill targets.
+
+| Task type | Dispatch | Why |
+|-----------|----------|-----|
+| Issue implementation, PR fixes, rebase | `Agent(subagent_type="general-purpose", isolation="worktree", run_in_background=true, model="sonnet", mode="acceptEdits")` | Has Skill + Write + Edit; worktree isolates file changes; auto-cleanup if no changes |
+| PR ready-to-merge (CI green, no comments) | `Agent(subagent_type="general-purpose", run_in_background=true, model="haiku")` | Read-only merge orchestration; no isolation needed |
+| CI monitoring, status polling | `Agent(subagent_type="general-purpose", run_in_background=true, model="haiku")` | Read-only; cheaper without isolation |
+| Investigation, research | `Agent(subagent_type="Explore" or "issue-investigator")` | Specialized agents with the right tools |
+
+**Decision rule:** Default to `isolation="worktree"` for any
+write-touching work item. Drop isolation only when the work
+is provably read-only (monitoring, fetching, reviewing).
+
+**Child worktree file-access allowlist (GH-424 F1):** A spawned
+agent's file access is limited to the session's project
+directories plus `/tmp`. A worktree created at a path *outside*
+that allowlist is not readable or writable by the child — it
+returns `BLOCKED` ("could not read/write files at the worktree
+path") or silently falls back to branching in the primary
+checkout (polluting the human's working copy). When a child must
+self-create a worktree, place it under an allowlisted path
+(e.g. `/tmp/<id>-<repo>-wt`), never a shared `.worktrees/` root
+that may sit outside the allowlist. Note that
+`isolation="worktree"` isolates only the orchestrator's own
+repo — for cross-repo (sibling-repo) items it does NOT create a
+worktree in the sibling repo, so those children must self-create
+one in an allowlisted location or they branch in the sibling's
+primary checkout.
+
+**Worktree Write-deny on path-scoped rule targets (GH-376,
+GH-399 F1):** Write allow-rules are keyed on the canonical
+worktree path (e.g. `/work/dx/.worktrees/<name>`). An agent
+running in an ephemeral worktree (`.claude/worktrees/agent-<id>/`)
+will be denied writes to path-scoped targets like
+`.claude/rules/**` because the allow-rule path prefix does not
+match the agent's ephemeral path. This is GH-376 in action —
+currently framed as interactive-session friction, but it also
+silently degrades swarm output (agents return
+`DONE_WITH_CONCERNS` for issues they cannot actually fix).
+Two valid responses:
+1. If the work item requires editing `.claude/rules/**` or
+   other path-scoped targets, dispatch WITHOUT isolation so
+   the agent runs in the canonical worktree where rules apply.
+2. If isolation is still desired, document the known limit in
+   the agent prompt so the agent reports `DONE_WITH_CONCERNS`
+   with the specific file path that was blocked, rather than
+   silently skipping the change.
+
+**DONE_WITH_CONCERNS recovery (GH-399 F2):** When a
+`isolation="worktree"` agent returns `DONE_WITH_CONCERNS`
+because it could not apply a required change (Write-deny or
+similar), the orchestrator CANNOT use `EnterWorktree` to
+reach the agent's ephemeral worktree from a sibling top-level
+worktree — `EnterWorktree` requires the target to share the
+same repository root. Instead, use this recovery sequence:
+1. Read the agent result for the PR branch name and the
+   specific file(s) that were blocked.
+2. Run `git worktree remove <agent-worktree-path>` to free
+   the branch from the agent's ephemeral worktree.
+3. In the main session, `git checkout <pr-branch>` and apply
+   the missing change, then push and continue the merge
+   lifecycle.
+If `git worktree remove` fails, read the reason before escalating
+(GH-1094): `cannot remove a locked working tree` needs `git
+worktree unlock <agent-worktree-path>` and a retry, not more
+force; only an uncommitted-changes failure calls for `--force` —
+this agent's ephemeral worktree is disposable.
+
+**Cross-repo salvage (GH-427).** When `worktree_orchestrator`
+is true (see Worktree-Orchestrator Precheck), steps 2–3 above do
+NOT work: the agent's worktree lives under a different repo root,
+`git worktree remove` from the orchestrator targets the wrong
+repo, and `git checkout <pr-branch>` cannot reach the branch. The
+object store IS shared, though, so the agent's commit is reachable
+via `git cat-file -e <sha>` from the orchestrator. Salvage by
+cherry-picking it onto a fresh orchestrator-side branch:
+1. Read the agent result for the commit SHA (or branch tip). If
+   the agent stopped before committing, its work lived only as
+   uncommitted files in an unreachable worktree — re-dispatch
+   from scratch instead.
+2. From the orchestrator worktree: create a branch from
+   `origin/<base>` via `$Dev10x:ticket-branch`, then
+   `git cherry-pick <agent-sha>` (the shared object store makes
+   the SHA reachable even though the branch ref is not).
+3. Resolve any conflicts, then ship the orchestrator-side branch
+   through the normal lifecycle.
+This is why the commit-early contract (ANTI-STALL CONTRACT) is
+mandatory: an uncommitted agent leaves nothing in the object
+store to cherry-pick.
+
+### Worktree-Orchestrator Precheck (GH-427)
+
+**Run this BEFORE the first Swarm Dispatch.** When the
+orchestrator session itself runs from a worktree whose physical
+root is *outside* the main repository tree (e.g. CWD is
+`/work/dx/.worktrees/<name>` while the repo lives at
+`/work/dx/<repo>`), `isolation="worktree"` agents land their
+ephemeral worktrees under `<repo>/.claude/worktrees/agent-<id>/`
+— a path the orchestrator cannot reach. `EnterWorktree(path=…)`
+rejects the switch ("not inside the repository at …") because
+the orchestrator's CWD is outside that repo root, so the GH-399
+F2 recovery sequence is unavailable and a mid-lifecycle agent
+(see ANTI-STALL CONTRACT) cannot be salvaged except by
+cherry-picking from the shared object store.
+
+**Detection (no subshell — two reads):**
+
+```
+git rev-parse --show-toplevel      # orchestrator worktree root
+git rev-parse --git-common-dir     # shared .git → the main repo root
+```
+
+If `--show-toplevel` is NOT a path prefix of the directory that
+holds `--git-common-dir`'s parent repo (i.e. the orchestrator is
+a sibling worktree, not the main checkout), set
+`worktree_orchestrator = true`.
+
+**Second condition — is the main repo root actually reachable?**
+(GH-1173 F4). Being a sibling worktree is not by itself
+disqualifying. The only capability that genuinely fails
+cross-repo-root is `EnterWorktree(path=…)`; `git -C <main-root>
+…` reaches the agent worktree fine *when the main repo root is
+allowlisted for this session*. Downgrading on the sibling test
+alone therefore serialised waves that would have run in parallel
+safely — the precheck was measuring the wrong thing.
+
+So check reachability too, from `--git-common-dir`'s repo root:
+
+```
+git -C <main-repo-root> rev-parse --show-toplevel
+```
+
+- Exits 0 → the root is reachable and allowlisted. Salvage via
+  `git -C` works, so **keep the parallel swarm** and note that
+  recovery routes through `git -C` rather than `EnterWorktree`.
+- Non-zero, or the call prompts / is denied → the root is not
+  reachable. **Downgrade to serial mode** (invoke
+  `$Dev10x:work-on` inline, sequentially — see Serial
+  fallback below) rather than dispatching a swarm that cannot be
+  recovered. Announce it: "Orchestrator runs from a sibling
+  worktree and the main repo root is not reachable; using serial
+  mode per GH-427."
+
+The supervisor may override a downgrade and force the swarm, but
+only with the cherry-pick salvage path (DONE_WITH_CONCERNS
+recovery, below) understood as the only recovery route.
+
+### Swarm Dispatch (REQUIRED, GH-36)
+
+**Every work item MUST be delegated to a worktree-isolated
+background `Agent` whose prompt invokes
+`$Dev10x:work-on`.** Do NOT implement issues inline in
+the orchestrator session, and do NOT inline the work-on
+contract into the agent prompt — the spawned agent calls
+`$Dev10x:work-on` directly so work-on remains the
+single source of truth for the implementation lifecycle.
+
+**Wave-based dispatch.** Group non-conflicting items into
+waves of size `max_concurrency` (default 3). Send all agents
+in one wave as a **single assistant turn with multiple Agent
+tool uses** so they run concurrently and share the
+parent's prompt-cache prefix. Wait for completion
+notifications before dispatching the next wave; do NOT poll.
+
+**Host memory bounds wave size too (GH-1068).** `max_concurrency`
+caps CPU/API concurrency, but each isolated agent also carries
+its own worktree checkout and process footprint. An overnight run
+sized purely to `max_concurrency` drove the host into memory
+pressure. Size the wave to available RAM as well as the
+concurrency cap, and apply the same rule when resuming parked
+agents — **a mass-resume is a dispatch**: reviving N parked
+agents at once reproduces the same memory pressure as launching N
+fresh ones, so resume in waves too, not all at once.
+
+**Sibling pub/sub bus (GH-133, GH-385 F3).** Before
+dispatching a wave, create the per-wave JSONL bus that lets
+children coordinate file ownership without serialising through
+the orchestrator.
+
+**Bus creation is the orchestrator's responsibility** — the
+file and its parent directory MUST exist before any child is
+dispatched. Children MUST NOT rely on creating the bus
+themselves (the `mktmp` default returns a path without
+creating the file, and nested-prefix creation fails when the
+parent directory does not exist). Create the bus in two steps:
+
+```
+# Step 1: Create the wave directory
+wave_dir = mcp__cli__mktmp(
+    namespace="fanout",
+    prefix=wave_id,
+    directory=True,  # always created
+)
+# wave_dir["path"] → /tmp/Dev10x/fanout/<wave_id>.XXXX/
+
+# Step 2: Create the bus file inside that directory
+# Use Write tool to create an empty JSONL file:
+Write(file_path=wave_dir["path"] + "/bus.jsonl", content="")
+bus_path = wave_dir["path"] + "/bus.jsonl"
+```
+
+Children that cannot write to `bus_path` (permission deny or
+file not found) MUST log the failure in their result message
+but MUST NOT abort — sibling coordination via the bus is
+best-effort. The orchestrator reads the bus on wave drain; a
+missing or empty bus is treated as "no events".
+
+Inline `bus_path` into every child's prompt. The orchestrator
+is a passive consumer — it reads the bus once on wave drain to
+harvest `bailout` and `conflict_signal` events for re-dispatch
+decisions, but never publishes. Full event schema,
+decision-gate rules (wait vs bail), and producer/consumer
+contracts live in
+[`references/orchestration/fanout-bus.md`](../../../references/orchestration/fanout-bus.md).
+
+**Friction-avoidance preamble (REQUIRED, GH-610):** Before building
+the prompt below, fetch the canonical preamble via
+`mcp__cli__background_preamble` and prepend its
+`preamble` text verbatim to the top of each child's prompt. Swarm
+children run a full `Dev10x:work-on` lifecycle in a fresh subagent that
+never saw the SessionStart friction briefing — the preamble keeps them
+off hook-tripping shapes and on MCP wrappers. Pre-seed each child's
+`allowed_tools` with `Read`, `Grep`, `Glob`, `Skill`, and the `cli`
+wrappers (`mktmp`, `push_safe`, `create_pr`, …) rather than relying on
+auto-mode. See `references/orchestration/background-preamble.md`.
+
+**Per-item agent prompt template** (prepend the preamble above the
+`You are working as part of …` line):
+
+```
+You are working as part of a Dev10x:fanout swarm.
+
+Swarm context:
+- wave_id: <uuid>
+- siblings: ["<item_id_a>", "<item_id_b>", ...]
+- your_item_id: <item_id>
+- conflict_group: <group_id>
+- shared_files_with_siblings: [<paths>]  # should be empty within a wave
+- bus_path: /tmp/Dev10x/fanout/<wave_id>/bus.jsonl
+- lock_wait_timeout: 30s
+
+Bootstrap (REQUIRED first, before Skill invocation):
+1. Verify `git rev-parse --show-toplevel` equals YOUR
+   ephemeral isolated worktree path before any branch
+   checkout or git mutation. If a git/MCP call ever reports
+   the orchestrator's canonical worktree as its toplevel,
+   pass explicit cwd= pointing at your worktree — never
+   check out branches in the canonical worktree (GH-462 F2,
+   stale-CWD class GH-410).
+2. Persist the inherited gate policy for your isolated
+   worktree by running, inside it:
+       uvx dev10x session set-friction --preset adaptive \
+           --overlay solo-maintainer
+   `adaptive` is the sole shipped baseline (ADR-0022 D-1), so
+   this call carries the overlay, not a preset choice. It makes
+   the fanout session's posture resolvable inside your
+   worktree, so Dev10x:work-on's Phase 0 finds it already
+   settled and asks nothing. Never
+   write .claude/Dev10x/session.yaml — it is retired
+   (ADR-0018) and writing under .claude/ trips the
+   self-settings consent gate. Your swarm-child identity
+   travels in this prompt's `wave_id` line, not in a file
+   (see the recursive-fanout guard; GH-950).
+
+Task:
+Invoke $Dev10x:work-on with this input: <issue or PR URL>
+
+ANTI-STALL CONTRACT (highest priority — read before invoking work-on):
+
+YOUR LIFECYCLE IS ORDERED. Do not reorder it:
+  1 branch → 2 implement → 3 COMMIT → 4 push → 5 verify (full
+  test suite) → 6 PR → 7 CI monitor → 8 merge.
+Verification is step 5 BECAUSE the commit is step 3. Whenever you
+are about to wait for anything — a test run, a CI verdict, a
+monitor notification, a sibling's file lock, a review — and steps
+3–4 have not happened, you are simply out of order: do them, then
+wait (GH-1173 F1, GH-1363). "I'll commit once the suite is green"
+is the sentence four agents wrote in one swarm immediately before
+losing their work; the prohibition was in every one of their
+briefs, which is why this is now an ordering and not a rule to
+remember mid-task.
+- Why step 3 is load-bearing (GH-427): the commit is your durable
+  checkpoint. If your turn ends mid-lifecycle the orchestrator can
+  salvage a committed SHA from the shared object store, but
+  uncommitted files in your ephemeral worktree are lost when it is
+  reclaimed. The orchestrator now inspects your worktree and
+  resumes you (`dev10x orchestration stranded-work`) — a resume you
+  did not need is a round-trip the whole wave pays for.
+- "Branch created" = 0% done. "PR created" = 0% done. Only
+  "PR MERGED" counts as task complete. Do NOT stop after branch or
+  PR creation; every step above is mandatory.
+- Step 5 runs the COMPLETE suite with coverage (GH-876 F1) — never
+  only the edited-file subset, which misses regressions in unedited
+  callers and the 100%-coverage gate and then fails in CI after you
+  have returned. Route through $Dev10x:py-test / $Dev10x:py-test
+  with NO path-narrowing args.
+- After work-on returns, if the PR is open but not merged, that is
+  NOT done. Invoke $Dev10x:gh-pr-monitor and then
+  $Dev10x:gh-pr-merge to complete.
+- If your turn ends before the PR is merged, your final line MUST
+  be NEEDS_CONTEXT (not DONE). The orchestrator will re-dispatch.
+
+Sibling coordination (BEST-EFFORT — never your conflict guard):
+- The real conflict guard is the orchestrator's Phase 2
+  file-overlap analysis, which partitioned your file set before
+  you were dispatched. Treat the bus as a bonus signal only, and
+  never block your lifecycle on it.
+- Why it is only best-effort (GH-1173 F3): appending with `>>`
+  is hook-blocked, so the only available write is a Write-tool
+  replace of the whole file — which means the second sibling to
+  post silently clobbers the first. A lock protocol built on a
+  channel that loses messages cannot be relied on for
+  correctness, and a worker that waits on a grant which was
+  overwritten stalls for the full timeout and then bails on work
+  that had no genuine conflict.
+- So: post events if you can, read them if they are there, and
+  proceed on your own partition regardless. Do NOT wait for a
+  file_lock_grant before writing a file the orchestrator assigned
+  you.
+- On genuinely detected drift (you find a sibling's edit inside
+  your own partition), do not negotiate over the bus — commit
+  what you have and return
+  "NEEDS_CONTEXT: file-scope drift on <path>" so the orchestrator
+  can re-partition with full knowledge.
+- Never busy-loop. Never delete bus.jsonl.
+- Full schema and field definitions:
+  references/orchestration/fanout-bus.md
+
+Etiquette (REQUIRED):
+- You are running concurrently with siblings. Do NOT call
+  $Dev10x:fanout recursively.
+- If you discover a file conflict with a sibling mid-work,
+  use the bus to coordinate (above). If the bus does not
+  resolve the conflict, pause, report via your result
+  message, and do not push. The orchestrator will resolve.
+- Do not force-push and do not touch main/develop directly.
+- Branch upstream guard (GH-424 F2): if you self-create a
+  worktree with `git worktree add -b <new> <base>`, the new
+  branch tracks `<base>` — a bare `git push` would then advance
+  the base branch's PR. Immediately run `git branch
+  --unset-upstream`, and always push explicitly with
+  `git push -u origin HEAD` (never a bare `git push`).
+- Your worktree is ephemeral; assume it is destroyed if you
+  make no changes.
+- CWD guard for PR creation (GH-873 F1): always pass your worktree
+  path as `cwd=` when creating a PR (via Dev10x:gh-pr-create /
+  `create_pr`). The MCP daemon is shared and defaults to the
+  orchestrator's CWD, so omitting `cwd=` pushes the wrong branch and
+  opens a stray PR. `create_pr` now refuses when HEAD resolves to a
+  base branch — that refusal means your `cwd=` was missing or wrong.
+
+When a Dev10x MCP wrapper is unreachable (GH-1107 finding 1):
+- Re-run the `ToolSearch` bootstrap once. The connection can drop
+  mid-run, and a re-resolve is cheap.
+- If the wrapper is still unreachable, do NOT substitute raw `gh` /
+  `gh api` for it. This is not a permission question — the wrappers
+  carry validation the raw call does not, and `merge_pr` /
+  `Dev10x:gh-pr-merge` in particular gate a merge on checks that
+  cannot be re-run afterwards.
+- Do the work you CAN do without wrappers: implement, run the full
+  test suite, commit, and push your branch.
+- Then stop and return `NEEDS_CONTEXT: MCP wrappers unreachable —
+  <what remains>`, naming the PR URL if one exists. Your branch is
+  pushed, so nothing is lost and the orchestrator can finish it.
+- Holding here is the correct outcome, not a failure. In the GH-1107
+  run three children hit this: two held and returned NEEDS_CONTEXT,
+  one raw-CLI'd its way through PR creation, body patching, AND the
+  merge — bypassing every pre-merge validation for that PR.
+
+Return on completion — REPORT ONLY WHAT YOU DID (GH-1380):
+- Every step you name, you name with the evidence of having run
+  it: the PR number, the check verdict, the merge SHA. A step
+  someone else performed is named WITH ITS ACTOR, never as yours.
+  Do not narrate the lifecycle above as though you walked it —
+  answer what happened.
+- PR URL (or "no PR produced — <reason>")
+- Merge state, one of:
+  - `MERGED_BY_ME` — you ran $Dev10x:gh-pr-merge yourself.
+    Give the merge SHA and `merged_as` from your own `merge_pr`
+    result.
+  - `ALREADY_MERGED` — you found it merged. Give `mergedAt` and
+    the merging actor from `pr_get`, or say the state names none.
+    Do NOT report the nine-check gate: it ran in another session.
+  - `OPEN` | `DRAFT` — explain why
+- Worktree path: the absolute path of your ephemeral worktree
+  (run `git rev-parse --show-toplevel` to get it)
+- Cost (total_cost_usd if known)
+- Any sibling-coordination signals raised (reference bus
+  event types: file_lock_request, conflict_signal, bailout)
+- One of: DONE | DONE_WITH_CONCERNS: <text> |
+  NEEDS_CONTEXT: <what> | BLOCKED: <reason>
+
+Status line rules (GH-368, GH-385):
+- DONE requires: PR merged, no open comments, CI green, and the
+  FULL test suite + coverage run green locally (not a subset).
+- DONE_WITH_CONCERNS: PR merged but flagged issues remain.
+- NEEDS_CONTEXT: interrupted before merge (branch or PR open
+  but not merged) — the orchestrator will re-dispatch.
+- BLOCKED: permission wall, MCP unavailable, or merge blocked
+  by branch protection requiring human action.
+- A missing or non-terminal trailing line is treated by the
+  orchestrator as NEEDS_CONTEXT → re-dispatch.
+- NEVER end with a plain text summary and no status token.
+```
+
+**MCP-outage recovery — dispatch a finisher (GH-1107 finding 1).**
+When a child returns `NEEDS_CONTEXT: MCP wrappers unreachable` with
+its branch pushed, do NOT re-dispatch the same work and do NOT
+finish it with raw `gh` yourself. Spawn a fresh short-lived agent
+for the remaining shipping steps:
+
+```
+Agent(subagent_type="general-purpose", model="haiku",
+    description="Finish PR <n> for <item>",
+    prompt="The branch is pushed and the PR is open at <url>. Run
+        $Dev10x:gh-pr-merge to gate and merge it. If the MCP
+        wrappers are unreachable for you too, return BLOCKED — do
+        not fall back to raw gh.",
+    run_in_background=true)
+```
+
+A fresh spawn gets a new MCP connection attempt, which is why this
+recovers where re-prompting the stalled child does not — it
+succeeded 4/4 times in the run that produced this finding. If the
+finisher also reports BLOCKED, the outage is session-wide: surface
+it to the supervisor (a `/mcp` reconnect is user-side) rather than
+routing around the wrappers. See
+`skills/foreman/references/mcp-connectivity.md` for why this hop
+cannot be reconnected from inside the plugin.
+
+**Subtask tracking.** Before dispatching the wave, create one
+subtask per item under the Phase 3 parent and mark it
+`in_progress`. Mark `completed` only when the agent's
+completion notification arrives — never on dispatch (see
+`references/orchestration/subagent-dispatch.md` Background
+Agent Tracking).
+
+**Serial fallback.** When the Agent tool is unavailable or
+the user opts out (`mode: serial` playbook override),
+invoke `$Dev10x:work-on (args: "<item-url>")` in
+the orchestrator session, sequentially. This trades
+parallelism for compatibility with environments where
+background agents are disabled.
+
+### Processing PRs
+
+For each PR, delegate to `Dev10x:work-on` with the PR URL.
+Work-on executes the pr-continuation play:
+
+1. Check out the PR branch (or work in existing worktree)
+2. If review comments exist → `Dev10x:gh-pr-respond`
+3. If conflicts with develop → rebase and resolve
+4. `Dev10x:git-groom` to clean commit history
+5. Mark ready via `gh pr ready`
+6. Monitor CI — fix failures with fixup commits
+
+**Fixup race condition guard (GH-724):** Before creating any
+fixup commit for a PR that is also being monitored in Phase 4,
+verify the PR is still open via
+`mcp__cli__pr_detect(arg="<pr-number>")` and check
+the returned `state` field. If the result is not `OPEN`, the PR
+was merged by the monitor
+while you were preparing the fix. Do NOT push the fixup commit
+to the dead branch — create a follow-up branch from develop
+and open a new PR instead.
+
+7. **Pre-merge gate (REQUIRED):** Before merging, verify ALL:
+   - CI checks pass (`gh pr checks`)
+   - No unaddressed review comments
+     (`mcp__cli__pr_comments` or
+     `gh api repos/{owner}/{repo}/pulls/{N}/comments`)
+   - PR is marked ready (not draft)
+   - Working copy is clean
+   Do NOT merge via raw `gh pr merge` — delegate to
+   `$Dev10x:gh-pr-merge` which validates all 7
+   pre-merge conditions. Raw merge bypasses review comment
+   checks (GH-549 F-05).
+8. After merge → rebase any downstream items that
+   depend on this PR's changes
+
+**Draft → Ready cycle:** PRs that revert to draft after
+CI review posts comments need immediate `gh pr ready`
+followed by merge attempt. Do not wait for another CI
+cycle if the review is informational only.
+
+### Processing Issues
+
+Each issue (or parallel group of issues) is dispatched as a
+worktree-isolated background Agent per the Swarm Dispatch
+section above. The agent's `$Dev10x:work-on` invocation
+runs the full lifecycle inside its isolated worktree:
+branch setup, design, implementation, code review, commit,
+PR creation, CI monitoring through merge. By the time the
+agent's completion notification arrives, the PR is either
+merged or surfaced via the agent's structured result for
+follow-up.
+
+After all agents in a wave complete, before starting the
+next wave: fetch the merge base for the conflict-chain
+successor items and rebase downstream branches if any
+in-wave merges affected them.
+
+**Note on work-on inside spawned agents.** A spawned agent
+inherits no SessionStart context (memory, plan-sync, MOTD),
+so `Dev10x:work-on`'s Phase 0 posture check would run fresh
+each time. The skill recognises fanout-nested
+invocations via the swarm-context marker in the dispatch
+prompt and skips Phase 0 accordingly. If work-on later
+adds context dependencies that the spawned agent cannot
+satisfy, surface them as `BLOCKED: <reason>` in the agent
+result; the orchestrator will fall back to serial mode for
+that item.
+
+### Post-Merge Rebase
+
+After merging any item, check if downstream items in the
+same sequential chain are affected:
+
+1. Fetch the base via `mcp__cli__detect_base_branch`
+   to determine the merge target.
+2. For each active branch in the chain, delegate the rebase to
+   `$Dev10x:git` — its non-interactive rebase anchors on the
+   `<base-ref>` you pass (`origin/<base>`, the just-merged tip), and
+   its `push_safe` completes the force-push with protected-branch
+   safety. This is the dedicated base-advance primitive.
+3. If rebase conflicts → resolve, commit, then re-invoke
+   `$Dev10x:git` to complete the force-push.
+4. If rebase succeeds → continue processing.
+
+**Why not `Dev10x:git-groom` here (GH-658).** Post-merge rebasing
+needs to *advance the branch onto the new `origin/<base>` tip* —
+a base-advance, not a history cleanup. `Dev10x:git-groom` is the
+wrong primitive for it on two counts: it fast-exits
+"Nothing to groom" for a clean single-commit branch
+(GH-776), and where it does rebase it anchors on the merge-base,
+not the advanced `origin/<base>`. Either way the dependent branch
+never picks up the just-merged base commit. Route base-advancing
+to `$Dev10x:git` (which rebases onto the ref you pass); use
+`Dev10x:git-groom` only when the downstream branch genuinely needs
+its *own* history cleaned. Invoking `$Dev10x:git` satisfies
+Skill Routing Enforcement — it is not a raw `git rebase`.
+
+### Merge Mode (GH-688)
+
+Controls whether PRs are merged autonomously after CI passes.
+
+| Mode | Behavior |
+|------|----------|
+| `manual` | Mark ready, stop. User merges explicitly. |
+| `autonomous` | After CI green + no comments → invoke `Dev10x:gh-pr-merge` |
+| `cascade` | Autonomous + auto-rebase downstream PRs in the same fanout chain |
+
+**Resolution order** (first match wins):
+1. **Merge gate:** call `mcp__cli__resolve_gate(
+   gate="merge", context={})`. `effect: "auto-advance"` → default
+   to `cascade`; any other effect → `manual`.
+2. **Playbook override:** `merge_mode` in the user's
+   `work-on.yaml` playbook
+3. **Default:** `manual`
+
+**Cascade logic** (when merge_mode is `cascade`):
+1. Merge PR N via `$Dev10x:gh-pr-merge`
+2. `git fetch origin develop`
+3. Base-advance PR N+1 onto `origin/develop` via `$Dev10x:git`
+   (rebase onto the passed `<base-ref>` + safe force-push — same
+   primitive as Post-Merge Rebase above, not a raw `git rebase`)
+4. Wait for CI (60s initial delay)
+5. Merge PR N+1
+6. Repeat for all PRs in the sequential chain
+
+**Autonomous and cascade modes** reach the Phase 4 monitor's merge
+step with the `merge` gate already resolved to `auto-advance`, so
+merges proceed without a further confirmation. Phase 5's
+verification gate still fires to confirm final session state.
+
+**Review thread auto-resolution (GH-399 F3):** The orchestrator MAY
+auto-resolve a review thread when ALL of the following hold:
+- `mcp__cli__resolve_gate(gate="thread_resolution",
+  context={"author_type": "bot"})` returns `effect: "auto-advance"`.
+  The resolver owns this decision — never infer it from a merge
+  mode, a preset, or a Phase 0 answer.
+- The thread's concern has been addressed in a pushed commit
+  (the fix is live on the PR branch, not just described).
+- The thread was opened by an automated bot (e.g.
+  `claude-review`, `hygiene-review`, `openai-review`) — not
+  by a human reviewer.
+
+If a human reviewer opened the thread, auto-resolution is
+NEVER authorized regardless of merge mode. Escalate via
+`AskUserQuestion` and wait for an explicit "resolve it" answer.
+
+This policy only applies when the orchestrator is doing the
+resolving (e.g., landing a fixup commit itself). When
+re-dispatching a fresh agent to land the fix, the agent MUST
+NOT auto-resolve threads — it should return
+`DONE_WITH_CONCERNS: addressed thread, pending resolution`
+and let the orchestrator decide based on the policy above.
+
+### Merge Strategy
+
+The merge command uses a configurable strategy flag. Resolution
+order (first match wins):
+
+1. **Playbook override:** `merge_strategy` in the user's
+   `work-on.yaml` playbook (e.g., `merge_strategy: rebase`)
+2. **Memory note:** user feedback memory mentioning merge
+   preference (e.g., "prefer --rebase")
+3. **Default:** `--rebase` — preserves groomed commit history
+   and minimizes stacked-branch friction
+
+| Strategy | Flag | When to use |
+|----------|------|-------------|
+| Rebase | `--rebase` | Default — atomic commits preserved |
+| Squash | `--squash` | Single-commit PRs or messy history |
+| Merge commit | `--merge` | Protected branches requiring merge |
+
+### Stacked-Branch Merge Protocol
+
+When merging stacked PRs (PR B depends on PR A's branch),
+squash merges rewrite history and make downstream PRs
+unmergeable. Follow this protocol:
+
+1. Merge the base PR (A) using the configured strategy
+2. `git fetch origin develop`
+3. For each downstream PR (B):
+   - `git checkout <branch-B>`
+   - `git rebase origin/develop`
+   - If conflicts → resolve, commit, force-push
+   - Wait for CI to pass on the rebased branch
+4. Merge downstream PR (B)
+5. Repeat for further stacked PRs
+
+**Note:** `--rebase` merge minimizes this friction compared
+to `--squash` because the base commits remain intact.
+
+### Progress Compaction
+
+After completing each parallel group or sequential chain,
+compact progress per `references/task-orchestration.md`
+Pattern 8. Summarize completed items in task metadata to
+free context for remaining work.
+
+## Phase 4: Collect
+
+In the swarm model, each spawned agent runs the full
+`Dev10x:work-on` lifecycle inside its isolated worktree —
+including `Dev10x:gh-pr-monitor` for its own PR through to
+merge. By the time the agent completes, its PR is either
+merged or surfaced as a failure mode in the result.
+
+Phase 4's job is therefore **collection**, not orchestration:
+
+1. As each background agent's completion notification
+   arrives, parse its result for: PR URL, status (DONE /
+   DONE_WITH_CONCERNS / NEEDS_CONTEXT / BLOCKED), cost, and
+   any sibling-coordination signals.
+   **Stranded-work check (GH-1363, REQUIRED before any status
+   is trusted):** run `dev10x orchestration stranded-work
+   <agent-worktree-path> --status <token>`; exit 1 means the agent
+   left work uncommitted in a worktree about to be reclaimed. Send
+   the printed `resume_prompt` to that agent via SendMessage and
+   re-run the check until it is clean. Do this even for `DONE` —
+   `DONE` is what advances to teardown, so it is the dangerous
+   case. Four agents in one swarm stranded work while waiting on a
+   test run with the prohibition verbatim in their briefs; the
+   orchestrator now looks instead of trusting.
+   **Missing status line (GH-368 F2, GH-385 F1):** If the
+   agent's trailing line does not match any of the four
+   status tokens, treat it as `NEEDS_CONTEXT: agent
+   terminated without a status line`.
+   **Resume strategy (GH-462 F1):** Before re-dispatching a
+   fresh agent, **prefer SendMessage resume** — send a
+   continuation prompt to the SAME agent via SendMessage
+   (e.g., "Please continue from where you left off and
+   finish through to PR merge"). SendMessage preserves the
+   agent's in-context PR state, branch, and CI history,
+   completing the lifecycle at lower cost than a fresh
+   dispatch. Use re-dispatch (new agent with PR URL inlined)
+   only when the agent is no longer resumable (turn expired,
+   session ended, or agent returned BLOCKED).
+   **Say what you did while it was stalled (GH-1380).** "Continue
+   and finish through to PR merge" tells a worker to complete a
+   lifecycle, so a worker that resumes onto a PR *you* merged
+   reports the merge gate as its own — two did. When you have
+   performed any step for a stalled agent, name it in the resume
+   message ("I ran the gate and merged #N at <sha>; report
+   `ALREADY_MERGED`, not the checklist") so the worker has a fact
+   to report instead of a pipeline to reconstruct.
+   **"PR created but not merged" (GH-368 F1):** If the
+   agent result contains a PR URL and the trailing line is
+   `DONE` but the PR state (via `mcp__cli__pr_get`)
+   shows the PR is still OPEN, downgrade the status to
+   `NEEDS_CONTEXT: PR open, merge incomplete`. Apply the
+   same resume-first strategy before re-dispatching.
+2. Mark the matching Phase 3 subtask `completed` only when
+   the PR is confirmed MERGED. Mark `pending` again if the
+   agent reported `NEEDS_CONTEXT` or if the PR is open.
+3. For `BLOCKED` results, queue an `AskUserQuestion` so the
+   orchestrator can decide between retry, fallback to
+   serial, or skip.
+4. **Harvest the sibling pub/sub bus (GH-133).** Once per
+   wave drain, read `/tmp/Dev10x/fanout/<wave_id>/bus.jsonl`
+   (using `Read`; the file is JSONL with one event per line).
+   Collect every `bailout` and `conflict_signal` event.
+   `bailout` events with `recoverable: true` mark their item
+   for re-dispatch in a follow-up wave; `recoverable: false`
+   bailouts escalate via `AskUserQuestion` alongside any
+   `BLOCKED:` agent results. Treat the bus as authoritative
+   for sibling-to-sibling drift — it captures conflicts the
+   agent result message may have omitted.
+5. After a full wave drains, before dispatching the next
+   wave: rebase downstream conflict-chain successors onto
+   the latest develop via `$Dev10x:git-groom`.
+6. **Teardown the completed agent's worktree (GH-463).**
+   After confirming the PR is MERGED (step 2) and the step-1
+   stranded-work check is clean, run the
+   post-agent teardown sequence for that agent's worktree.
+   See `### Post-Agent Worktree Teardown` below.
+
+**Do NOT poll.** The harness notifies the orchestrator
+session when each background agent finishes (per Agent
+tool semantics). Polling, sleeping in a loop, or running a
+`Monitor` over the agent state is wasted context.
+
+**Serial-fallback mode.** When the swarm was skipped in
+favour of in-session `$Dev10x:work-on`, this phase
+collapses to "verify each call returned successfully"
+since the lifecycle already ran inline.
+
+### Post-Agent Worktree Teardown (GH-463)
+
+After each background agent completes and its PR is confirmed
+MERGED, clean up the agent's ephemeral worktree. The worktree
+path is embedded in the agent's dispatch context as the
+`isolation="worktree"` working directory — it follows the
+pattern `.claude/worktrees/agent-<id>/`.
+
+**Harness lock (GH-1094).** An Agent-tool worktree may still
+carry the harness's lock when teardown starts — the lock's
+lifetime races the completion notification, so arriving after the
+notification is not proof it is gone. Every `remove` below then
+fails with `fatal: cannot remove a locked working tree, lock
+reason: claude agent <id>`. Run `git worktree unlock
+<worktree-path>` first — safe once the agent has finished — then
+the `remove` the decision tree prescribes. A single `--force`
+does NOT clear a lock; it only covers dirt. Do not reach for
+`remove -f -f` either: the second `-f` overrides the lock, but it
+also bypasses the dirty-tree checks steps 3–5 depend on, so it
+can discard unmerged work the tree exists to keep.
+
+**Teardown decision tree (per worktree):**
+
+1. Run `git -C <worktree-path> status --porcelain` to check
+   for uncommitted modifications.
+
+2. **Clean worktree (empty output):** PR is merged and
+   worktree has no uncommitted changes.
+   → `git worktree remove <worktree-path>`
+   → Delete the child branch if it still exists locally:
+     `git branch -d <branch>` (safe delete — already merged)
+   → Proceed.
+
+3. **Dirty worktree (non-empty output):** The worktree has
+   uncommitted modifications. Resolve in two checks — confirm
+   the branch is **merged**, then **classify the dirt**.
+
+   **Merged check (REQUIRED before any force-remove, GH-476):**
+   A dirty worktree may only be force-removed once its branch has
+   landed on base. The branch is merged when either holds:
+   - `git -C <worktree-path> merge-base --is-ancestor HEAD
+     origin/<base>` exits 0 (fast-forward or merge-commit landing),
+     or
+   - the upstream is gone after a rebase-merge — `git -C
+     <worktree-path> status -sb` reports `[gone]` (rebase-merge
+     rewrites commits, so the tip is NOT an ancestor of base; the
+     gone upstream is the merge signal instead).
+
+   If the branch is NOT merged, treat the dirt as unmerged work
+   and skip to step 5 — never force-remove an unmerged branch.
+
+   **Dirt classification (per modified file):**
+   - Compare the working-copy version against the base branch
+     HEAD: `git -C <worktree-path> diff origin/<base> -- <file>`.
+   - **Diff is empty (identical or not present on base):** the
+     file is a stale duplicate — content already on develop or
+     the file was removed upstream. Safe to discard.
+   - **Diff is non-empty:** the file carries content not on base.
+     This is genuinely unique work UNLESS it is a **replicated
+     artifact** (next check).
+
+   **Replicated-artifact check (GH-476):** A repo-wide `.claude/`
+   rule or template rewrite (a lint/template sync) is replicated
+   *identically* into every sibling agent worktree and never
+   committed, so its diff is non-empty against base yet is
+   mechanical noise, not the agent's own work. Hash each agent
+   worktree's full dirty diff once and compare across siblings:
+   `git -C <worktree-path> diff origin/<base> | md5sum`. When the
+   **same hash appears in ≥2 sibling agent worktrees**, that diff
+   is a replicated artifact — its files are discardable, not
+   unique work. A diff whose hash is unique to a single worktree
+   is genuinely unique work. Record the hash in the worktree's
+   Phase 4 subtask metadata so sibling teardowns (and the Swarm
+   Teardown sweep) can match it. When an early-completing agent
+   tears down before ≥2 sibling hashes are known, the match
+   cannot fire yet — keep the worktree (step 5) and let the
+   Swarm Teardown sweep, which sees every surviving sibling's
+   hash, force-remove it once the replicated signature is
+   confirmed.
+
+4. **Branch merged AND every dirty file is discardable** (stale
+   duplicate and/or replicated artifact):
+   → `git worktree remove --force <worktree-path>`
+   → Delete the child branch: `git branch -D <branch>`
+   → `git worktree prune` (drop the freed administrative record)
+   → Add a note to the Phase 4 subtask metadata:
+     `"teardown": "force-removed (stale/replicated dirt)"`
+   → Proceed.
+
+5. **Branch unmerged, OR any dirty file is genuinely unique**
+   (non-empty diff whose hash is unique to this worktree):
+   → Do NOT remove the worktree.
+   → Add a note to the Phase 4 subtask metadata:
+     `"teardown": "kept — <unmerged | unique content in <files>>"`
+   → Surface in the Phase 5 summary so the supervisor can decide
+     what to do (stash, cherry-pick, or discard).
+
+**Timing:** Teardown runs AFTER the PR is confirmed MERGED
+and AFTER all child-scoped processes have exited (i.e., after
+the agent's completion notification arrives). Never tear down
+a worktree while the agent is still running.
+
+**Worktree path discovery:** The orchestrator knows the path
+because it dispatched the agent with `isolation="worktree"`.
+If the path is not recorded, use `git worktree list --porcelain`
+and match the branch name to find the worktree path.
+
+**Do not use `EnterWorktree`** for teardown inspection —
+`EnterWorktree` requires the target to share the repository
+root; use `git -C <path>` for status and diff commands instead.
+
+## Phase 5: Verify
+
+After all items are processed and PRs merged:
+
+**REQUIRED: Wait for all background agents (GH-859).** Before
+ANY verification step, call `TaskList` and check for tasks with
+status `in_progress`. If any exist (e.g., Phase 4 monitor agents
+still running), do NOT proceed — wait for all agents to complete.
+The completion gate must not fire while monitors are still
+tracking CI or merges.
+
+**This wait is NOT a checkpoint.** "No checkpoints" means no
+implicit pauses for the user to acknowledge
+progress between steps. It does not mean "skip waiting for
+genuine async work to finish". Background agents finishing CI
+monitoring and merge confirmation are hard dependencies of the
+Phase 5 verification gate, not optional acknowledgements. The
+distinction:
+
+- Checkpoint (forbidden): "Phase 4 dispatched — ready to verify?"
+- Dependency wait (required): `TaskList` polling until all
+  in-progress agents return their results
+
+See `references/friction-levels.md` § "No checkpoints" rule for
+the full taxonomy.
+
+**Enforcement loop:**
+1. Call `TaskList`
+2. If any task has status `in_progress` → wait and re-check
+3. Only proceed when ALL tasks are either `completed` or
+   `pending` (no `in_progress` tasks remain)
+
+This prevents the failure mode where the completion gate fires
+as soon as Phase 3 marks items as dispatched, before Phase 4
+monitors confirm CI green or merges complete.
+
+1. Call `TaskList` to show the full task list
+2. **REQUIRED: Enforce PR comment resolution for every PR
+   (GH-829).** For each PR processed in this session:
+   a. Call `mcp__cli__pr_comments(pr_number=N)`
+   b. If unaddressed comments exist, invoke
+      `$Dev10x:gh-pr-respond (args: "{pr_url}")` to
+      address them — do NOT skip or defer
+   c. After responding, re-check with `pr_comments()` to
+      confirm zero unaddressed comments remain
+   d. Repeat b-c until all comments are resolved
+   e. **Do NOT proceed to step 3 while any PR has unaddressed
+      comments.** This is a hard gate, not advisory.
+   CI-green is NOT sufficient — unaddressed review comments
+   (including bot comments) must be resolved before declaring
+   work complete (GH-549 F-01). Under context pressure in
+   large batches (5+ PRs), agents skip acting on comment
+   check results — the loop in steps b-d prevents this by
+   making resolution mandatory before advancing.
+3. Verify all items are either merged, closed, or have
+   research comments posted
+4. Show summary table:
+
+```
+| Item | Type | Result |
+|------|------|--------|
+| PR #42 | PR | Merged |
+| Issue #10 | Feature | PR #101 merged |
+| Issue #20 | Research | Comment posted |
+```
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text).
+Options:
+- Work complete — done (Recommended)
+- Add more items
+- Revisit an item
+
+## Swarm Teardown (GH-463)
+
+After the Phase 5 gate confirms "Work complete", run a final
+cleanup sweep. This catches any worktrees not removed during
+Phase 4 (e.g., items that ended as NEEDS_CONTEXT → serial
+fallback, or agents that were re-dispatched and left a
+previous ephemeral worktree behind).
+
+### Step 1: Prune stale worktree records
+
+```
+git worktree prune
+```
+
+This removes administrative records for worktrees whose
+directories no longer exist. Run unconditionally — it is safe
+even when there is nothing to prune.
+
+### Step 2: Inspect surviving agent worktrees
+
+List all worktrees: `git worktree list --porcelain`.
+For each worktree whose path matches `.claude/worktrees/agent-*`
+and whose branch is a `worktree-agent-*` branch:
+
+Apply the same decision tree as Phase 4's Post-Agent Worktree
+Teardown — including the **harness-lock unlock** (GH-1094), the
+**merged check**, and the **replicated-artifact check** (GH-476).
+Surviving worktrees reach this sweep precisely because an earlier
+removal did not complete, so a stale lock is likelier here than in
+Phase 4 — `git worktree unlock <path>` before each removal below:
+- Clean → `git worktree remove`
+- Branch merged AND all dirty files discardable (stale duplicate
+  and/or replicated artifact whose diff hashes identically across
+  siblings) → `git worktree remove --force`, `git branch -D
+  <branch>`, then `git worktree prune`
+- Branch unmerged, OR any dirty file is genuinely unique (diff
+  hash seen in only this worktree) → keep; add to the swarm-end
+  summary for supervisor review
+
+Hash sibling diffs (`git -C <path> diff origin/<base> | md5sum`)
+before deciding — the replicated `.claude/` rewrite that #476
+documents is non-empty against base but identical across every
+surviving agent worktree, so a per-file "is the diff empty?"
+test alone keeps it forever. The cross-sibling hash match is
+what distinguishes mechanical noise from real work.
+
+Collect a list of worktrees kept (with reason) for the summary.
+
+### Step 3: Clean abandoned agent branches (GH-463)
+
+After removing worktrees, look for local `worktree-agent-*`
+branches that no longer have a checked-out worktree and were
+never pushed (no remote tracking ref).
+
+**Delegate to `Dev10x:git-branch-prune` if available:**
+When the `Dev10x:git-branch-prune` skill is present, invoke
+`$Dev10x:git-branch-prune` — it runs the full
+classification + AskUserQuestion gate to confirm deletions.
+
+**Fallback (git-branch-prune not yet available):** For each
+local `worktree-agent-*` branch with no upstream and no open
+PR, and whose tip is an ancestor of `origin/<base>` or whose
+commits landed on the base branch (check via
+`git log origin/<base> --ancestry-path <tip>` or commit-subject
+match), mark it as safe to delete. Collect the list and present
+it to the supervisor via `AskUserQuestion` before deleting.
+
+Do NOT delete branches that are:
+- Currently checked out in any worktree (`git worktree list`)
+- Ahead of the base branch with no matched commits on the base
+- Tracking an upstream that is not `: gone]`
+
+### Step 4: Swarm summary
+
+Include a teardown table in the Phase 5 summary:
+
+```
+| Worktree | Branch | Teardown |
+|----------|--------|----------|
+| agent-abc | worktree-agent-abc | Removed (clean) |
+| agent-def | worktree-agent-def | Force-removed (stale dup) |
+| agent-ghi | worktree-agent-ghi | Kept — unique content in foo.md |
+```
+
+## Phase 6: Audit
+
+**Phase 6 is REQUIRED when the session processes 3 or more
+work items.** "Fewer than 3" means exactly 0, 1, or 2 items.
+Do not add qualifiers like "independent" or "unique" to
+justify skipping — count all items processed, regardless of
+type or complexity.
+
+**REQUIRED:** Invoke `$Dev10x:skill-audit` to
+analyze skill usage, compliance rates, and identify process
+improvements.
+
+**Hard self-check before marking Phase 6 complete (GH-724):**
+Verify that `$Dev10x:skill-audit` was **actually called**
+in this session (check your tool-use history). Saving findings
+as memory notes or task descriptions is NOT a substitute —
+only a real `Skill()` invocation counts. If the call is missing,
+invoke it now before marking this task completed.
+
+**Skip this phase** only when the session processed 0, 1, or
+2 work items, or when the user explicitly declines.
+
+## Pause/Resume
+
+At any pause signal, invoke `Dev10x:session-wrap-up`.
+Active worktrees and in-progress PRs are bookmarked
+automatically.
+
+## Subagent Status Protocol (GH-69, GH-368, GH-385)
+
+When fanout dispatches `Agent()` for either swarm work (per
+the Agent Isolation Matrix) or read-only monitoring fallback,
+every prompt MUST instruct the agent to end its output with
+one of:
+
+- `DONE` — task complete (PR MERGED, CI green, no comments)
+- `DONE_WITH_CONCERNS: <text>` — PR merged but flagged issues
+- `NEEDS_CONTEXT: <what>` — re-dispatch needed; includes the
+  case where the agent was interrupted before merge (branch or
+  PR exists but is still open)
+- `BLOCKED: <reason>` — permission wall or unrecoverable error
+
+**Success bar (GH-368 F1):** `DONE` requires a MERGED PR,
+not just a created or open one. A swarm agent that opens a PR
+and stops must return `NEEDS_CONTEXT`, not `DONE`.
+
+**Interruption guarantee (GH-368 F2, GH-385 F1):** Every
+agent prompt MUST include the instruction:
+> "Even if your turn ends before the PR is merged (context
+> limit, permission wall, or any other interruption), your
+> FINAL line MUST still be one of the four status tokens.
+> Never end with free-form prose as your last line."
+
+The orchestrator treats a missing or non-terminal trailing line
+as `NEEDS_CONTEXT` and re-dispatches. Agents MUST NOT rely on
+this fallback — the status line is their responsibility.
+
+The main-session controller parses the trailing line and
+branches deterministically: continue, queue concern, re-dispatch
+with more context, or escalate to the user via
+`AskUserQuestion`. A `BLOCKED:` status replaces today's
+heuristic agent-failure detection — the agent self-reports the
+failure, no guesswork.
+
+**NEEDS_CONTEXT recovery — prefer SendMessage resume (GH-462 F1):**
+When an agent returns `NEEDS_CONTEXT` (or terminates without a
+status token), the orchestrator SHOULD attempt a SendMessage
+resume before re-dispatching a fresh agent. SendMessage preserves
+the agent's full in-context state (PR branch, CI results, diff)
+and typically completes the lifecycle on the first resume.
+Re-dispatch a fresh agent only when the agent is no longer
+resumable (expired turn, session ended, or `BLOCKED`).
+
+See [`references/orchestration/subagent-status-protocol.md`](
+../../references/orchestration/subagent-status-protocol.md)
+for the full prompt template, parse pattern, and migration
+notes.
+
+## Recursive-Fanout Guard (GH-36)
+
+A spawned swarm child MUST NOT re-invoke
+`$Dev10x:fanout` — that would runaway-fork into a
+swarm-of-swarms. Guards in priority order:
+
+1. **Prompt etiquette (always).** Every Phase 3 agent
+   prompt explicitly states "Do NOT call
+   $Dev10x:fanout recursively" (see Swarm Dispatch
+   template).
+2. **Skill self-check (always).** When `Dev10x:fanout`
+   starts, scan the incoming prompt for the swarm-child
+   marker — the dispatch prompt's literal `wave_id` line. If
+   detected, exit with an explicit error message directing
+   the agent to use `$Dev10x:work-on` instead. The
+   prompt is the authoritative signal: `swarm-child` has no
+   durable home since ADR-0018 retired
+   `.claude/Dev10x/session.yaml`, and GH-950 picks its
+   replacement store.
+3. **Hook (future, v2).** A PreToolUse hook on
+   `$Dev10x:fanout` invocations could check a
+   global marker file written by the orchestrator before
+   dispatch. Deferred to a follow-up ticket — prompt + skill
+   self-check covers the surface today.
+
+## Known Limitations
+
+- **No native per-agent cost cap.** The Agent tool does
+  not expose a hard budget knob equivalent to
+  `claude -p --max-budget-usd`. The orchestrator can
+  observe `total_cost_usd` post-hoc from agent results but
+  cannot kill a runaway child mid-flight. Tracked as
+  YAGNI until a real overrun is observed.
+
+- **Pub/sub between siblings is not yet implemented.**
+  When mid-wave file-scope drift is detected (sibling
+  needs a file Phase 2 assigned to another sibling), the
+  spawned agent reports the conflict via its result
+  message and the orchestrator resolves between waves.
+  Real-time sibling-to-sibling coordination via a JSONL
+  bus or MCP `fanout_bus` server is planned as a
+  follow-up (see ADR 0004).
+
+- **SessionStart context is not inherited by spawned
+  agents.** Memory, plan-sync state, and MOTD-injected
+  context do not propagate into `Agent` subagents. The
+  swarm dispatch prompt carries everything the child
+  needs inline. If `Dev10x:work-on` evolves to depend
+  on session-start state, the spawned agent will surface
+  the gap as `BLOCKED:` and the orchestrator falls back
+  to serial mode.
+
+## Examples
+
+### Example 1: Close all open loops
+
+**User:** `$Dev10x:fanout`
+
+Scans repo → finds 2 draft PRs and 5 open issues.
+Classifies: PRs have no conflicts, 3 issues share files.
+Plan: merge both PRs first (parallel), then issues in
+2 parallel groups + 1 sequential chain.
+
+### Example 2: Specific items
+
+**User:** `$Dev10x:fanout #42 #55 GH-10 GH-15 GH-20`
+
+Classifies the 5 items, builds conflict graph, presents
+plan, executes.
+
+### Example 3: PRs only
+
+**User:** `$Dev10x:fanout PRs`
+
+Scans only open PRs. Processes each to merge — mark ready,
+monitor CI, fix comments, merge. Repeats until all merged.

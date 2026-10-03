@@ -1,0 +1,4 @@
+interface:
+  display_name: "GH PR Fixup"
+policy:
+  allow_implicit_invocation: true

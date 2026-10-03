@@ -1,0 +1,4 @@
+interface:
+  display_name: "Spec Update"
+policy:
+  allow_implicit_invocation: false

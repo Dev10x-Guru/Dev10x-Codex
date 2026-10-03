@@ -1,0 +1,316 @@
+# Dev10x Onboarding Tour Guide
+
+Detailed tour content loaded by the onboarding skill.
+
+## Phase 1: Detect User Context
+
+### 1.1 Experience Level
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text).
+Options:
+- New to Claude Code — First time using AI coding tools
+- Know Claude Code, new to Dev10x — Familiar with Claude Code
+- Returning user — Used Dev10x before, want a refresher
+
+### 1.2 Configuration Detection
+
+Check what's already set up (skip configured items in tour):
+
+| Check | Command | Configured if |
+|-------|---------|---------------|
+| Git aliases | `git config alias.develop-log` | Non-empty |
+| SKILLS.md | `test -f ~/.claude/SKILLS.md` | File exists |
+| Global config | `ls ~/.config/Dev10x/` | Dir exists |
+| Playbook overrides | `ls .claude/Dev10x/playbooks/*.yaml` | Found |
+| Registered platforms | `uvx dev10x platform list` | Non-empty |
+| Worktree | `test -f .git` | `.git` is file |
+
+### 1.3 Project Detection
+
+```bash
+test -f pyproject.toml     # Python project
+test -f package.json       # Node/frontend project
+test -f Cargo.toml         # Rust project
+```
+
+## Phase 2: Guided Tour
+
+### 2.1 Skill Discovery
+
+```
+Dev10x organizes 75+ skills into families:
+
+Pipeline — End-to-end ticket-to-merge workflow
+  $Dev10x:work-on <ticket-url>  <- Start here for any task
+
+Git — Atomic commits with gitmoji and JTBD titles
+  $Dev10x:git-commit
+
+PR — Full PR lifecycle with CI monitoring
+  $Dev10x:gh-pr-create -> $Dev10x:gh-pr-monitor
+
+Session — Track work, defer items, resume later
+  $Dev10x:session-wrap-up -> $Dev10x:park-discover
+
+To see all skills: check ~/.claude/SKILLS.md
+To regenerate: $Dev10x:skill-index
+```
+
+### 2.2 Git Workflow Setup
+
+**Skip if:** Git aliases already configured.
+
+```
+Dev10x uses git aliases to avoid permission friction:
+  git develop-log   — commits since diverging from develop
+  git develop-diff  — diff since diverging from develop
+  git develop-rebase — interactive autosquash grooming (not for
+                       catching up with a moved base — for that use
+                       git fetch origin, then git rebase origin/develop)
+```
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text).
+Options:
+- Set up aliases now (Recommended) — Run git-alias-setup
+- Skip — I'll set them up later
+
+If user chooses setup: `$Dev10x:git-alias-setup`
+
+### 2.2b Permission Setup
+
+**Skip if:** Base Dev10x permissions are already present in
+`~/.claude/settings.json` (look for entries like
+`Bash(/tmp/Dev10x/bin/mktmp.sh:*)` and any
+`Bash(~/.claude/plugins/cache/**/skills/git-commit/scripts/...)`
+patterns).
+
+```
+Dev10x ships with a curated set of allow rules so common skills
+run without per-invocation approval prompts. The bootstrap pass
+ensures those rules are present in your user settings.
+```
+
+**Show the mutating surface before asking for consent (GH-769).**
+The bootstrap approves several hundred rules in one action, so a
+cautious user cannot tell what state-changing power they just
+granted. Before the approval gate below, surface the **mutating**
+subset explicitly — read-only and inert rules do not need a gate,
+only the surface that can change state. Display this disclosure:
+
+```
+Approving the bootstrap pre-approves these STATE-CHANGING actions
+(read-only rules are omitted — they can't alter your repo or account):
+
+  Git mutations (git-core)
+    git push · git reset --hard · git rebase · git commit ·
+    git merge · git cherry-pick · git restore · git stash · git tag
+  GitHub mutations (github-cli)
+    gh pr create/edit/review/merge · gh issue create/close/edit/comment ·
+    gh label create/edit · gh run rerun
+  Arbitrary script execution (dev10x-scaffolding)
+    /tmp/Dev10x/*.{py,sh} · ~/.claude/tools/* · plugin bin/ + hooks/
+    plus Write access under /tmp/Dev10x/
+  Settings mutations (dev10x-cli)
+    uvx dev10x permission clean / ensure-* (edits your settings.json)
+
+Full read-only + mutating catalog:
+  src/dev10x/skills/permission/baseline-permissions.yaml
+  skills/upgrade-cleanup/projects.yaml  (tracker MCP rules)
+```
+
+<!-- Maintenance (GH-769 follow-up): this list is curated to match the
+catalog's mutating surface. The durable fix is to generate it from the
+catalog by reading groups tagged `sensitivity: mutating` / `*-write`
+(and git/gh/script groups) rather than hand-maintaining it here — that
+programmatic generation depends on the PolicySensitivity model gaining a
+`mutating` member (today `sensitivity: mutating` in the YAML falls back
+to `unspecified`). Tracked under the PAP refactor (#796). Until then,
+keep this list in sync when the catalog's mutating groups change. -->
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text).
+Options:
+- Set up permissions now (Recommended) — approve the mutating surface
+  above and run the fast bootstrap
+- Skip — I'll run `$Dev10x:upgrade-cleanup` later
+
+**Tracker choice — ask BEFORE the bootstrap runs (GH-768).**
+`ensure-base` seeds only the chosen tracker's MCP rules, so this
+answer has to exist before the bootstrap pass, not after. Skip the
+gate entirely when
+`mcp__cli__tracker_status` returns `pinned: true` —
+the choice is a settled workspace fact, and re-asking it on every
+bootstrap is the friction this gate exists to remove.
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text) when
+`pinned` is `false`. Question: "Which issue tracker does this
+project use?" Options:
+
+- **Linear (Recommended)** — seeds the `mcp__claude_ai_Linear__*`
+  and `mcp__linear-server__*` read/write tools, plus the
+  `delete_*` denies. The default when nothing is chosen.
+- **Jira** — seeds the `mcp__claude_ai_Atlassian_Rovo__*` read and
+  write tools the ticket skills call.
+- **GitHub Issues** — seeds the `issue_*` MCP wrappers on top of
+  the unconditional `github-cli` group.
+
+Persist the answer with
+`mcp__cli__pin_tracker(tracker="<choice>")`. It keys
+off the repo stem, so one answer covers the repo and every worktree
+of it. GitLab and ClickUp are not offered — ClickUp has no native
+skill or MCP path, and the `glab` surface is not curated yet; a user
+on either should pick the tracker whose rules they actually want and
+file an issue for theirs.
+
+If user chooses setup:
+`$Dev10x:plugin-maintenance (args: "bootstrap")`
+
+The bootstrap pass runs only the steps a new user needs:
+migrate any leftover legacy config files, register the
+`/tmp/Dev10x` workspace directory (GH-40 — without this every
+Write/Edit to `/tmp/Dev10x/...` prompts despite allow-rules),
+ensure base permissions, and confirm script coverage. It skips
+the heavier post-upgrade steps (path version bumps,
+generalization, full permission audit, project-settings dedup)
+— those remain available via `$Dev10x:upgrade-cleanup` whenever
+the user wants the comprehensive sweep.
+
+### 2.2b-2 Review Policy (ADR-0022)
+
+**Skip if:** `mcp__cli__supervisor_review_status()`
+returns `pinned: true` — the choice is a settled workspace fact, and
+re-asking it on every onboarding run is exactly the friction this gate
+exists to remove.
+
+```
+Dev10x asks one durable question about how this project ships:
+
+  Does the supervisor read the PR before it moves on?
+
+AI self-review and CI always run first, in every posture (ADR-0022
+D-4) — this only decides whether the agent also waits for you.
+```
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text) when
+`pinned` is `false`. Question: "Does the supervisor read the PR
+before it moves on?" Options:
+
+- **Yes — the supervisor reviews first (Recommended)** —
+  `supervisor_review=required`. In a solo repo the park lands before
+  merge; in a team repo it lands before teammates are asked to review
+  (ADR-0022 D-3). This is the safe default.
+- **No — the agent ships it** — `supervisor_review=none`.
+
+Persist the answer with
+`mcp__cli__pin_supervisor_review(value="required"|"none")`.
+It keys off the repo stem, so one answer covers the repo and every
+worktree of it — same repo-scoping as `pin_tracker` above. There is no
+`strict` / `guided` / `adaptive` preset to pick (ADR-0022 D-1);
+`adaptive` is the sole shipped baseline and every gate auto-advances
+unless this posture, a floor, or a project pin says otherwise.
+
+### 2.2c Platform Registration
+
+**Skip if:** `uvx dev10x platform list` already reports one or
+more registered platforms.
+
+```
+Dev10x can target more than one AI assistant — Claude Code,
+GitHub Copilot CLI, Windsurf, Continue, and Cursor. Registering
+a platform records where it keeps its config, plugins, and
+settings so skills target the right paths without per-user path
+editing (and without symlinks, so Windows stays safe).
+
+See the built-in catalog:
+  uvx dev10x platform known
+
+Register the one you work in:
+  uvx dev10x platform add claude-code
+
+Pass --playbook <file> to prefer a specific work-on playbook for
+that platform, or --config-dir to override its default location.
+```
+
+Run `uvx dev10x platform known` to show the supported catalog
+before asking.
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text).
+Options:
+- Register this platform now (Recommended) — runs
+  `uvx dev10x platform add <name>` for the assistant in use
+- Add a different platform — register Copilot CLI, Windsurf,
+  Continue, or Cursor instead
+- Skip — I'll run `uvx dev10x platform add` later
+
+If the user chooses to register, run the matching command, e.g.:
+`uvx dev10x platform add claude-code`
+
+Then confirm with `uvx dev10x platform list` so the new
+registration is visible. This is the operational entry point for
+the multi-platform surface — onboarding is where a user declares
+which assistants Dev10x should target.
+
+### 2.3 PR Pipeline Demo
+
+```
+The Dev10x PR pipeline automates the full shipping flow:
+
+1. $Dev10x:git-commit    — Gitmoji + JTBD commit message
+2. $Dev10x:gh-pr-create  — Draft PR with Job Story
+3. $Dev10x:gh-pr-monitor — Background CI + review monitoring
+4. $Dev10x:git-groom     — Clean commit history
+5. $Dev10x:gh-pr-respond — Address review comments
+
+Or use $Dev10x:work-on <ticket> for the full pipeline.
+```
+
+### 2.4 Session Management
+
+```
+Dev10x tracks your work across sessions:
+
+- $Dev10x:session-wrap-up — Save open work before closing
+- $Dev10x:park            — Defer a task to the right place
+- $Dev10x:park-discover   — Find deferred items at start
+```
+
+### 2.5 Customization
+
+**Skip if:** Playbook overrides already exist.
+
+```
+Customize Dev10x behavior per project:
+
+- Playbooks: Override workflow steps
+  $Dev10x:playbook edit work-on feature
+
+- Memory: Teach Dev10x about your project
+
+- CLAUDE.md: Project-level instructions
+```
+
+### 2.6 Tour Summary
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text).
+Options:
+- Start working — I have a task to begin (Recommended)
+- Explore more — Show me additional capabilities
+- Set up customization — Help me configure playbooks
+
+## Phase 3: Setup Assistance (Optional)
+
+Only runs if user chose "Explore more" or "Set up customization".
+
+### If "Explore more":
+
+Show additional families:
+- Testing: `/test`, `/test:fix-flaky`, `$Dev10x:qa-scope`
+- Architecture: `$Dev10x:adr-evaluate`, `$Dev10x:scope`
+- Operations: `$Dev10x:investigate`, `/triage-sentry`
+- Reports: `/work:daily`, `/work:weekly`
+
+### If "Set up customization":
+
+Guide through:
+1. Creating a playbook override for most-used workflow
+2. Setting up project memory with key context
+3. Reviewing CLAUDE.md for project-specific instructions
