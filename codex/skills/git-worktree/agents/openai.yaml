@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Worktree"
+policy:
+  allow_implicit_invocation: true

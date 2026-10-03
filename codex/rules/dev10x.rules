@@ -1173,6 +1173,24 @@ prefix_rule(
 )
 
 prefix_rule(
+    pattern = ["dev10x", "skill", "codex-skills"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(dev10x skill codex-skills:*)",
+)
+
+prefix_rule(
+    pattern = ["uvx", "dev10x", "skill", "codex-skills"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uvx dev10x skill codex-skills:*)",
+)
+
+prefix_rule(
+    pattern = ["uv", "run", "dev10x", "skill", "codex-skills"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uv run dev10x skill codex-skills:*)",
+)
+
+prefix_rule(
     pattern = ["dev10x", "config"],
     decision = "allow",
     justification = "Dev10x catalog: Bash(dev10x config:*)",

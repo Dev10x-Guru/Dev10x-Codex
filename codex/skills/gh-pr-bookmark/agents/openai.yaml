@@ -1,0 +1,4 @@
+interface:
+  display_name: "GH PR Bookmark"
+policy:
+  allow_implicit_invocation: false

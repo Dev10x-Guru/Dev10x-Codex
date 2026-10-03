@@ -1,0 +1,1041 @@
+# Project roots to scan for .claude/settings.local.json
+# Each root is scanned recursively for settings files containing
+# versioned plugin paths. Worktree directories (.worktrees/) are
+# included automatically.
+#
+# Copy this file to ~/.claude/skills/Dev10x:upgrade-cleanup/
+# and customize with your own project roots:
+#   uvx dev10x permission init
+
+plugin_cache: ~/.claude/plugins/cache/Dev10x-Guru/Dev10x
+
+roots: []
+#  - /work/my-projects
+#  - /work/team-repos
+
+include_user_settings: true
+
+# Workspace directories that must be registered with Claude Code for
+# Write/Edit/Read tools to operate without per-call permission prompts.
+# Allow-rules alone are NOT sufficient for paths outside the project
+# root (GH-40). These are added under permissions.additionalDirectories
+# in every settings file.
+#
+# GH-1260: the gate governs the Read/Write/Edit TOOLS ONLY. It does not
+# gate Bash, and the two rule namespaces are independent — a `Read()`
+# rule, allow or deny, has no bearing on a Bash command reading the same
+# path. Adding a workspace directory therefore does NOT relieve Bash
+# friction, and no `Read()` deny protects a path that `cat`/`rg`/`wc`
+# can reach. Do not reach for either as a path-scoping remedy; a path is
+# scopable only by an effect-based PreToolUse validator (the DX0xx
+# axis), filesystem permissions, or not storing the secret in a readable
+# file. Every `Read()` entry below is an ALLOW; the shipped catalog
+# carries no `Read()` deny, so it makes no protection promise it cannot
+# keep — keep it that way.
+#
+# GH-1325: the two namespaces differ in MATCHING as well as in reach.
+# `Read`/`Edit`/`Write` patterns are gitignore patterns — `**` crosses
+# directories, `*` stays inside one segment, and the leading token picks
+# the anchor: `//` the filesystem root, `~/` the home directory, a lone
+# `/` the settings source. A `Bash()` rule is a literal command prefix
+# where `**` is two characters. Enumerate by intent, collapse by
+# redundancy: one tree rule replaces a per-subdirectory list, and no
+# rule is widened to absorb a neighbour it was not granted for.
+# Enforced by tests/skills/permission/test_path_rule_anchors.py.
+workspace_directories:
+  - /tmp/Dev10x
+  # GH-254: skills read playbook overrides, plan-sync state, and
+  # plugin assets from these well-known locations. Without them,
+  # the additionalDirectories gate fires per-Read even when
+  # the underlying tool is allowed.
+  - ~/.claude/memory
+  - ~/.claude/plugins
+  - ~/.config/Dev10x
+
+# Commands declared once and rendered as one `Bash(<prefix><command>:*)`
+# allow-rule per spelling (GH-1317). Claude Code's rule matching is
+# literal, so `uvx dev10x permission ensure-base` and the bare
+# `dev10x permission ensure-base` a human types are two different rules;
+# hand-listing them meant coverage depended on whoever added the entry
+# remembering every runner. The block is folded into `base_permissions`
+# at load time, so every reader downstream still sees flat rule strings.
+command_spellings:
+  # The three runners the docs, the skills and the humans all use.
+  - prefixes: ["", "uvx ", "uv run "]
+    commands:
+      - dev10x permission clean
+      - dev10x permission doctor
+      - dev10x permission ensure-base
+      - dev10x permission ensure-reads
+      - dev10x permission ensure-scripts
+      - dev10x permission ensure-workspace
+      - dev10x permission enumerate-mcp
+      - dev10x permission codex-rules
+      - dev10x permission generalize
+      - dev10x permission init
+      - dev10x permission investigate
+      - dev10x permission merge-worktree
+      - dev10x permission ensure-ignored
+      - dev10x permission record-upgrade
+      - dev10x permission update-paths
+      - dev10x doctor run
+      - dev10x playbook diff
+      - dev10x skill count-instructions
+      - dev10x skill codex-skills
+      - dev10x config
+      - dev10x platform
+      - dev10x init
+      - dev10x github-app
+
+  # GH-1317: the foreman/watchdog read-only verbs were absent in EVERY
+  # spelling, so an unattended pre-flight prompted on its own heartbeat
+  # and seventeen per-checkout catch-alls were accepted ad hoc to get
+  # past it. `skills/foreman/references/preflight-checklist.md` §1 names
+  # a fourth runner for these — the plugin-cache install invokes them
+  # through `--project <plugin-root>` (GH-961) — so that spelling
+  # is listed here and nowhere else.
+  - prefixes:
+      ["", "uvx ", "uv run ", "uv run --project <plugin-root> "]
+    commands:
+      - dev10x foreman probe
+      - dev10x foreman watch
+      - dev10x watchdog probe
+      - dev10x watchdog sessions
+
+# Base permissions that update-paths.py --ensure-base will add to every
+# settings.local.json if missing.  These are stable, version-independent
+# rules that every Dev10x plugin user needs.
+#
+# GH-98:  gh CLI patterns
+# GH-120: /tmp/Dev10x/git/ temp file access
+# GH-274: /tmp/Dev10x/bin/mktmp.sh for all namespaces
+# GH-101: plugin cache broad rule (covers <plugin-root> scripts)
+base_permissions:
+  # --- Plugin infrastructure (GH-274, GH-101, GH-426) ---
+  - "Bash(/tmp/Dev10x/bin/mktmp.sh:*)"
+
+  # --- Arbitrary-code escape destinations (GH-370) ---
+  # GH-308 steers agents to extract inline probes into /tmp/Dev10x/*.py
+  # or ~/.claude/tools/*.py. Write is already permitted; without these,
+  # executing the extracted script prompts again (GH-271 #192, #215).
+  - "Bash(/tmp/Dev10x/*.py:*)"
+  - "Bash(/tmp/Dev10x/**/*.py:*)"
+  - "Bash(/tmp/Dev10x/*.sh:*)"
+  - "Bash(/tmp/Dev10x/**/*.sh:*)"
+  - "Bash(~/.claude/tools/*:*)"
+  - "Bash(~/.claude/tools/*.py:*)"
+  - "Bash(~/.claude/tools/*.sh:*)"
+  - "Bash(/home/*/.claude/tools/*:*)"
+
+  # --- Plugin scripts (GH-471) ---
+  # Per-script Bash rules are NO LONGER listed here. They previously used
+  # `cache/**/` globs, which Claude Code's Bash matcher treats literally —
+  # the literal `**` never appears in a real command string, so the rules
+  # never matched and every plugin script prompted. `update-paths` cannot
+  # re-version a `**` rule either (no literal X.Y.Z segment to bump).
+  #
+  # Concrete, version-pinned rules
+  # (`.../<version>/{bin,hooks,skills}/.../foo.{sh,py}:*`) are emitted by
+  # `permission ensure-scripts` (from scan_plugin_scripts) and re-bumped by
+  # `permission update-paths` on every upgrade. ensure-scripts also purges
+  # any surviving dead `**` script rules from user settings, replacing them
+  # with the concrete forms. See update_paths.is_dead_glob_script_rule.
+
+  # GH-269: upgrade-cleanup/scripts/*.py shims were retired in favour
+  # of the version-stable `uvx dev10x permission …` CLI. The
+  # replacement allow-rules live below under "Dev10x CLI". The
+  # `permission update-paths` rewriter migrates any legacy
+  # per-script rules in user settings to the new CLI form.
+
+  # --- Dev10x CLI (GH-269, GH-1317) ---
+  # Declared once each under `command_spellings` below, which renders a
+  # rule per runner prefix. Still per-subcommand — never
+  # `Bash(uvx dev10x:*)` — so users can audit exactly which CLI
+  # surfaces the plugin is authorized to use.
+
+  # --- Dev10x config file access (GH-878, GH-135, GH-862) ---
+  # Playbook overrides and other legacy read-only config live under
+  # ~/.claude/memory/Dev10x — a Read seed keeps tier-2 resolution
+  # prompt-free. No Write/Edit seeds under .claude/ are shipped:
+  # ADR-0018 (GH-812) retired runtime writes there — durable state
+  # moved to ~/.config/Dev10x and is written via the `dev10x` CLI,
+  # not a Write/Edit allow rule (which trips Claude Code's
+  # self-settings consent gate regardless, and is flagged by the
+  # write-guard-claude scanner). The retired .claude/Dev10x/session.yaml
+  # and config.yaml seeds were removed with the same change; in-repo
+  # reads under .claude/Dev10x (e.g. project-local playbooks) need no
+  # allow rule since the repo root is already a working directory.
+  - "Read(~/.claude/memory/Dev10x/**)"
+  # GH-315: the two Bash(grep:*<path>) rules below were removed.
+  # Claude Code rejects :* in a non-trailing position ("The :* pattern
+  # must be at the end"). They were also redundant — Bash(grep:*)
+  # already covers all grep invocations.
+
+  # --- Dev10x MCP tools: cli server (GH-878) ---
+  - "mcp__cli__detect_tracker"
+  - "mcp__cli__pr_detect"
+  - "mcp__cli__issue_get"
+  - "mcp__cli__issue_comments"
+  - "mcp__cli__issue_comment_edit"
+  - "mcp__cli__issue_comment_delete"
+  - "mcp__cli__issue_create"
+  - "mcp__cli__pr_comments"
+  - "mcp__cli__pr_comment_reply"
+  - "mcp__cli__pr_review_comment_edit"
+  - "mcp__cli__request_review"
+  - "mcp__cli__detect_base_branch"
+  - "mcp__cli__verify_pr_state"
+  - "mcp__cli__pre_pr_checks"
+  - "mcp__cli__create_pr"
+  - "mcp__cli__generate_commit_list"
+  - "mcp__cli__post_summary_comment"
+  - "mcp__cli__pr_notify"
+  - "mcp__cli__push_safe"
+  - "mcp__cli__rebase_groom"
+  - "mcp__cli__create_worktree"
+  - "mcp__cli__mass_rewrite"
+  - "mcp__cli__start_split_rebase"
+  - "mcp__cli__next_worktree_name"
+  - "mcp__cli__setup_aliases"
+  - "mcp__cli__mktmp"
+  - "mcp__cli__plan_sync_set_context"
+  - "mcp__cli__plan_sync_json_summary"
+  - "mcp__cli__plan_sync_archive"
+  - "mcp__cli__check_top_level_comments"
+  - "mcp__cli__unresolved_threads"
+  - "mcp__cli__ci_check_status"
+  # Test runners (GH-880, #877 E3 gap 1) — the diag-friction steer target
+  # for scoped py/node tests. Without these, the steered one-liner
+  # (run_node_tests(runner="npm", cwd=...)) just moves the prompt.
+  - "mcp__cli__run_tests"
+  - "mcp__cli__run_node_tests"
+  - "mcp__cli__update_paths"
+  - "mcp__cli__collect_prs"
+  - "mcp__cli__generate_skill_index"
+  - "mcp__cli__audit_extract_session"
+  - "mcp__cli__audit_analyze_actions"
+  - "mcp__cli__audit_analyze_permissions"
+  - "mcp__cli__usage_blocks"
+  # GH-1175: read-only catalog-coverage check behind Dev10x:diag-friction
+  # Step 3a. Catalogued in the same commit that registers the tool — the
+  # friction-diagnosis skill's own first step must not be a prompt.
+  - "mcp__cli__permission_catalog_gap"
+  # GH-1153: read-only milestone/label roster behind Dev10x:ticket-create
+  # Step 4. It was registered, declared in SKILL.md `allowed-tools`, and
+  # listed in .claude/rules/mcp-tools.md — none of which grants anything.
+  # Absent from every catalog, ensure-base could never seed it, so every
+  # caller prompted. test_catalog_covers_mcp_tools.py now fails on any
+  # un-catalogued read tool so this cannot recur silently.
+  - "mcp__cli__triage_roster"
+  # GH-1319: read-only milestone listing, the general-purpose counterpart
+  # to triage_roster's open-milestone read. Read-only, so it belongs here
+  # rather than in WRITE_TOOLS_NOT_SEEDED.
+  - "mcp__cli__milestone_list"
+  # The same GH-1153 gap, found by that new test rather than by a user
+  # hitting the prompt: five more registered read-only tools had never
+  # been catalogued. `record_upgrade` is deliberately absent — it writes
+  # the applied-version state, and writes keep prompting (it is named in
+  # the test's WRITE_TOOLS_NOT_SEEDED list).
+  - "mcp__cli__audit_hook_log_path"
+  - "mcp__cli__audit_hook_recent"
+  - "mcp__cli__background_preamble"
+  - "mcp__cli__resolve_plugin_origin"
+  - "mcp__cli__slack_thread_is_forward"
+
+  # GH-1215: the guard added by GH-1153 scanned 5 of 12 mcp modules and
+  # could not see the @github_tool decorator, so it passed green while
+  # blind to roughly four fifths of the registered surface. Widening
+  # discovery surfaced 36 more registered tools. The reads are below;
+  # the writes split between the workflow-write block that follows and
+  # enumerate_mcp.WRITE_TOOLS_NOT_SEEDED.
+  #
+  # resolve_gate is the headline: every skill gate has called it since
+  # GH-1168, and it appears accepted-via-option-2 in three separate
+  # repos' settings.local.json — once per checkout, forever.
+  - "mcp__cli__resolve_gate"
+  - "mcp__cli__preset_pin_status"
+  - "mcp__cli__supervisor_review_status"
+  - "mcp__cli__human_review_status"
+  - "mcp__cli__tracker_status"
+  # GH-1261
+  - "mcp__cli__ide_status"
+  - "mcp__cli__task_index_get"
+  - "mcp__cli__list_client_roots"
+  - "mcp__cli__pr_get"
+  # GH-1359: read-only, mirrors issue_list — no gh api fallback needed.  # cli-friction: allow raw-gh-api — names the CLI it replaces
+  - "mcp__cli__pr_list"
+  # pr_labels defaults to action="list"; its add/remove writes are the
+  # sanctioned path for the review:cleared signal (GH-1008) and are
+  # idempotent, so skills call them unconditionally rather than probing.
+  - "mcp__cli__pr_labels"
+  # Review-pattern analysis (GH-346..GH-350). All four report only —
+  # author_reference_rules is a dry run that returns rendered docs for
+  # human review and writes no file.
+  - "mcp__cli__cluster_review_comments"
+  - "mcp__cli__candidate_rules_report"
+  - "mcp__cli__validate_candidate_patterns"
+  - "mcp__cli__author_reference_rules"
+  - "mcp__cli__rule_confidence_report"
+
+  # --- Plugin-mandated workflow writes (GH-1215) ---
+  # These write, and are catalogued anyway for the same reason
+  # create_pr / issue_create / push_safe already are: every one of them
+  # appears in the routed-CLI map in .claude/rules/mcp-tools.md, so the
+  # skill-redirect hook blocks its raw equivalent and the wrapper is the
+  # only route left. Leaving them uncatalogued makes the sanctioned path
+  # prompt while the unsanctioned one is denied — a dead end, not a
+  # safety margin.
+  - "mcp__cli__update_pr"
+  - "mcp__cli__pr_ready"
+  - "mcp__cli__pr_close"
+  - "mcp__cli__pr_issue_comment"
+  - "mcp__cli__pr_review_edit"
+  - "mcp__cli__resolve_review_thread"
+  - "mcp__cli__minimize_comments"
+  - "mcp__cli__milestone_create"
+  - "mcp__cli__milestone_close"
+  - "mcp__cli__milestone_edit"
+  - "mcp__cli__milestone_reopen"
+  - "mcp__cli__milestones_bulk_create"
+  - "mcp__cli__issues_bulk_create"
+  - "mcp__cli__issues_bulk_edit"
+  # issue_labels (GH-1322): same GH-1215 reasoning as pr_labels above —
+  # its raw-CLI equivalent (`gh issue edit --add-label`/`--remove-label`)  # cli-friction: allow raw-gh-issue — names the CLI it replaces
+  # is routed/blocked, so this wrapper is the only sanctioned route.
+  - "mcp__cli__issue_labels"
+  # The park family's only sanctioned write path (GH-1009, ADR-0018 D5).
+  # Reaching the store with Write/Edit trips the self-settings consent
+  # gate AND bypasses the file lock, so two parallel worktrees parking at
+  # once lose an entry — the prompt here has no safe alternative to steer
+  # toward.
+  - "mcp__cli__task_index_append"
+  - "mcp__cli__task_index_set"
+
+  # --- Dev10x MCP tools: db server (GH-878) ---
+  - "mcp__db__query"
+
+  # --- Temp file tree (GH-878, GH-1095, GH-1325) ---
+  # mktmp writes every skill's intermediate files under /tmp/Dev10x/.
+  # One tree rule covers the whole namespace: `Read`/`Edit` rules are
+  # gitignore patterns, so `**` crosses directories, and the leading
+  # `//` anchors at the filesystem root — a single `/` would anchor at
+  # the settings source instead. Adding a mktmp namespace needs no
+  # catalog edit; do not re-enumerate them.
+  - "Read(//tmp/Dev10x/**)"
+  - "Edit(//tmp/Dev10x/**)"
+
+  # --- gh CLI patterns (GH-98) ---
+  - "Bash(gh pr view:*)"
+  - "Bash(gh pr diff:*)"
+  - "Bash(gh pr list:*)"
+  - "Bash(gh pr create:*)"
+  - "Bash(gh pr comment:*)"
+  - "Bash(gh pr review:*)"
+  - "Bash(gh pr checks:*)"
+  - "Bash(gh pr edit:*)"
+  - "Bash(gh pr ready:*)"
+  - "Bash(gh issue view:*)"
+  - "Bash(gh issue list:*)"
+  - "Bash(gh issue create:*)"
+  - "Bash(gh issue comment:*)"
+  - "Bash(gh api:*)"
+  - "Bash(gh auth:*)"
+  - "Bash(gh run view:*)"
+  - "Bash(gh run list:*)"
+  - "Bash(gh run watch:*)"
+  - "Bash(gh repo view:*)"
+  - "Bash(gh repo clone:*)"
+  - "Bash(gh repo set-default:*)"
+  # gh project read verbs (GH-1078). Write verbs (create/edit/delete/
+  # link/unlink/mark-template/item-add/item-edit/item-delete/
+  # item-archive) are deliberately absent so they keep prompting.
+  - "Bash(gh project list:*)"
+  - "Bash(gh project view:*)"
+  - "Bash(gh project item-list:*)"
+  - "Bash(gh project field-list:*)"
+
+  # --- Read-only discovery in plugin cache (GH-122) ---
+  # `Bash(find:*)` does not reliably match `find <path> ... | head`
+  # due to how the engine tokenizes prefixes with pipelines. Scope
+  # the rule to the plugin cache so common skills (work-on,
+  # skill-audit, skill-create) can scan without a prompt. Two forms
+  # — some sessions normalize `~`, others use the literal `/home/<user>`.
+  - "Bash(find ~/.claude/plugins/cache/Dev10x-Guru/Dev10x:*)"
+  - "Bash(find /home/*/.claude/plugins/cache/Dev10x-Guru/Dev10x:*)"
+
+  # --- Common git operations ---
+  - "Bash(git log:*)"
+  - "Bash(git add:*)"
+  - "Bash(git commit:*)"
+  - "Bash(git push:*)"
+  - "Bash(git diff:*)"
+  - "Bash(git status:*)"
+  - "Bash(git fetch:*)"
+  - "Bash(git branch:*)"
+  - "Bash(git branch -d:*)"
+  - "Bash(git branch -D:*)"
+  - "Bash(git branch --delete:*)"
+  - "Bash(git checkout:*)"
+  - "Bash(git symbolic-ref:*)"
+  - "Bash(git reset --soft:*)"
+  - "Bash(git reset --hard:*)"
+  - "Bash(git rebase:*)"
+  - "Bash(git stash:*)"
+  - "Bash(git remote:*)"
+
+  # --- QA evidence inspection (GH-1141) ---
+  # `identify` is read-only and already required by qa-self's
+  # verify-evidence.py, which shells out to
+  # `identify -format '%[fx:standard_deviation]'` to reject blank
+  # screenshots. The composing verbs (magick/montage/convert) live in
+  # the tier-2 `imagemagick-evidence` group instead — the sanctioned
+  # path for those is `convert-evidence.sh stitch`, whose fixed shape
+  # the versioned per-file script rule already covers.
+  - "Bash(identify:*)"
+
+  # --- Read-only cross-worktree git spellings (GH-1135, GH-1268) ---
+  # An agent in a worktree that needs ANOTHER checkout's state has two
+  # spellings available: the preferred `git -C <path> <verb>` and the
+  # plumbing `git --git-dir=<repo>/.git --work-tree=<repo> <verb>`.
+  #
+  # GH-1268: until this block seeded the `-C` form, only the plumbing
+  # form was covered — so `git-dir-worktree-pinning` steered agents to a
+  # shape with no rule behind it while the shape it deprecates was
+  # pre-approved. The catalog-gap report could not see the contradiction,
+  # because a rule that was never seeded cannot be reported missing. Both
+  # spellings are now covered, symmetrically, on the same nine verbs.
+  #
+  # Read-only verbs ONLY — mutating verbs stay routed to Dev10x:git /
+  # Dev10x:git-groom. This is why the `-C` rules below are verb-scoped
+  # rather than the harness's verb-blind `Bash(git -C:*)`, which would
+  # also grant `git -C <path> push --force`.
+  #
+  # These rules cover `-C` with a path ARGUMENT (cross-worktree reads).
+  # They do not sanction `git -C <cwd>` — a `-C` whose path already
+  # equals the CWD is redundant and shifts the command prefix for no
+  # gain (GH-97, GH-760 F5). `git-dir-worktree-pinning`'s two-mode
+  # compensation is what decides which spelling applies; these rules
+  # only ensure the cross-worktree branch of it can land.
+  #
+  # Both plumbing orderings are covered because agents emit both.
+  # Whether a mid-path `*` matches at all is the open question these
+  # rules depend on (ADR-0021, GH-925 F2); the permission-investigator
+  # matrix now carries a `mid_path_star` cell to settle it. If the cell
+  # reports PROMPTED, the shape is un-allow-listable and
+  # `git-dir-worktree-pinning` flips to `hook_block: true`.
+  - "Bash(git -C * status:*)"
+  - "Bash(git -C * log:*)"
+  - "Bash(git -C * rev-parse:*)"
+  - "Bash(git -C * diff:*)"
+  - "Bash(git -C * branch:*)"
+  - "Bash(git -C * worktree list:*)"
+  - "Bash(git -C * ls-files:*)"
+  - "Bash(git -C * show:*)"
+  - "Bash(git -C * merge-base:*)"
+  - "Bash(git --git-dir=* --work-tree=* status:*)"
+  - "Bash(git --git-dir=* --work-tree=* log:*)"
+  - "Bash(git --git-dir=* --work-tree=* rev-parse:*)"
+  - "Bash(git --git-dir=* --work-tree=* diff:*)"
+  - "Bash(git --git-dir=* --work-tree=* branch:*)"
+  - "Bash(git --git-dir=* --work-tree=* worktree list:*)"
+  - "Bash(git --git-dir=* --work-tree=* ls-files:*)"
+  - "Bash(git --git-dir=* --work-tree=* show:*)"
+  - "Bash(git --git-dir=* --work-tree=* merge-base:*)"
+  - "Bash(git --git-dir * --work-tree * status:*)"
+  - "Bash(git --git-dir * --work-tree * log:*)"
+  - "Bash(git --git-dir * --work-tree * rev-parse:*)"
+  - "Bash(git --git-dir * --work-tree * diff:*)"
+  - "Bash(git --git-dir * --work-tree * branch:*)"
+  - "Bash(git --git-dir * --work-tree * worktree list:*)"
+  - "Bash(git --git-dir * --work-tree * ls-files:*)"
+  - "Bash(git --git-dir * --work-tree * show:*)"
+  - "Bash(git --git-dir * --work-tree * merge-base:*)"
+
+  # --- Python project tooling (GH-20) ---
+  # PEP 723 shebangs (#!/usr/bin/env -S uv run --script) execute
+  # via direct script paths already enumerated under "Plugin
+  # scripts". The rules below cover explicit Bash invocations
+  # of `uv run` for tests, lint, and CLI usage.
+  - "Bash(uv run pytest:*)" # cli-friction: allow raw-pytest — base allow rule for plugin-maintenance, not a skill doc
+  - "Bash(uv run --extra dev pytest:*)" # cli-friction: allow raw-pytest — base allow rule for plugin-maintenance, not a skill doc
+  - "Bash(uv run ruff:*)"
+  - "Bash(uv run dev10x:*)"
+  # GH-1248: the `--directory` forms of the same three commands. Allow-rule
+  # matching keys on the literal command string, so the plain forms above do
+  # not match a `uv run --directory <path> …` invocation — and that is the
+  # shape used in the multi-worktree setups Dev10x itself encourages via
+  # Dev10x:git-worktree. Same failure mode as GH-1189 (`uv add`) and GH-1149
+  # (bare `pre-commit run`): a family catalogued in one shape while users type
+  # another, with `catalog-gap` reporting 0 missing because it compares
+  # against the catalog rather than against what people run.
+  - "Bash(uv run --directory * pytest:*)" # cli-friction: allow raw-pytest — base allow rule for plugin-maintenance, not a skill doc
+  - "Bash(uv run --directory * mypy:*)"
+  - "Bash(uv run --directory * ruff:*)"
+  # GH-1189: `uv lock`, `uv sync`, `uv build`, `uv tool`, `uv pip *` and
+  # `uv run *` were all catalogued; `uv add` was not, so a crew worker
+  # adding a dependency prompted on an unattended night run while
+  # `catalog-gap` reported 0 missing. `npm install *` is already a default
+  # at the same trust level — both mutate a manifest and a lockfile in the
+  # checkout, neither reaches outside it. `uv remove` is the symmetric
+  # form; cataloguing only the additive half is how the next unattended
+  # run finds the same wedge from the other direction.
+  - "Bash(uv add:*)"
+  - "Bash(uv remove:*)"
+  # GH-1149: the SANCTIONED lint form is bare `pre-commit run` — CLAUDE.md
+  # says to call it directly, never via `uv run`. Only the discouraged
+  # `uv run` shape was catalogued here, so the form users are told to use
+  # prompted in every project. The rule exists in
+  # src/dev10x/skills/permission/baseline-permissions.yaml (build-tools
+  # tier), but that catalog is read by `permission resolve/audit/doctor`
+  # and never by the ensure-base write path — a rule present only there
+  # reaches no settings file. Global settings happened to carry it, which
+  # masked the gap until GH-47 (project file wins) made global irrelevant.
+  - "Bash(pre-commit run:*)"
+
+  # --- Temp-file staging (GH-1189) ---
+  # `cp`/`mv` under the plugin's own scratch roots prompted on an
+  # unattended foreman run while `catalog-gap` reported 0 missing. The
+  # filed diagnosis blamed `prefix:*` matcher semantics; the verifiable
+  # cause is narrower and is GH-1149 a second time — `Bash(cp /tmp:*)`
+  # exists ONLY in src/dev10x/skills/permission/baseline-permissions.yaml
+  # (file-ops tier), which `permission resolve/audit/doctor` read and the
+  # `ensure-base` write path never does. A rule present only there reaches
+  # no settings file, and under GH-47 the project file wins, so a global
+  # copy does not rescue it.
+  #
+  # Both shapes ship because the matcher question is not settled: the
+  # prefix form is what the other tier uses, and the slash-continued glob
+  # is what every real path the plugin hands out via `mktmp` actually
+  # looks like (/tmp/Dev10x/<ns>/<name>). If the prefix form alone were
+  # sufficient the glob is inert; if it is not, the glob is the rule that
+  # works. Neither reaches outside a scratch root.
+  - "Bash(cp /tmp:*)"
+  - "Bash(cp /tmp/*)"
+  - "Bash(mv /tmp:*)"
+  - "Bash(mv /tmp/*)"
+
+  # --- YAML config parsing (GH-20) ---
+  # Skills like slack-review-request, verify-acc-dod, and
+  # request-review shell out to `yq` to read user config under
+  # ~/.claude/memory/Dev10x/*.yaml. Read access on the file is
+  # already covered above; this rule covers the yq invocation.
+  - "Bash(yq:*)"
+
+  # --- Structured-data + safe-lookup tools (GH-308) ---
+  # Read-only data-format tools and binary-existence lookups.
+  # `Dev10x:diag-friction` steers agents toward these as structured
+  # alternatives to `python -c` / `sh -c` — their inclusion here makes
+  # the recommendation actionable (invoking jq/yamllint/etc. never
+  # prompts). `yq` already covered above under "YAML config parsing".
+  #
+  # Caveat: bare `command`/`which`/`type` can execute arbitrary binaries
+  # (`command <bin> <args>`); only the lookup-flag forms are listed.
+  # Do NOT generalize to `Bash(command:*)`.
+  - "Bash(jq:*)"
+  - "Bash(yamllint:*)"
+  - "Bash(actionlint:*)"
+  - "Bash(tomlq:*)"
+  - "Bash(xq:*)"
+  - "Bash(pup:*)"
+  - "Bash(bash -n:*)"
+  - "Bash(shellcheck:*)"
+  - "Bash(shfmt:*)"
+  - "Bash(zsh -n:*)"
+  - "Bash(command -v:*)"
+  - "Bash(command -V:*)"
+  - "Bash(which:*)"
+  - "Bash(type:*)"
+  - "Bash(hash:*)"
+
+  # --- SSH probes (GH-20) ---
+  # Push/PR setup paths verify GitHub SSH access.
+  - "Bash(ssh -T git@github.com)"
+
+  # --- Git aliases (GH-852, GH-853) ---
+  # All base branch aliases from Dev10x:git-alias-setup.
+  # Preserved at project level as safety anchors — they enable
+  # hook feedback and branch-specific allow rules.
+  - "Bash(git develop-log:*)"
+  - "Bash(git develop-diff:*)"
+  - "Bash(git develop-rebase:*)"
+  - "Bash(git autosquash-develop:*)"
+  - "Bash(git development-log:*)"
+  - "Bash(git development-diff:*)"
+  - "Bash(git development-rebase:*)"
+  - "Bash(git autosquash-development:*)"
+  - "Bash(git trunk-log:*)"
+  - "Bash(git trunk-diff:*)"
+  - "Bash(git trunk-rebase:*)"
+  - "Bash(git autosquash-trunk:*)"
+  - "Bash(git main-log:*)"
+  - "Bash(git main-diff:*)"
+  - "Bash(git main-rebase:*)"
+  - "Bash(git autosquash-main:*)"
+  - "Bash(git master-log:*)"
+  - "Bash(git master-diff:*)"
+  - "Bash(git master-rebase:*)"
+  - "Bash(git autosquash-master:*)"
+
+  # --- Safe-by-default command catalog (GH-310) ---
+  # Goal: an unsupervised (adaptive / AFK) session must never stall on a
+  # permission prompt for a command that is safe to run. Every prompt is
+  # BOTH a hard stop for an unattended session AND the trigger for Claude
+  # Code's option-2 "Yes, and don't ask again" footgun, which writes a
+  # dangerous catch-all `Bash(<verb> *)` into the user's allow list.
+  #
+  # Why allow, not deny (GH-310): a `deny: Bash(git *)` does NOT neutralize
+  # the footgun — Claude Code evaluates deny -> ask -> allow and the first
+  # match wins, and `Bash(git *)` matches ALL `git <args>` (the space-star
+  # is a trailing wildcard). So a catch-all deny would also block
+  # `git status`, `git log`, etc. for every user. The only safe defense is
+  # to pre-approve the safe surface proactively, so the prompt never fires
+  # and option-2 never gets the chance.
+  #
+  # Boundary — deliberately NOT listed here (these keep prompting, route to
+  # a skill, or are forbidden by a hook): arbitrary code execution
+  # (`python -c`, `sh -c`, `bash -c`, `eval`, package runners like
+  # `npx <pkg>` / `pnpm dlx <pkg>` / `pipx run <pkg>` / `bunx <pkg>`),
+  # network fetch-and-exec or exfil (`curl <url>`, `wget <url>` beyond
+  # `--version`), destructive filesystem ops, env-prefixed commands
+  # (`env VAR=x cmd` — GH-311), and the bare-verb catch-alls themselves.
+
+  # Read-only filesystem & text inspection — never mutate state
+  - "Bash(ls:*)"
+  - "Bash(cat:*)"
+  - "Bash(head:*)"
+  - "Bash(tail:*)"
+  - "Bash(wc:*)"
+  - "Bash(tree:*)"
+  - "Bash(file:*)"
+  - "Bash(stat:*)"
+  - "Bash(du:*)"
+  - "Bash(df:*)"
+  - "Bash(pwd)"
+  - "Bash(realpath:*)"
+  - "Bash(readlink:*)"
+  - "Bash(basename:*)"
+  - "Bash(dirname:*)"
+  - "Bash(nl:*)"
+  - "Bash(grep:*)"
+  - "Bash(egrep:*)"
+  - "Bash(fgrep:*)"
+  - "Bash(rg:*)"
+  - "Bash(sort:*)"
+  - "Bash(uniq:*)"
+  - "Bash(cut:*)"
+  - "Bash(column:*)"
+  - "Bash(comm:*)"
+  - "Bash(diff:*)"
+  - "Bash(echo:*)"
+  - "Bash(printf:*)"
+  - "Bash(date:*)"
+
+  # Version / help info flags for the option-2 footgun verbs — always safe
+  - "Bash(git --version)"
+  - "Bash(gh --version)"
+  - "Bash(gh --help)"
+  - "Bash(bash --version)"
+  - "Bash(sh --version)"
+  - "Bash(uv --version)"
+  - "Bash(uvx --version)"
+  - "Bash(npx --version)"
+  - "Bash(npm --version)"
+  - "Bash(pnpm --version)"
+  - "Bash(pipx --version)"
+  - "Bash(bun --version)"
+  - "Bash(yarn --version)"
+  - "Bash(node --version)"
+  - "Bash(python --version)"
+  - "Bash(python3 --version)"
+  - "Bash(curl --version)"
+  - "Bash(wget --version)"
+  - "Bash(env --version)"
+  - "Bash(xargs --version)"
+  - "Bash(make --version)"
+
+  # git — read-only inspection (mutating git already covered above and
+  # routed to skills via the SkillRedirectValidator allow rules)
+  - "Bash(git show:*)"
+  - "Bash(git rev-parse:*)"
+  - "Bash(git describe:*)"
+  - "Bash(git ls-files:*)"
+  - "Bash(git ls-tree:*)"
+  - "Bash(git blame:*)"
+  - "Bash(git shortlog:*)"
+  - "Bash(git merge-base:*)"
+  - "Bash(git worktree list:*)"
+  - "Bash(git config --get:*)"
+  - "Bash(git config --list:*)"
+  - "Bash(git tag --list:*)"
+  - "Bash(git reflog:*)"
+  - "Bash(git cat-file:*)"
+  - "Bash(git rev-list:*)"
+  - "Bash(git for-each-ref:*)"
+
+  # gh — read-only inspection (mutating gh already covered above)
+  - "Bash(gh release view:*)"
+  - "Bash(gh release list:*)"
+  - "Bash(gh search:*)"
+  - "Bash(gh label list:*)"
+  - "Bash(gh workflow view:*)"
+  - "Bash(gh workflow list:*)"
+  - "Bash(gh cache list:*)"
+  - "Bash(gh pr status:*)"
+
+  # uv — read-only environment inspection (test/lint/run already covered)
+  - "Bash(uv pip list:*)"
+  - "Bash(uv tree:*)"
+
+  # --- Canonical documentation domains (GH-369) ---
+  # WebFetch is its own permission entity class. Routine doc lookups
+  # prompt per-domain on first access; GH-271 evidence showed 6+ doc
+  # domains hit in a single session. Pre-approving the canonical set
+  # keeps unattended sessions moving. HTTPS doc hosts only, one FQDN
+  # per rule (no wildcard subdomains — keeps the surface auditable).
+  # Mirrors the `webfetch-public-docs` tier-2 group in
+  # baseline-permissions.yaml.
+  - "WebFetch(domain:docs.python.org)"
+  - "WebFetch(domain:peps.python.org)"
+  - "WebFetch(domain:packaging.python.org)"
+  - "WebFetch(domain:docs.pytest.org)"
+  - "WebFetch(domain:docs.astral.sh)"
+  - "WebFetch(domain:black.readthedocs.io)"
+  - "WebFetch(domain:docs.pydantic.dev)"
+  - "WebFetch(domain:pip.pypa.io)"
+  - "WebFetch(domain:docs.djangoproject.com)"
+  - "WebFetch(domain:fastapi.tiangolo.com)"
+  - "WebFetch(domain:flask.palletsprojects.com)"
+  - "WebFetch(domain:docs.celeryq.dev)"
+  - "WebFetch(domain:docs.gunicorn.org)"
+  - "WebFetch(domain:gunicorn.org)"
+  - "WebFetch(domain:developer.mozilla.org)"
+  - "WebFetch(domain:svelte.dev)"
+  - "WebFetch(domain:kit.svelte.dev)"
+  - "WebFetch(domain:react.dev)"
+  - "WebFetch(domain:nodejs.org)"
+  - "WebFetch(domain:docs.npmjs.com)"
+  - "WebFetch(domain:docs.docker.com)"
+  - "WebFetch(domain:kubernetes.io)"
+  - "WebFetch(domain:docs.aws.amazon.com)"
+  - "WebFetch(domain:health.aws.amazon.com)"
+  - "WebFetch(domain:cloud.google.com)"
+  - "WebFetch(domain:www.postgresql.org)"
+  - "WebFetch(domain:redis.io)"
+  - "WebFetch(domain:docs.github.com)"
+  - "WebFetch(domain:docs.gitlab.com)"
+  - "WebFetch(domain:docs.sentry.io)"
+  - "WebFetch(domain:resend.com)"
+
+  # --- Dev10x skills ---
+  - "Skill(Dev10x:*)"
+
+  # NOTE (GH-768): issue-tracker MCP rules are NOT listed here. They live
+  # under `tracker_permissions:` / `tracker_denies:` at the bottom of this
+  # file, keyed by tracker, and only the project's chosen tracker's block
+  # is folded in at seeding time. Listing Linear unconditionally gave a
+  # Jira user ~35 inert allows while their own tracker still prompted.
+
+# --- Tracker-keyed permissions (GH-768) ---
+# `ensure-base` / `seed_worktree` fold in exactly ONE of these blocks —
+# the tracker resolved from the `tracker:` key in the matching
+# `projects[]` entry of ~/.config/Dev10x/friction.yaml, defaulting to
+# `linear` (the pre-GH-768 behaviour, so upgrades lose nothing).
+#
+# v1 covers linear / jira / github. GitLab and ClickUp are deliberately
+# absent: ClickUp has no native skill or MCP path, and the `glab` surface
+# has not been curated — an empty block would read as "supported".
+#
+# When PAP-2 lands the structured Policy catalog, these become a
+# `tracker:` key on catalog groups and this block goes away.
+tracker_permissions:
+
+  # --- Linear MCP tools (GH-204) ---
+  # Group A: read-only operations — always safe.
+  # Group B: write operations — frequently used by Dev10x skills
+  # (ticket-create, ticket-scope, ticket-jtbd, investigate, qa-scope).
+  # Group C delete tools are listed under `tracker_denies.linear` below.
+  # Both server name variants are covered:
+  #   - `mcp__claude_ai_Linear__*` (claude.ai-hosted Linear connector)
+  #   - `mcp__linear-server__*`    (self-installed linear-server MCP)
+  linear:
+  # Group A — read-only (claude.ai-hosted variant)
+  - "mcp__claude_ai_Linear__get_issue"
+  - "mcp__claude_ai_Linear__get_project"
+  - "mcp__claude_ai_Linear__get_initiative"
+  - "mcp__claude_ai_Linear__get_team"
+  - "mcp__claude_ai_Linear__get_user"
+  - "mcp__claude_ai_Linear__get_milestone"
+  - "mcp__claude_ai_Linear__get_document"
+  - "mcp__claude_ai_Linear__get_issue_status"
+  - "mcp__claude_ai_Linear__get_status_updates"
+  - "mcp__claude_ai_Linear__get_attachment"
+  - "mcp__claude_ai_Linear__list_issues"
+  - "mcp__claude_ai_Linear__list_projects"
+  - "mcp__claude_ai_Linear__list_initiatives"
+  - "mcp__claude_ai_Linear__list_milestones"
+  - "mcp__claude_ai_Linear__list_teams"
+  - "mcp__claude_ai_Linear__list_users"
+  - "mcp__claude_ai_Linear__list_cycles"
+  - "mcp__claude_ai_Linear__list_comments"
+  - "mcp__claude_ai_Linear__list_issue_labels"
+  - "mcp__claude_ai_Linear__list_issue_statuses"
+  - "mcp__claude_ai_Linear__list_project_labels"
+  - "mcp__claude_ai_Linear__list_documents"
+  - "mcp__claude_ai_Linear__list_customers"
+  - "mcp__claude_ai_Linear__search_documentation"
+  - "mcp__claude_ai_Linear__extract_images"
+  - "mcp__claude_ai_Linear__get_diff"
+  - "mcp__claude_ai_Linear__get_diff_threads"
+  - "mcp__claude_ai_Linear__list_diffs"
+
+  # Group A — read-only (linear-server variant, GH-1323).
+  # The claude.ai-hosted block above is NOT the namespace Dev10x
+  # sessions actually call — `mcp__linear-server__*` is. Every read op
+  # in the claude.ai-hosted list has a same-named counterpart here;
+  # this block mirrors it one-for-one so the two stay at parity (see
+  # tests/skills/permission/test_linear_namespace_parity.py). Before
+  # GH-1323 only 5 of these 28 were catalogued, so the other 23 had
+  # accumulated as ad-hoc per-call approvals in userspace settings.
+  - "mcp__linear-server__get_issue"
+  - "mcp__linear-server__get_project"
+  - "mcp__linear-server__get_initiative"
+  - "mcp__linear-server__get_team"
+  - "mcp__linear-server__get_user"
+  - "mcp__linear-server__get_milestone"
+  - "mcp__linear-server__get_document"
+  - "mcp__linear-server__get_issue_status"
+  - "mcp__linear-server__get_status_updates"
+  - "mcp__linear-server__get_attachment"
+  - "mcp__linear-server__list_issues"
+  - "mcp__linear-server__list_projects"
+  - "mcp__linear-server__list_initiatives"
+  - "mcp__linear-server__list_milestones"
+  - "mcp__linear-server__list_teams"
+  - "mcp__linear-server__list_users"
+  - "mcp__linear-server__list_cycles"
+  - "mcp__linear-server__list_comments"
+  - "mcp__linear-server__list_issue_labels"
+  - "mcp__linear-server__list_issue_statuses"
+  - "mcp__linear-server__list_project_labels"
+  - "mcp__linear-server__list_documents"
+  - "mcp__linear-server__list_customers"
+  - "mcp__linear-server__search_documentation"
+  - "mcp__linear-server__extract_images"
+  - "mcp__linear-server__get_diff"
+  - "mcp__linear-server__get_diff_threads"
+  - "mcp__linear-server__list_diffs"
+
+  # `get_release` has no `claude_ai_Linear` counterpart — it exists
+  # only in the linear-server namespace. Folded in here (not part of
+  # the parity mirror above) because it had already accumulated as a
+  # standalone ad-hoc allow in userspace settings; a genuine read-only
+  # op with demonstrated real usage, not a blanket namespace grant.
+  - "mcp__linear-server__get_release"
+
+  # Group B — write (claude.ai-hosted variant)
+  - "mcp__claude_ai_Linear__save_comment"
+  - "mcp__claude_ai_Linear__save_issue"
+  - "mcp__claude_ai_Linear__save_project"
+  - "mcp__claude_ai_Linear__save_milestone"
+  - "mcp__claude_ai_Linear__save_status_update"
+  - "mcp__claude_ai_Linear__save_initiative"
+  - "mcp__claude_ai_Linear__save_document"
+
+  # Group B — write (linear-server variant)
+  - "mcp__linear-server__save_issue"
+  - "mcp__linear-server__save_project"
+
+  # --- Jira / Atlassian MCP tools (GH-768) ---
+  # The claude.ai-hosted Atlassian Rovo connector. `baseline-permissions.yaml`
+  # already carries the same surface as the tier-2 `mcp-atlassian-readonly` /
+  # `mcp-atlassian-write` groups; this block is what the FLAT catalog
+  # (`ensure-base` / `seed_worktree`) actually deploys, which is where the
+  # Jira user's gap was.
+  jira:
+  # Read-only
+  - "mcp__claude_ai_Atlassian_Rovo__atlassianUserInfo"
+  - "mcp__claude_ai_Atlassian_Rovo__getAccessibleAtlassianResources"
+  - "mcp__claude_ai_Atlassian_Rovo__getVisibleJiraProjects"
+  - "mcp__claude_ai_Atlassian_Rovo__getJiraIssue"
+  - "mcp__claude_ai_Atlassian_Rovo__getJiraIssueRemoteIssueLinks"
+  - "mcp__claude_ai_Atlassian_Rovo__getJiraIssueTypeMetaWithFields"
+  - "mcp__claude_ai_Atlassian_Rovo__getJiraProjectIssueTypesMetadata"
+  - "mcp__claude_ai_Atlassian_Rovo__getTransitionsForJiraIssue"
+  - "mcp__claude_ai_Atlassian_Rovo__getIssueLinkTypes"
+  - "mcp__claude_ai_Atlassian_Rovo__lookupJiraAccountId"
+  - "mcp__claude_ai_Atlassian_Rovo__searchJiraIssuesUsingJql"
+  # Write — the counterparts of the Linear Group B tools the same
+  # Dev10x skills call (ticket-create, ticket-scope, investigate).
+  - "mcp__claude_ai_Atlassian_Rovo__createJiraIssue"
+  - "mcp__claude_ai_Atlassian_Rovo__editJiraIssue"
+  - "mcp__claude_ai_Atlassian_Rovo__addCommentToJiraIssue"
+  - "mcp__claude_ai_Atlassian_Rovo__addWorklogToJiraIssue"
+  - "mcp__claude_ai_Atlassian_Rovo__createIssueLink"
+  - "mcp__claude_ai_Atlassian_Rovo__transitionJiraIssue"
+
+  # --- GitHub Issues (GH-768) ---
+  # Mostly already covered by the unconditional `github-cli` group above;
+  # this block adds only what a GitHub-tracker user additionally needs and
+  # keeps the tracker map symmetrical (a `github` selection must not fall
+  # through to Linear's block).
+  github:
+  - "mcp__cli__issue_get"
+  - "mcp__cli__issue_list"
+  - "mcp__cli__issue_create"
+  - "mcp__cli__issue_edit"
+  - "mcp__cli__issue_close"
+  - "mcp__cli__issue_reopen"
+  - "mcp__cli__issue_comment"
+  - "mcp__cli__issue_comments"
+
+# --- Tracker-keyed deny rules (GH-768) ---
+# Destructive operations that must NEVER be auto-approved, even when a
+# project broadens its `permissions.allow` via wildcards. Seeded only
+# alongside their own tracker's allows — a Jira user has no use for the
+# Linear deletes, and vice versa.
+tracker_denies:
+  # The Linear `delete_*` tools have shown up in 14× projects under blanket
+  # `mcp__claude_ai_Linear__*` allow rules — these belong in deny (GH-204).
+  linear:
+  - "mcp__claude_ai_Linear__delete_customer"
+  - "mcp__claude_ai_Linear__delete_customer_need"
+  - "mcp__claude_ai_Linear__delete_comment"
+  - "mcp__claude_ai_Linear__delete_attachment"
+  - "mcp__claude_ai_Linear__delete_status_update"
+
+# GH-1261
+ide_permissions:
+  pycharm:
+  - "mcp__pycharm__analyze_calls"
+  - "mcp__pycharm__get_all_open_file_paths"
+  - "mcp__pycharm__get_file_problems"
+  - "mcp__pycharm__get_notebook_state"
+  - "mcp__pycharm__get_project_dependencies"
+  - "mcp__pycharm__get_project_modules"
+  - "mcp__pycharm__get_python_environment"
+  - "mcp__pycharm__get_repositories"
+  - "mcp__pycharm__get_run_configurations"
+  - "mcp__pycharm__get_symbol_info"
+  - "mcp__pycharm__git_status"
+  - "mcp__pycharm__lint_files"
+  - "mcp__pycharm__list_directory_tree"
+  - "mcp__pycharm__read_file"
+  - "mcp__pycharm__read_notebook"
+  - "mcp__pycharm__read_notebook_cell"
+  - "mcp__pycharm__search_file"
+  - "mcp__pycharm__search_regex"
+  - "mcp__pycharm__search_symbol"
+  - "mcp__pycharm__search_text"
+  - "mcp__pycharm__wait_cell_execution"
+  - "mcp__pycharm__open_file_in_editor"
+  - "mcp__pycharm__interrupt_notebook"
+  - "mcp__pycharm__kill_notebook"
+  - "mcp__pycharm__apply_patch"
+  - "mcp__pycharm__create_new_file"
+  - "mcp__pycharm__create_notebook"
+  - "mcp__pycharm__edit_notebook"
+  - "mcp__pycharm__reformat_file"
+  - "mcp__pycharm__rename_refactoring"
+
+# GH-1261
+ide_denies:
+  pycharm:
+  - "mcp__pycharm__execute_terminal_command"
+  - "mcp__pycharm__execute_code_on_kernel"
+  - "mcp__pycharm__execute_tool"
+
+# --- Base ask rules (GH-1154) ---
+# The prompt tier. Until this key existed the catalog could express only
+# allow and deny, so a rule that *should* prompt had nowhere to live and
+# never reached a project file.
+#
+# Why ask and not deny: DX014's own rationale (.claude/rules/hook-patterns.md)
+# is that a sensitive-but-legitimate operation must prompt rather than
+# hard-block — a deny drops the user into a manual `!` shell with no
+# in-session recourse. Deny stays reserved for operations that are never
+# permitted (see base_denies below).
+#
+# Why these eight: `Bash(gh api:*)` is allowed in 34 project settings
+# files, which covers every write method too. The guardrails below
+# existed in exactly two places — the user's global `ask` list and one
+# project's `deny` — and per GH-47 a project file wins outright, so in
+# the other 32 checkouts the DELETE shape was unguarded.  # cli-friction: allow raw-gh-api — names the shape being guarded, not a command to run
+# That also slips past the `gh repo delete` deny, which is a
+# different command shape entirely.
+#
+# These do NOT break the sanctioned MCP path. `milestone_create`,
+# `milestone_edit` and `milestone_reopen` do issue write-method calls  # cli-friction: allow raw-gh-api — explains why the MCP path is unaffected
+# via `_gh_api_raw` -> subprocess *inside the MCP server process*
+# (src/dev10x/github/__init__.py). Claude Code permission rules gate
+# tool calls, so no Bash-layer rule — ask or deny — can reach them.
+#
+# KNOWN LIMITATION (inherited from the shapes these replace, not
+# introduced here): rule matching is prefix-based, so these only match
+# when the method flag directly follows the subcommand. A command  # cli-friction: allow raw-gh-api — documents a matching limitation
+# written with the endpoint first does not match and still falls
+# through to `Bash(gh api:*)`. Closing that needs a hook-side check
+# on the parsed argv, not more prefix rules — tracked on GH-1100.
+base_asks:
+  - "Bash(gh api --method DELETE:*)"
+  - "Bash(gh api --method PATCH:*)"
+  - "Bash(gh api --method POST:*)"
+  - "Bash(gh api --method PUT:*)"
+  - "Bash(gh api -X DELETE:*)"
+  - "Bash(gh api -X PATCH:*)"
+  - "Bash(gh api -X POST:*)"
+  - "Bash(gh api -X PUT:*)"
+
+# --- Base deny rules (GH-204) ---
+# Tracker-independent denies. Tracker-specific ones live above.
+base_denies:
+  # GH-1261
+  - "mcp__pycharm__execute_terminal_command"
+  - "mcp__pycharm__execute_code_on_kernel"
+  - "mcp__pycharm__execute_tool"
+
+  # --- Privilege-escalation tier (GH-326) ---
+  # `sudo` and friends are denied for ANY shape, not just the option-2
+  # catch-all. Unlike the GH-310 `<verb> *` footguns (which merely widen a
+  # verb's argument surface), privilege escalation INVERTS the privilege
+  # model: the wrapped command runs as root, bypassing every user-level
+  # permission rule and hook. A single successful `sudo` allow therefore
+  # defeats every other deny in this catalog (rm guards, write gates, the
+  # Linear deletes above). That makes this tier categorically above
+  # `destructive` — it invalidates all other tiers.
+  #
+  # Trigger: GH-271 evidence #212 — the agent attempted
+  # `sudo -n rm -rf /work/bl/.worktrees/bl-zebra-4` (privilege escalation +
+  # non-interactive + recursive destructive removal on a workspace).
+  #
+  # Per deny-overrides, these stay in force even if a user accidentally
+  # allow-lists `sudo` somewhere. Users who genuinely want routine package
+  # management opt into the narrow `sudo-apt` group (see
+  # baseline-permissions.yaml) — which requires the doctor to scope this
+  # deny down, since deny-first precedence means a blanket allow cannot
+  # override a blanket deny.
+  - "Bash(sudo:*)"      # any sudo invocation
+  - "Bash(sudo *)"      # catch-all shape (option-2 footgun)
+  - "Bash(sudo -n *)"   # non-interactive — silently bypasses the password prompt
+  - "Bash(sudo -i *)"   # interactive root login shell
+  - "Bash(sudoedit:*)"
+  - "Bash(doas:*)"      # OpenBSD/Alpine equivalent
+  - "Bash(doas *)"
+  - "Bash(pkexec:*)"    # polkit-based privilege escalation
+  - "Bash(pkexec *)"
+
+  # --- Pager tier (GH-1248) ---
+  # `git -P` / `git --no-pager` prefix a git verb, which shifts the effective
+  # command prefix and defeats allow-rule matching for every `Bash(git <verb>:*)`
+  # rule in this catalog — the same prefix-shift problem documented for env-var
+  # prefixes. Neither pager shape is in base_permissions, so denying them is
+  # additive hardening rather than a behaviour change: today they fall through
+  # to a prompt. Git is already non-interactive under Claude Code, so the pager
+  # flags buy nothing that would be lost.
+  #
+  # `git -C` shares the prefix-shift mechanism but NOT this conclusion, and
+  # this comment used to conflate the two (GH-1268). The cross-worktree `-C`
+  # read verbs ARE seeded above, deliberately: unlike a pager flag, `-C <path>`
+  # buys something nothing else does — reaching another checkout — so it is
+  # spelled out per verb rather than denied.
+  - "Bash(git -P:*)"
+  - "Bash(git --no-pager:*)"

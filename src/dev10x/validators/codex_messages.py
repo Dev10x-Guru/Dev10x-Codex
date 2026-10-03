@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from dev10x.domain.rules.validation_rule import Compensation
+from dev10x.skills.codex.catalog import codex_skill_for
 
 CODEX_ISSUE_REPO = "https://github.com/Dev10x-Guru/Dev10x-Codex"
 CLAUDE_ISSUE_REPO = "https://github.com/Dev10x-Guru/dev10x-claude"
@@ -49,9 +50,9 @@ _CODEX_PHRASES: tuple[tuple[str, str], ...] = (
 CODEX_OVERRIDE_HINT = (
     f"\n\n⚠️  Do NOT use {SKIP_ENV_VAR} as a shortcut to silence this block. "
     "It is not an escape hatch for an agent reacting to a hook message.\n\n"
-    "The correct response is the Dev10x MCP tool named above. When none is "
-    "available in Codex yet, apply the manual guardrails and ask the user "
-    "before running anything this hook still blocks.\n\n"
+    "The correct response is the Dev10x skill or MCP tool named above. When "
+    "neither is available in Codex yet, apply the manual guardrails and ask "
+    "the user before running anything this hook still blocks.\n\n"
     "ONLY when a documented Dev10x procedure legitimately needs the raw "
     "command and every MCP alternative is exhausted, prefix it with a "
     "rationale string of at least 20 chars:\n"
@@ -110,32 +111,36 @@ def codex_tool_for_skill(skill: str) -> str | None:
 
 
 def _replace_invoke_skill(match: re.Match[str]) -> str:
-    tool = codex_tool_for_skill(match.group(1))
-    if tool:
+    if skill := codex_skill_for(match.group(1)):
+        return f"Use the `{skill}` skill."
+    if tool := codex_tool_for_skill(match.group(1)):
         return f"Call the MCP tool `{tool}`."
     return f"The `{match.group(1)}` workflow is {NOT_AVAILABLE_IN_CODEX}."
 
 
 def _replace_if_skill_fails(match: re.Match[str]) -> str:
-    tool = codex_tool_for_skill(match.group(1))
-    if tool:
-        return f"If `{tool}` fails, {match.group(2)}"
+    replacement = codex_skill_for(match.group(1)) or codex_tool_for_skill(match.group(1))
+    if replacement:
+        return f"If `{replacement}` fails, {match.group(2)}"
     return match.group(2).upper()
 
 
 def _replace_backtick_skill(match: re.Match[str]) -> str:
-    tool = codex_tool_for_skill(match.group(1))
-    return f"`{tool}`" if tool else f"`{match.group(1)}` ({NOT_AVAILABLE_IN_CODEX})"
+    replacement = codex_skill_for(match.group(1)) or codex_tool_for_skill(match.group(1))
+    return f"`{replacement}`" if replacement else f"`{match.group(1)}` ({NOT_AVAILABLE_IN_CODEX})"
 
 
 def _replace_bare_skill(match: re.Match[str]) -> str:
-    tool = codex_tool_for_skill(match.group(1))
-    return f"`{tool}`" if tool else f"{match.group(1)} ({NOT_AVAILABLE_IN_CODEX})"
+    replacement = codex_skill_for(match.group(1)) or codex_tool_for_skill(match.group(1))
+    return f"`{replacement}`" if replacement else f"{match.group(1)} ({NOT_AVAILABLE_IN_CODEX})"
 
 
 def _replace_slash_skill(match: re.Match[str]) -> str:
-    tool = codex_tool_for_skill(match.group(1))
-    return f"the `{tool}` MCP tool" if tool else f"{match.group(1)} ({NOT_AVAILABLE_IN_CODEX})"
+    if skill := codex_skill_for(match.group(1)):
+        return f"the `{skill}` skill"
+    if tool := codex_tool_for_skill(match.group(1)):
+        return f"the `{tool}` MCP tool"
+    return f"{match.group(1)} ({NOT_AVAILABLE_IN_CODEX})"
 
 
 def _claude_footers() -> tuple[tuple[str, str], ...]:
@@ -165,12 +170,23 @@ def adapt_message_for_codex(message: str) -> str:
 
 
 def format_codex_skill_block(*, label: str, comp: Compensation) -> str:
+    skill = codex_skill_for(comp.skill)
     tool = codex_tool_for_skill(comp.skill)
     file_issue_hint = (
         f"\n\nIf Dev10x guidance told you to run this command, file an issue at "
         f"{CODEX_ISSUE_REPO} — the guidance needs updating."
     )
-    if tool:
+    if skill:
+        tool_line = f"\n  Or call the MCP tool `{tool}` directly." if tool else ""
+        head = (
+            f"⛔  `{label}` blocked — use the Dev10x skill instead.\n\n"
+            f"  Skill: `{skill}`{tool_line}\n\n"
+            f"Why: Raw CLI bypasses guardrails that the Dev10x workflow\n"
+            f"enforces ({comp.guardrails})."
+        )
+        fallback_intro = "If the skill is unavailable, apply these guardrails manually:"
+        unavailable_hint = CODEX_MCP_UNAVAILABLE_HINT if tool else ""
+    elif tool:
         head = (
             f"⛔  `{label}` blocked — use the Dev10x MCP tool instead.\n\n"
             f"  Tool: `{tool}`\n\n"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Fix"
+policy:
+  allow_implicit_invocation: false

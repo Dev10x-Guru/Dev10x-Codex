@@ -183,7 +183,7 @@ class TestCodexEmitAdaptsClaudeWording:
             emit(HookResult(message=CLAUDE_WORDED_DENY))
         err = capsys.readouterr().err
         assert "`mcp__cli__pr_get`" in err
-        assert "`mcp__cli__push_safe`" in err
+        assert "`$Dev10x:git`" in err
         assert "https://github.com/Dev10x-Guru/Dev10x-Codex" in err
         assert "Skill(" not in err
 

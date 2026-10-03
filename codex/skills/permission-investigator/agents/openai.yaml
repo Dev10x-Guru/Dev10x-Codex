@@ -1,0 +1,4 @@
+interface:
+  display_name: "Permission Investigator"
+policy:
+  allow_implicit_invocation: false

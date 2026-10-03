@@ -1,0 +1,4 @@
+interface:
+  display_name: "Playbook Maintenance"
+policy:
+  allow_implicit_invocation: false

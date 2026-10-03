@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit File"
+policy:
+  allow_implicit_invocation: false
