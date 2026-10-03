@@ -348,6 +348,11 @@ class TestTranslateSkills:
             "skills/foreman/SKILL.md: mentions Dev10x:retired-skill, which has no skill"
         ]
 
+    def test_malformed_front_matter_is_refused_by_path(self, plugin: Path) -> None:
+        write(plugin / "skills" / "bad" / "SKILL.md", "---\ndescription: a: b: c\n---\n\nBody.\n")
+        with pytest.raises(InvalidSkillFile, match="skills/bad/SKILL.md: front matter is not"):
+            translate_skills(plugin)
+
     def test_invalid_upstream_directory_name_fails_loudly(self, plugin: Path) -> None:
         write(plugin / "skills" / "Bad_Name" / "SKILL.md", "---\nname: x\n---\n")
         with pytest.raises(InvalidSkillName):
