@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
-from dev10x.skills.codex.catalog import VERIFIED_SKILLS
+from dev10x.skills.codex.catalog import DEFERRED_SKILLS, SKILL_CAVEATS, VERIFIED_SKILLS
 from dev10x.skills.codex.tree import GeneratedTree, is_hidden
 
 UPSTREAM_SKILLS_RELPATH = PurePosixPath("skills")
@@ -178,7 +178,14 @@ def render_front_matter(*, name: str, description: str, upstream: PurePosixPath)
     return f"---\n{dumped}---\n"
 
 
-def render_preamble(*, directory: str, target: PurePosixPath, verified: bool) -> str:
+def render_preamble(
+    *,
+    directory: str,
+    target: PurePosixPath,
+    verified: bool,
+    deferred_issue: int | None = None,
+    caveat: str | None = None,
+) -> str:
     equivalents = _relative(TOOL_EQUIVALENTS_RELPATH, target.parent)
     upstream_dir = (UPSTREAM_SKILLS_RELPATH / directory).as_posix()
     lines = [
@@ -190,11 +197,19 @@ def render_preamble(*, directory: str, target: PurePosixPath, verified: bool) ->
         f"`.codex-plugin/`); this skill's `scripts/` and `templates/` stay in "
         f"`{PLUGIN_ROOT_PLACEHOLDER}/{upstream_dir}/`.",
     ]
-    if not verified:
+    if deferred_issue is not None:
         lines.append(
-            "> Not yet verified in Codex (tracked in Dev10x-Codex#24): expect gaps and "
-            "confirm before any step that writes to GitHub or rewrites history."
+            "> **Not supported in Codex yet**: this skill depends on Claude Code features "
+            f"Codex lacks (Dev10x-Codex#{deferred_issue}). Use it from Claude Code; Codex "
+            "runs it only when invoked by name."
         )
+    elif not verified:
+        lines.append(
+            "> Reviewed for Codex but not yet run end to end in it: confirm before any step "
+            "that writes to GitHub or rewrites history."
+        )
+    if caveat:
+        lines.append(f"> **In Codex:** {caveat}")
     return "\n".join(lines) + "\n"
 
 
@@ -261,6 +276,7 @@ def translate_skills(root: Path) -> GeneratedTree:
     for directory in directories:
         name = codex_skill_name(directory.name)
         verified = name in VERIFIED_SKILLS
+        deferred_issue = DEFERRED_SKILLS.get(name)
         for source in sources[name]:
             target = codex_path_for(source)
             text = (root / source).read_text(encoding="utf-8")
@@ -277,7 +293,13 @@ def translate_skills(root: Path) -> GeneratedTree:
                         upstream=source,
                     )
                     + "\n"
-                    + render_preamble(directory=name, target=target, verified=verified)
+                    + render_preamble(
+                        directory=name,
+                        target=target,
+                        verified=verified,
+                        deferred_issue=deferred_issue,
+                        caveat=SKILL_CAVEATS.get(name),
+                    )
                     + relink(body, source=source, target=target)
                 )
             elif source.suffix == ".md":
@@ -285,7 +307,7 @@ def translate_skills(root: Path) -> GeneratedTree:
             else:
                 files[target] = rewrite_text(text)
         files[CODEX_SKILLS_RELPATH / name / OPENAI_YAML_RELPATH] = render_openai_yaml(
-            directory=name, implicit=verified
+            directory=name, implicit=deferred_issue is None
         )
 
     return GeneratedTree(output=CODEX_SKILLS_RELPATH, files=files, warnings=warnings)

@@ -8,7 +8,7 @@ metadata:
 > **Running in Codex.** Generated from `skills/diag-friction/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
 > `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/diag-friction/`.
-> Not yet verified in Codex (tracked in Dev10x-Codex#24): expect gaps and confirm before any step that writes to GitHub or rewrites history.
+> **Not supported in Codex yet**: this skill depends on Claude Code features Codex lacks (Dev10x-Codex#10). Use it from Claude Code; Codex runs it only when invoked by name.
 
 # Dev10x:diag-friction
 

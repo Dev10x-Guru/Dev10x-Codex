@@ -8,7 +8,8 @@ metadata:
 > **Running in Codex.** Generated from `skills/fanout/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
 > `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/fanout/`.
-> Not yet verified in Codex (tracked in Dev10x-Codex#24): expect gaps and confirm before any step that writes to GitHub or rewrites history.
+> Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
+> **In Codex:** Codex agents share one working directory: give each item its own worktree from mcp__cli__create_worktree and disjoint files, or run the items one after another.
 
 # Dev10x:fanout — Parallel Work Stream Orchestrator
 
