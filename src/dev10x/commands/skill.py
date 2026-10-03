@@ -471,3 +471,52 @@ def codex_skills(*, root_path: Path | None, check: bool) -> None:
         click.echo(f"{len(tree.warnings)} warning(s):")
         for warning in tree.warnings:
             click.echo(f"  - {warning}")
+
+
+@skill.command(
+    name="codex-agents",
+    help="Translate the Claude Code agents in agents/ into Codex roles under codex/agents/.",
+)
+@click.option(
+    "--root",
+    "root_path",
+    default=None,
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Plugin checkout to translate (default: this plugin)",
+)
+@click.option("--check", is_flag=True, help="Exit non-zero when codex/agents/ is stale")
+def codex_agents(*, root_path: Path | None, check: bool) -> None:
+    from dev10x.skills.codex.agents import (
+        CODEX_AGENTS_RELPATH,
+        InvalidAgentFile,
+        translate_agents,
+    )
+    from dev10x.skills.codex.translate import InvalidPluginRoot
+    from dev10x.skills.codex.tree import stale_paths, write_tree
+    from dev10x.skills.permission.enumerate_mcp import plugin_root
+
+    root = root_path or plugin_root()
+    try:
+        tree = translate_agents(root)
+    except (InvalidPluginRoot, InvalidAgentFile) as ex:
+        click.echo(f"ERROR: {ex}", err=True)
+        sys.exit(2)
+
+    if check:
+        stale = stale_paths(root, tree)
+        if stale:
+            click.echo(
+                f"STALE: {len(stale)} file(s) under {CODEX_AGENTS_RELPATH} — "
+                "run `dev10x skill codex-agents`",
+                err=True,
+            )
+            for path in stale[:20]:
+                click.echo(f"  - {path}", err=True)
+            sys.exit(1)
+        click.echo(f"OK: {CODEX_AGENTS_RELPATH} matches agents/")
+        return
+
+    output = write_tree(root, tree)
+    click.echo(f"Wrote {len(tree.files)} roles to {output}")
+    for warning in tree.warnings:
+        click.echo(f"  - {warning}")
