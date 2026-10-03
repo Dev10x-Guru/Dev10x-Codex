@@ -25,11 +25,24 @@ A write through an MCP tool is a request, not a receipt: re-read the
 field you changed (for example `pr_get` after `update_pr`) before
 relying on it.
 
+## Dev10x skills
+
+For a whole workflow rather than one call, use the Dev10x skills:
+`$Dev10x:ticket-branch`, `$Dev10x:git-commit`, `$Dev10x:gh-pr-create`,
+`$Dev10x:gh-pr-monitor`, `$Dev10x:gh-pr-respond`, `$Dev10x:git-groom`
+and `$Dev10x:gh-pr-merge` cover branch-to-merge with the team's commit
+and PR conventions.
+They were written for Claude Code; each one links the Codex
+equivalents of the Claude tools it names.
+The rest of the Dev10x skills run only when invoked by name and are
+not yet verified in Codex.
+
 ## Guardrail hooks
 
 A Dev10x PreToolUse hook validates every shell command before it
-runs. When it blocks one, the message names the MCP tool to use or,
-where no Codex equivalent exists yet, the manual guardrails to apply.
+runs. When it blocks one, the message names the Dev10x skill or MCP
+tool to use or, where no Codex equivalent exists yet, the manual
+guardrails to apply.
 Follow it — do not retry the same command in a different spelling.
 
 Commonly blocked shapes:
@@ -38,10 +51,10 @@ Commonly blocked shapes:
   `python -c` — run separate commands and write files instead.
 - `git push --force` / `-f` and pushes to protected branches — use
   `mcp__cli__push_safe`; after a rebase, `--force-with-lease` only.
-- `git commit -m` — write the message to a file from
-  `mcp__cli__mktmp` (namespace `git`) and run `git commit -F <path>`.
-  Use a gitmoji prefix, the ticket ID from the branch, and keep lines
-  under 72 characters.
+- `git commit -m` — use `$Dev10x:git-commit`, or write the message to
+  a file from `mcp__cli__mktmp` (namespace `git`) and run
+  `git commit -F <path>`. Use a gitmoji prefix, the ticket ID from the
+  branch, and keep lines under 72 characters.
 - `gh pr view`, `gh pr create`, `gh pr merge`, `gh issue ...` — use
   the matching MCP tool above.
 
