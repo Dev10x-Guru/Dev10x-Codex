@@ -10,7 +10,7 @@ from dev10x.domain.common.result import ErrorResult
 
 @click.group()
 def skill() -> None:
-    """Skill script commands (audit, notify, permission, release-notes)."""
+    """Skill script commands (audit, notify, permission, release-notes, rename)."""
 
 
 @skill.group()
@@ -19,7 +19,7 @@ def notify() -> None:
 
     Exposes the slack-review-request prepare/send flow and the generic
     slack-notify send call as version-stable `dev10x` subcommands so the
-    `Dev10x:slack-review-request` and `Dev10x:slack` skills do not need
+    `dev10x:slack-review-request` and `dev10x:slack` skills do not need
     to embed plugin-cache paths in their documented invocations.
     """
 
@@ -30,14 +30,14 @@ def notify() -> None:
 def slack_review_prepare(*, pr: int, repo: str) -> None:
     """Resolve slack-review-request project config and emit the JSON envelope.
 
-    Wraps `dev10x.skills.notifications.slack_review_request` so callers
+    Wraps `dev10x.comm.skills.notifications.slack_review_request` so callers
     can invoke `uvx dev10x skill notify slack-review-prepare ...` instead
     of the version-pinned `skills/slack-review-request/scripts/...`
     script path. Output is identical to the underlying `prepare` call.
     """
     import argparse
 
-    from dev10x.skills.notifications import slack_review_request
+    from dev10x.comm.skills.notifications import slack_review_request
 
     args = argparse.Namespace(pr=pr, repo=repo)
     try:
@@ -48,7 +48,13 @@ def slack_review_prepare(*, pr: int, repo: str) -> None:
 
 
 @notify.command(name="slack-send")
-@click.option("--channel", required=True, help="Slack channel ID (e.g., C042DJ8AJKB)")
+@click.option("--channel", default=None, help="Slack channel ID (e.g., C042DJ8AJKB)")
+@click.option(
+    "--remind",
+    is_flag=True,
+    default=False,
+    help="DM the message to yourself instead of a channel (needs self_user_id)",
+)
 @click.option("--message", default=None, help="Message text (or use --message-file)")
 @click.option(
     "--message-file",
@@ -60,7 +66,8 @@ def slack_review_prepare(*, pr: int, repo: str) -> None:
 @click.option("--workspace", default=None, help="Select non-default Slack workspace")
 def slack_send(
     *,
-    channel: str,
+    channel: str | None,
+    remind: bool,
     message: str | None,
     message_file: Path | None,
     thread_ts: str | None,
@@ -68,15 +75,17 @@ def slack_send(
 ) -> None:
     """Send a Slack message via the importable slack_notify module (GH-442).
 
-    Delegates to `dev10x.skills.notifications.slack_notify` so the command
+    Delegates to `dev10x.comm.skills.notifications.slack_notify` so the command
     works when dev10x is installed via ``uvx`` — where ``skills/`` data files
     are not shipped as part of the wheel and cannot be reached by filesystem
     traversal from the installed package location.
     """
     if not message and not message_file:
         raise click.UsageError("Provide --message or --message-file.")
+    if remind == (channel is not None):
+        raise click.UsageError("Provide exactly one of --channel or --remind.")
 
-    from dev10x.skills.notifications import slack_notify
+    from dev10x.comm.skills.notifications import slack_notify
 
     msg: str
     if message_file is not None:
@@ -84,12 +93,16 @@ def slack_send(
     else:
         msg = message  # type: ignore[assignment]  # validated above
 
-    result = slack_notify.notify_slack(
-        channel=channel,
-        message=msg,
-        workspace=workspace,
-        thread_ts=thread_ts,
-    )
+    if remind:
+        slack_notify.set_workspace(workspace)
+        result = slack_notify.send_reminder(message=msg)
+    else:
+        result = slack_notify.notify_slack(
+            channel=channel,  # type: ignore[arg-type]  # validated above
+            message=msg,
+            workspace=workspace,
+            thread_ts=thread_ts,
+        )
     if isinstance(result, ErrorResult):
         click.echo(f"❌ {result.error}", err=True)
         sys.exit(1)
@@ -162,7 +175,7 @@ def gchat_send(
         card_file=card_file,
     )
 
-    from dev10x.skills.notifications import gchat_notify
+    from dev10x.comm.skills.notifications import gchat_notify
 
     result = gchat_notify.notify_gchat(
         space=space, message=msg, cards=cards, fallback_text=fallback_text, thread=thread
@@ -189,7 +202,7 @@ def _resolve_gchat_body(
     if card_subtitle and not card_title:
         raise click.UsageError("--card-subtitle requires --card-title.")
 
-    from dev10x.skills.notifications import gchat_cards
+    from dev10x.comm.skills.notifications import gchat_cards
 
     msg: str | None = None
     if message_file is not None:
@@ -288,7 +301,7 @@ def gchat_update(
         card_file=card_file,
     )
 
-    from dev10x.skills.notifications import gchat_notify
+    from dev10x.comm.skills.notifications import gchat_notify
 
     result = gchat_notify.update_gchat_message(
         message_name=message_name, message=msg, cards=cards, fallback_text=fallback_text
@@ -311,7 +324,7 @@ def gchat_delete(*, message_name: str) -> None:
     Under app auth the bot can delete only its own messages — a message
     posted by a person returns a 403.
     """
-    from dev10x.skills.notifications import gchat_notify
+    from dev10x.comm.skills.notifications import gchat_notify
 
     result = gchat_notify.delete_gchat_message(message_name=message_name)
     if isinstance(result, ErrorResult):
@@ -331,7 +344,7 @@ def gchat_review_prepare(*, pr: int, repo: str) -> None:
     """
     import argparse
 
-    from dev10x.skills.notifications import gchat_review_request
+    from dev10x.comm.skills.notifications import gchat_review_request
 
     args = argparse.Namespace(pr=pr, repo=repo)
     try:
@@ -339,6 +352,56 @@ def gchat_review_prepare(*, pr: int, repo: str) -> None:
     except gchat_review_request.GhCommandError as ex:
         click.echo(f"[ERROR] {ex}", err=True)
         sys.exit(1)
+
+
+@skill.command(name="rename")
+@click.argument("old")
+@click.argument("new")
+@click.option(
+    "--apply",
+    "apply_changes",
+    is_flag=True,
+    default=False,
+    help="Write the rewrite to disk. Without it, only the diff is printed.",
+)
+@click.option(
+    "--root",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=".",
+    show_default=True,
+    help="Repository checkout to rewrite.",
+)
+def rename(*, old: str, new: str, apply_changes: bool, root: Path) -> None:
+    """Rewrite one skill's invocation name across the repo (GH-1558).
+
+    OLD and NEW are `<plugin>:<skill>` names, e.g. `dev10x:tts` and
+    `dev10x-qa:tts`; a bare skill name means the `dev10x` core plugin.
+    Plugin names come from `src/dev10x/core/plugins.yaml`. Prints a
+    unified diff and changes nothing unless `--apply` is passed.
+    """
+    from dev10x.core.plugin_map import load_plugin_map
+    from dev10x.core.skill_rename import plan_rename_from_text
+
+    result = plan_rename_from_text(
+        root=root.resolve(),
+        old=old,
+        new=new,
+        plugin_map=load_plugin_map(),
+    )
+    if isinstance(result, ErrorResult):
+        click.echo(f"❌ {result.error}", err=True)
+        sys.exit(1)
+    plan = result.value
+    click.echo(plan.diff(), nl=False)
+    summary = (
+        f"{plan.replacements} reference(s) in {len(plan.rewrites)} file(s): "
+        f"{plan.old.text} -> {plan.new.text}"
+    )
+    if apply_changes:
+        plan.apply()
+        click.echo(f"Rewrote {summary}")
+        return
+    click.echo(f"Dry run, nothing written. Would rewrite {summary}. Pass --apply to write.")
 
 
 @skill.command(name="count-instructions")
@@ -381,7 +444,7 @@ def count_instructions(
     Accepts individual SKILL.md files or directories (scanned recursively).
     Exit code 1 if any file exceeds --over (default 150).
     """
-    from dev10x.skills.audit import instruction_budget as mod
+    from dev10x.teach.skills.audit import instruction_budget as mod
 
     w = warn if warn is not None else mod.DEFAULT_WARN
     o = over if over is not None else mod.DEFAULT_OVER

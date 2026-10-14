@@ -84,7 +84,8 @@ If the invocation args include a **target commit SHA + description** (e.g.
 `$Dev10x:git-fixup abc1234 Fix null handling in phone lookup`), intent is clear —
 proceed directly in **standalone fixup** mode without asking.
 
-Otherwise, use `AskUserQuestion` to ask:
+Otherwise, **REQUIRED: Call `AskUserQuestion`** (do NOT use plain
+text) to ask:
 
 > "No review comment provided. Create a standalone fixup?"
 
@@ -159,6 +160,14 @@ classification:
 fold. With a single owner there is nothing to split across, so aborting
 would print multi-owner remediation for a one-element list — an
 unactionable dead end.
+
+**A commit and its own fixups are one owner (GH-1512).** Before
+counting, every `fixup!` / `squash!` / `amend!` owner (nested prefixes
+included) is folded into the branch commit autosquash would target —
+exact subject first, then the oldest subject it prefixes. Re-fixing a
+commit that already has fixups therefore resolves to `single` against
+the original commit. A fixup whose target is not on the branch stays
+its own owner.
 
 **Multi-owner handling** (`status == "multi"`):
 

@@ -1,77 +1,65 @@
 """MCP server registration for the Dev10x CLI server.
 
-Tool handlers now live in per-domain modules under `src/dev10x/mcp/`:
-  - github_tools.py  — GitHub/PR/issue/milestone/review/CI/release handlers
-  - git_tools.py     — git push, rebase, worktree handlers
-  - plan_tools.py    — plan-sync handlers
-  - audit_tools.py   — session audit and hook-log handlers
-  - misc_tools.py    — mktmp, slack, permission, skill-index, upgrade handlers
-  - roots_tools.py   — client-roots awareness (GH-344)
-  - sampling_tools.py — server-initiated sampling (GH-343)
+Tool handlers live in each plugin namespace's ``mcp/`` package
+(ADR-0034), and every namespace exposes
+``dev10x.<namespace>.mcp.registration.register(server)`` (GH-1549):
 
-This module imports all of them (triggering @server.tool() registration)
-and re-exports their names for backward-compatible attribute access.
-The `server` object is also re-exported so callers that do
-`from dev10x.mcp.server_cli import server` keep working.
+  - core    — gate, utility (mktmp, preamble, permission, upgrade),
+              knowledge resources/prompts, roots, sampling, usage
+  - coding  — git, GitHub, monitor, release, test-runner handlers
+  - comm    — Slack thread heuristics
+  - tasks   — plan-sync and task-index handlers
+  - teach   — session audit and skill-index handlers
 
-Split as part of GH-243/A6.
+This module is the composition root: it iterates ``CLI_NAMESPACES``
+instead of star-importing every tool module. Tool functions stay
+reachable as attributes (``server_cli.mktmp``) through ``__getattr__``,
+and ``server`` is re-exported for ``from dev10x.mcp.server_cli import
+server`` callers.
 """
 
 from __future__ import annotations
 
-from typing import Literal, cast
+import importlib
+from types import ModuleType
+from typing import Any, Literal, cast
 
-# GH-979: every CWD-sensitive tool accepts an optional `cwd` argument.
-# Skills must pass the session's effective working directory (e.g. the
-# worktree path after EnterWorktree) so subprocess_utils binds it via
-# the `_effective_cwd` ContextVar before any git/gh subprocess fires.
-# When `cwd` is None, behavior is unchanged from pre-GH-979 (subprocess
-# inherits the MCP server's startup CWD).
-# Importing the tool modules triggers @server.tool() registration.
-# Importing knowledge_resources triggers @server.resource() registration
-# (GH-339). Importing knowledge_prompts triggers @server.prompt()
-# registration (GH-340).
-# Importing roots_tools registers the list_client_roots tool (GH-344).
-# Importing sampling_tools registers the request_sampling tool (GH-343).
-from dev10x.mcp import (  # noqa: E402, F401
-    audit_tools,
-    gate_tools,
-    git_tools,
-    github_tools,
-    knowledge_prompts,
-    knowledge_resources,
-    misc_tools,
-    monitor_tools,
-    plan_tools,
-    release_tools,
-    roots_tools,
-    sampling_tools,
-    usage_tools,
-)
-from dev10x.mcp._app import (
-    server,  # noqa: F401  (re-exported for callers importing server from server_cli)
-)
-from dev10x.mcp.audit_tools import *  # noqa: E402, F401, F403
-from dev10x.mcp.gate_tools import *  # noqa: E402, F401, F403
-from dev10x.mcp.git_tools import *  # noqa: E402, F401, F403
-from dev10x.mcp.github_tools import *  # noqa: E402, F401, F403
-from dev10x.mcp.misc_tools import *  # noqa: E402, F401, F403
-from dev10x.mcp.monitor_tools import *  # noqa: E402, F401, F403
-from dev10x.mcp.plan_tools import *  # noqa: E402, F401, F403
-from dev10x.mcp.release_tools import *  # noqa: E402, F401, F403
-from dev10x.mcp.roots_tools import *  # noqa: E402, F401, F403
-from dev10x.mcp.sampling_tools import *  # noqa: E402, F401, F403
-from dev10x.mcp.strict_args import enforce_strict_arguments  # noqa: E402
-from dev10x.mcp.task_index_tools import *  # noqa: E402, F401, F403
-from dev10x.mcp.tool_annotations import apply_tool_annotations  # noqa: E402
-from dev10x.mcp.usage_tools import *  # noqa: E402, F401, F403
+from mcp.server.fastmcp import FastMCP
+
+from dev10x.mcp._app import server
+from dev10x.mcp.strict_args import enforce_strict_arguments
+from dev10x.mcp.tool_annotations import apply_tool_annotations
+
+CLI_NAMESPACES: tuple[str, ...] = ("core", "coding", "comm", "tasks", "teach")
+
+
+def register_namespaces(
+    *,
+    server: FastMCP,
+    namespaces: tuple[str, ...] = CLI_NAMESPACES,
+) -> tuple[ModuleType, ...]:
+    registered: list[ModuleType] = []
+    for namespace in namespaces:
+        registration = importlib.import_module(f"dev10x.{namespace}.mcp.registration")
+        registered.extend(registration.register(server))
+    return tuple(registered)
+
+
+TOOL_MODULES = register_namespaces(server=server)
 
 # GH-1122: unknown kwargs are dropped twice over by FastMCP's generated
 # arg model, so a call naming a parameter this release does not have
-# returns success having changed nothing. Run AFTER every tool module is
-# imported — that is the only point where the registry is complete.
+# returns success having changed nothing. Run AFTER every namespace has
+# registered — that is the only point where the registry is complete.
 enforce_strict_arguments(server)
 apply_tool_annotations(server)
+
+
+def __getattr__(name: str) -> Any:
+    for module in TOOL_MODULES:
+        if name in vars(module):
+            return vars(module)[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def main() -> None:

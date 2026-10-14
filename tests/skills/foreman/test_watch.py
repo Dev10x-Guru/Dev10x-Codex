@@ -3,25 +3,33 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-
 from dev10x.domain.common.result import err, ok
+
 from dev10x.skills.foreman import (
     WatchState,
     active_quota_block,
+    append_escalation,
     base_branch_sha,
     block_identity,
-    escalation_offsets,
+    escalation_baseline,
+    handled_merge_prs,
     heartbeat_ages,
     heartbeat_lines,
     historical_token_ceiling,
+    is_done_line,
+    is_handled_merge_request,
     is_own_merge,
     minutes_to_quota_exhaustion,
     new_escalation_lines,
     own_merge_shas,
     queue_parked,
+    retire_chunk,
+    retired_heartbeats,
 )
 from dev10x.skills.foreman import watch as watch_module
 
@@ -277,25 +285,238 @@ class TestHeartbeatReaders:
         lines = heartbeat_lines(scratchpad=tmp_path, now=time.time())
         assert lines[0].endswith("last=(empty)")
 
+    def test_lines_flag_retired_files(self, tmp_path: Path) -> None:
+        _touch(tmp_path / "status-B1.md", age_min=40, content=B1_FINAL_LINE)
+        lines = heartbeat_lines(scratchpad=tmp_path, now=time.time())
+        assert lines[0].startswith("heartbeat: status-B1.md retired age=")
+
+
+#: Final heartbeat lines from the 2026-10-10/11 night run (GH-1577).
+#: B1 carries no "Pen down", so `DONE:` is the marker, not the prose.
+B1_FINAL_LINE = (
+    "- 2026-10-10T23:01:23Z DONE: #1574 CI verdict green (11 pass, hook-tests "
+    "skipped); 0 unresolved threads, 0 top-level findings; ls-remote confirms "
+    "7baef27f on origin. Handing off; no merge/close"
+)
+B2_FINAL_LINE = (
+    "- 2026-10-10T23:29:54Z DONE: PR #1575 CI green 10/10, 0 unresolved threads, "
+    "0 top-level findings, isDraft=false; ls-remote confirms 5780dd87 on origin. "
+    "Pen down (no merge, no issue closure)."
+)
+
+
+class TestRetiredHeartbeats:
+    @pytest.mark.parametrize("line", [B1_FINAL_LINE, B2_FINAL_LINE, "DONE: shipped", "* DONE"])
+    def test_done_line_is_retired(self, line: str) -> None:
+        assert is_done_line(line=line) is True
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "- 2026-10-10T22:40:00Z implement: 3 of 5 files done",
+            "- 2026-10-10T22:40:00Z NOT DONE: blocked on review",
+            "- 2026-10-10T22:40:00Z DONENESS check",
+            "- not-a-timestamp DONE: claimed",
+            "",
+        ],
+    )
+    def test_progress_line_is_not_retired(self, line: str) -> None:
+        assert is_done_line(line=line) is False
+
+    def test_done_last_line_retires_the_file(self, tmp_path: Path) -> None:
+        _touch(tmp_path / "status-B1.md", age_min=40, content=f"- t setup: x\n{B1_FINAL_LINE}\n")
+        _touch(tmp_path / "status-B3.md", age_min=40, content="- t implement: x\n")
+        assert retired_heartbeats(scratchpad=tmp_path) == {"status-B1.md"}
+
+    def test_a_line_after_done_reactivates_the_file(self, tmp_path: Path) -> None:
+        _touch(
+            tmp_path / "status-B1.md",
+            age_min=1,
+            content=f"{B1_FINAL_LINE}\n- 2026-10-11T00:10:00Z rebase: base moved\n",
+        )
+        assert retired_heartbeats(scratchpad=tmp_path) == set()
+
+    def test_retired_file_entries_retire_by_chunk_or_file_name(self, tmp_path: Path) -> None:
+        for chunk in ("B1", "B2", "B3"):
+            _touch(tmp_path / f"status-{chunk}.md", age_min=40)
+        (tmp_path / "retired").write_text(
+            "# chunks the watchdog retired\nB1\nstatus-B2.md\n\n", encoding="utf-8"
+        )
+        assert retired_heartbeats(scratchpad=tmp_path) == {"status-B1.md", "status-B2.md"}
+
+    @pytest.mark.parametrize("chunk", ["B1", "status-B1.md"])
+    def test_retire_chunk_appends_the_file_name(self, tmp_path: Path, chunk: str) -> None:
+        _touch(tmp_path / "status-B1.md", age_min=40)
+        result = retire_chunk(scratchpad=tmp_path, chunk=chunk)
+        assert result == ok("status-B1.md")
+        assert (tmp_path / "retired").read_text(encoding="utf-8") == "status-B1.md\n"
+        assert retired_heartbeats(scratchpad=tmp_path) == {"status-B1.md"}
+
+    def test_retire_chunk_rejects_an_unknown_chunk(self, tmp_path: Path) -> None:
+        _touch(tmp_path / "status-B1.md", age_min=40)
+        result = retire_chunk(scratchpad=tmp_path, chunk="B9")
+        assert result == err(f"no heartbeat file status-B9.md in {tmp_path}")
+        assert not (tmp_path / "retired").exists()
+
+    @pytest.mark.parametrize(
+        "read",
+        [
+            lambda pad: heartbeat_ages(scratchpad=pad, now=NOW),
+            lambda pad: heartbeat_lines(scratchpad=pad, now=NOW),
+            lambda pad: retired_heartbeats(scratchpad=pad),
+        ],
+        ids=["ages", "lines", "retired"],
+    )
+    def test_readers_skip_a_file_renamed_between_glob_and_read(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        read: Callable[[Path], object],
+    ) -> None:
+        # GH-1577: the watchdog renamed status files mid-watch; a file
+        # that vanishes after the glob must not crash the watcher.
+        vanished = tmp_path / "status-B1.md"
+        _touch(vanished, age_min=40, content=B1_FINAL_LINE)
+        _touch(tmp_path / "status-B3.md", age_min=2)
+        real_glob = Path.glob
+
+        def glob_then_rename(self: Path, pattern: str):  # noqa: ANN202
+            found = list(real_glob(self, pattern))
+            vanished.rename(tmp_path / "done-B1.md")
+            return iter(found)
+
+        monkeypatch.setattr(Path, "glob", glob_then_rename)
+        result = read(tmp_path)
+        assert "status-B1.md" not in repr(result)
+
+    def test_retire_chunk_leaves_the_heartbeat_untouched(self, tmp_path: Path) -> None:
+        heartbeat = tmp_path / "status-B1.md"
+        _touch(heartbeat, age_min=40)
+        before = heartbeat.stat().st_mtime
+        retire_chunk(scratchpad=tmp_path, chunk="B1")
+        assert heartbeat.stat().st_mtime == before
+
+
+class TestRetiredStallMuting:
+    def test_retired_file_never_stalls(self, state: WatchState, quiet_block: dict) -> None:
+        events = state.observe(
+            now=NOW + 60,
+            sha="aaa111",
+            block=quiet_block,
+            heartbeat_ages={"status-B1.md": 373, "status-B3.md": 26},
+            retired=frozenset({"status-B1.md"}),
+        )
+        assert events == ["STALL status-B3.md: silent 26 min"]
+
+    def test_all_files_retired_is_not_a_missing_heartbeat(
+        self, state: WatchState, quiet_block: dict
+    ) -> None:
+        events = state.observe(
+            now=NOW + 26 * 60,
+            sha="aaa111",
+            block=quiet_block,
+            heartbeat_ages={"status-B1.md": 373},
+            retired=frozenset({"status-B1.md"}),
+        )
+        assert events == []
+
+    def test_a_file_that_leaves_the_run_dir_stops_alarming(
+        self, state: WatchState, quiet_block: dict
+    ) -> None:
+        state.observe(
+            now=NOW + 60,
+            sha="aaa111",
+            block=quiet_block,
+            heartbeat_ages={"status-B1.md": 33, "status-B3.md": 1},
+        )
+        later = state.observe(
+            now=NOW + 60 + 26 * 60,
+            sha="aaa111",
+            block=quiet_block,
+            heartbeat_ages={"status-B3.md": 2},
+        )
+        assert later == []
+        assert "status-B1.md" not in state.stall_alerts
+
+    def test_reactivated_file_alarms_again(self, state: WatchState, quiet_block: dict) -> None:
+        state.observe(
+            now=NOW + 60,
+            sha="aaa111",
+            block=quiet_block,
+            heartbeat_ages={"status-B1.md": 30},
+            retired=frozenset({"status-B1.md"}),
+        )
+        events = state.observe(
+            now=NOW + 120,
+            sha="aaa111",
+            block=quiet_block,
+            heartbeat_ages={"status-B1.md": 30},
+        )
+        assert events == ["STALL status-B1.md: silent 30 min"]
+
 
 class TestEscalationReaders:
-    def test_offsets_report_current_byte_size_per_file(self, tmp_path: Path) -> None:
-        (tmp_path / "escalations-crew.md").write_text("- first line\n", encoding="utf-8")
-        offsets = escalation_offsets(scratchpad=tmp_path)
-        assert offsets == {"escalations-crew.md": len("- first line\n")}
+    def test_baseline_counts_complete_lines_per_file(self, tmp_path: Path) -> None:
+        (tmp_path / "escalations-crew.md").write_text(
+            "- first line\n\n- first line\n- partial", encoding="utf-8"
+        )
+        baseline = escalation_baseline(scratchpad=tmp_path)
+        assert baseline == {"escalations-crew.md": Counter({"- first line": 2})}
 
-    def test_offsets_empty_without_files(self, tmp_path: Path) -> None:
-        assert escalation_offsets(scratchpad=tmp_path) == {}
+    def test_baseline_empty_without_files(self, tmp_path: Path) -> None:
+        assert escalation_baseline(scratchpad=tmp_path) == {}
 
     def test_new_lines_returns_appended_content_once(self, tmp_path: Path) -> None:
         path = tmp_path / "escalations-crew.md"
         path.write_text("- first line\n", encoding="utf-8")
-        offsets = escalation_offsets(scratchpad=tmp_path)
+        cursor = escalation_baseline(scratchpad=tmp_path)
         path.write_text("- first line\n- second line\n", encoding="utf-8")
-        lines, updated = new_escalation_lines(scratchpad=tmp_path, offsets=offsets)
+        lines, updated = new_escalation_lines(scratchpad=tmp_path, cursor=cursor)
         assert lines == ["- second line"]
-        repeat, _ = new_escalation_lines(scratchpad=tmp_path, offsets=updated)
+        repeat, _ = new_escalation_lines(scratchpad=tmp_path, cursor=updated)
         assert repeat == []
+
+    def test_mid_file_insert_emits_only_the_inserted_line(self, tmp_path: Path) -> None:
+        # GH-1582: the overseer Edit-inserted each request right after the
+        # first one, so the file read PROBE-DONE, B1, B4, B3, B2. A byte
+        # cursor missed the B4 insert and replayed the shifted B2.
+        path = tmp_path / "escalations-foreman.md"
+        path.write_text(
+            "- PROBE-DONE\n"
+            "- MERGE REQUEST B1: PR #1573\n"
+            "- MERGE REQUEST B3: PR #1574\n"
+            "- MERGE REQUEST B2: PR #1575\n",
+            encoding="utf-8",
+        )
+        cursor = escalation_baseline(scratchpad=tmp_path)
+        path.write_text(
+            "- PROBE-DONE\n"
+            "- MERGE REQUEST B1: PR #1573\n"
+            "- MERGE REQUEST B4: PR #1576\n"
+            "- MERGE REQUEST B3: PR #1574\n"
+            "- MERGE REQUEST B2: PR #1575\n",
+            encoding="utf-8",
+        )
+        lines, updated = new_escalation_lines(scratchpad=tmp_path, cursor=cursor)
+        assert lines == ["- MERGE REQUEST B4: PR #1576"]
+        repeat, _ = new_escalation_lines(scratchpad=tmp_path, cursor=updated)
+        assert repeat == []
+
+    def test_a_deliberately_repeated_line_is_delivered_again(self, tmp_path: Path) -> None:
+        path = tmp_path / "escalations-foreman.md"
+        path.write_text("- MERGE REQUEST B2: PR #9\n", encoding="utf-8")
+        cursor = escalation_baseline(scratchpad=tmp_path)
+        path.write_text("- MERGE REQUEST B2: PR #9\n- MERGE REQUEST B2: PR #9\n", encoding="utf-8")
+        lines, _ = new_escalation_lines(scratchpad=tmp_path, cursor=cursor)
+        assert lines == ["- MERGE REQUEST B2: PR #9"]
+
+    def test_file_vanishing_after_the_glob_keeps_its_cursor(self, tmp_path: Path) -> None:
+        # A dangling symlink is listed by the glob but cannot be read —
+        # the same window as a file removed between glob and read.
+        (tmp_path / "escalations-gone.md").symlink_to(tmp_path / "missing.md")
+        cursor = escalation_baseline(scratchpad=tmp_path)
+        lines, updated = new_escalation_lines(scratchpad=tmp_path, cursor=cursor)
+        assert (cursor, lines, updated) == ({}, [], {})
 
     def test_partial_trailing_line_is_withheld_until_complete(self, tmp_path: Path) -> None:
         # A poll landing between an append's write and its newline must not
@@ -304,33 +525,139 @@ class TestEscalationReaders:
         # to guarantee.
         path = tmp_path / "escalations-foreman.md"
         path.write_text("- first line\n", encoding="utf-8")
-        offsets = escalation_offsets(scratchpad=tmp_path)
+        cursor = escalation_baseline(scratchpad=tmp_path)
         path.write_text("- first line\n- MERGE REQUEST chunk-7", encoding="utf-8")
-        lines, updated = new_escalation_lines(scratchpad=tmp_path, offsets=offsets)
+        lines, updated = new_escalation_lines(scratchpad=tmp_path, cursor=cursor)
         assert lines == []
         path.write_text("- first line\n- MERGE REQUEST chunk-7: PR #12\n", encoding="utf-8")
-        completed, _ = new_escalation_lines(scratchpad=tmp_path, offsets=updated)
+        completed, _ = new_escalation_lines(scratchpad=tmp_path, cursor=updated)
         assert completed == ["- MERGE REQUEST chunk-7: PR #12"]
 
     def test_complete_lines_emit_even_when_a_partial_trails(self, tmp_path: Path) -> None:
         path = tmp_path / "escalations-foreman.md"
         path.write_text("- first line\n", encoding="utf-8")
-        offsets = escalation_offsets(scratchpad=tmp_path)
+        cursor = escalation_baseline(scratchpad=tmp_path)
         path.write_text("- first line\n- ESCALATION one\n- partial", encoding="utf-8")
-        lines, updated = new_escalation_lines(scratchpad=tmp_path, offsets=offsets)
+        lines, updated = new_escalation_lines(scratchpad=tmp_path, cursor=cursor)
         assert lines == ["- ESCALATION one"]
         path.write_text("- first line\n- ESCALATION one\n- partial done\n", encoding="utf-8")
-        rest, _ = new_escalation_lines(scratchpad=tmp_path, offsets=updated)
+        rest, _ = new_escalation_lines(scratchpad=tmp_path, cursor=updated)
         assert rest == ["- partial done"]
 
-    def test_shrunken_file_is_rebaselined_not_replayed(self, tmp_path: Path) -> None:
+    def test_rewritten_file_replays_nothing_it_already_delivered(self, tmp_path: Path) -> None:
         path = tmp_path / "escalations-crew.md"
         path.write_text("- first line\n- second line\n", encoding="utf-8")
-        offsets = escalation_offsets(scratchpad=tmp_path)
-        path.write_text("- new content\n", encoding="utf-8")
-        lines, updated = new_escalation_lines(scratchpad=tmp_path, offsets=offsets)
-        assert lines == []
-        assert updated["escalations-crew.md"] == len("- new content\n")
+        cursor = escalation_baseline(scratchpad=tmp_path)
+        path.write_text("- second line\n", encoding="utf-8")
+        shrunk, updated = new_escalation_lines(scratchpad=tmp_path, cursor=cursor)
+        path.write_text("- second line\n- first line\n- new content\n", encoding="utf-8")
+        restored, _ = new_escalation_lines(scratchpad=tmp_path, cursor=updated)
+        assert (shrunk, restored) == ([], ["- new content"])
+
+
+class TestAppendEscalation:
+    def test_appends_the_line_last_with_a_bullet(self, tmp_path: Path) -> None:
+        path = tmp_path / "escalations-foreman.md"
+        path.write_text("- MERGE REQUEST B1: PR #1\n", encoding="utf-8")
+        result = append_escalation(
+            scratchpad=tmp_path, role="foreman", line="MERGE REQUEST B2: PR #2"
+        )
+        assert result.value == "escalations-foreman.md"
+        assert path.read_text(encoding="utf-8").splitlines() == [
+            "- MERGE REQUEST B1: PR #1",
+            "- MERGE REQUEST B2: PR #2",
+        ]
+
+    def test_keeps_an_existing_bullet(self, tmp_path: Path) -> None:
+        append_escalation(scratchpad=tmp_path, role="crew", line="* ESCALATION: blocked")
+        assert (tmp_path / "escalations-crew.md").read_text(encoding="utf-8") == (
+            "* ESCALATION: blocked\n"
+        )
+
+    def test_never_glues_onto_a_line_missing_its_newline(self, tmp_path: Path) -> None:
+        path = tmp_path / "escalations-foreman.md"
+        path.write_text("- PROBE-DONE", encoding="utf-8")
+        append_escalation(scratchpad=tmp_path, role="foreman", line="ESCALATION: x")
+        assert path.read_text(encoding="utf-8") == "- PROBE-DONE\n- ESCALATION: x\n"
+
+    def test_appended_line_is_delivered_by_the_reader(self, tmp_path: Path) -> None:
+        (tmp_path / "escalations-foreman.md").write_text("- PROBE-DONE\n", encoding="utf-8")
+        cursor = escalation_baseline(scratchpad=tmp_path)
+        append_escalation(scratchpad=tmp_path, role="foreman", line="MERGE REQUEST B4: PR #4")
+        lines, _ = new_escalation_lines(scratchpad=tmp_path, cursor=cursor)
+        assert lines == ["- MERGE REQUEST B4: PR #4"]
+
+    @pytest.mark.parametrize(
+        ("line", "message"),
+        [
+            ("status note, nothing urgent", "must open with one of"),
+            ("MERGE REQUEST B1\nMERGE REQUEST B2", "one line"),
+        ],
+        ids=["no-prefix", "multi-line"],
+    )
+    def test_rejects_a_line_the_watcher_would_not_deliver(
+        self, tmp_path: Path, line: str, message: str
+    ) -> None:
+        result = append_escalation(scratchpad=tmp_path, role="foreman", line=line)
+        assert message in result.error
+        assert list(tmp_path.iterdir()) == []
+
+    @pytest.mark.parametrize("role", ["../outside", "a/b", "crew.md", ""])
+    def test_rejects_a_role_that_is_not_a_plain_token(self, tmp_path: Path, role: str) -> None:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        result = append_escalation(scratchpad=run_dir, role=role, line="ESCALATION: x")
+        assert "must be letters, digits" in result.error
+        assert sorted(path.name for path in tmp_path.rglob("*")) == ["run"]
+
+    def test_rejects_a_missing_run_directory(self, tmp_path: Path) -> None:
+        result = append_escalation(
+            scratchpad=tmp_path / "gone", role="foreman", line="ESCALATION: x"
+        )
+        assert "no run directory" in result.error
+
+
+class TestHandledMergeRequests:
+    def test_handled_prs_are_read_from_merged_shas_comments(self, tmp_path: Path) -> None:
+        (tmp_path / "merged-shas").write_text(
+            "# chunk 1\nabc1234def  # PR #1575\ndef5678abc  # pr#1580 B4\n", encoding="utf-8"
+        )
+        assert handled_merge_prs(scratchpad=tmp_path) == {1575, 1580}
+
+    def test_handled_prs_empty_without_file(self, tmp_path: Path) -> None:
+        assert handled_merge_prs(scratchpad=tmp_path) == set()
+
+    @pytest.mark.parametrize(
+        ("entry", "expected"),
+        [
+            ("MERGE REQUEST B2: PR #1575 CI green", True),
+            ("MERGE REQUEST B2: head abc1234def ready", True),
+            ("MERGE REQUEST B5: PR #1590 head fff9999 ready", False),
+            ("ESCALATION: PR #1575 needs a human", False),
+        ],
+        ids=["merged-pr", "merged-head", "fresh", "not-a-merge-request"],
+    )
+    def test_is_handled_merge_request(self, entry: str, expected: bool) -> None:
+        assert (
+            is_handled_merge_request(entry=entry, merged_shas={"abc1234def"}, handled_prs={1575})
+            is expected
+        )
+
+    def test_observe_drops_a_replayed_merge_request(
+        self, state: WatchState, quiet_block: dict
+    ) -> None:
+        events = state.observe(
+            now=NOW + 60,
+            sha="aaa111",
+            block=quiet_block,
+            heartbeat_ages={"status-a.md": 1},
+            escalation_lines=[
+                "- MERGE REQUEST B2: PR #1575 CI green",
+                "- MERGE REQUEST B4: PR #1576 CI green",
+            ],
+            handled_prs=frozenset({1575}),
+        )
+        assert events == ["MERGE REQUEST B4: PR #1576 CI green"]
 
 
 class TestBlockIdentity:

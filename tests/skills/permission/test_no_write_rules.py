@@ -23,8 +23,9 @@ import yaml
 
 import dev10x.skills.permission as permission_pkg
 from dev10x.skills.permission import doctor
+from dev10x.skills.permission.catalog_paths import load_catalog_document
 
-REPO_ROOT = Path(permission_pkg.__file__).resolve().parents[4]
+REPO_ROOT = Path(permission_pkg.__file__).resolve().parents[5]
 CATALOG = Path(permission_pkg.__file__).parent / "baseline-permissions.yaml"
 PROJECTS_YAML = REPO_ROOT / "skills" / "upgrade-cleanup" / "projects.yaml"
 SKILLS_DIR = REPO_ROOT / "skills"
@@ -62,7 +63,7 @@ class TestBaselineCatalogHasNoWriteRules:
 
 class TestProjectsSeedHasNoWriteRules:
     def test_base_permissions_declare_no_write_rule(self) -> None:
-        data = yaml.safe_load(PROJECTS_YAML.read_text())
+        data = load_catalog_document(catalog_path=PROJECTS_YAML)
         offenders = [r for r in data.get("base_permissions", []) if _is_write_rule(r)]
         assert offenders == [], f"Write(path) rules must be Edit(path): {offenders}"
 

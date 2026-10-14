@@ -12,6 +12,7 @@ from dev10x.domain.common.tracker_choice import (
     apply_tracker_selection,
     tracker_inventory,
 )
+from dev10x.skills.permission.catalog_paths import load_catalog_document
 from dev10x.skills.permission.tracker_resolve import resolve_tracker, tracker_source
 
 
@@ -19,7 +20,7 @@ from dev10x.skills.permission.tracker_resolve import resolve_tracker, tracker_so
 def friction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "friction.yaml"
     monkeypatch.setattr(
-        "dev10x.domain.documents.session_yaml.Dev10xConfigDir.friction_yaml",
+        "dev10x.domain.documents.friction_yaml.Dev10xConfigDir.friction_yaml",
         classmethod(lambda cls: path),
     )
     return path
@@ -67,7 +68,7 @@ class TestResolveTracker:
 class TestShippedCatalog:
     @pytest.fixture
     def catalog(self, projects_yaml: Path) -> dict:
-        return yaml.safe_load(projects_yaml.read_text())
+        return load_catalog_document(catalog_path=projects_yaml)
 
     def test_every_tracker_has_a_block(self, catalog: dict) -> None:
         inventory = tracker_inventory(config=catalog)
@@ -83,7 +84,7 @@ class TestShippedCatalog:
         [
             (Tracker.LINEAR, "mcp__claude_ai_Linear__get_issue"),
             (Tracker.JIRA, "mcp__claude_ai_Atlassian_Rovo__getJiraIssue"),
-            (Tracker.GITHUB, "mcp__plugin_Dev10x_cli__issue_get"),
+            (Tracker.GITHUB, "mcp__plugin_dev10x_cli__issue_get"),
         ],
     )
     def test_selecting_a_tracker_seeds_its_own_tools(

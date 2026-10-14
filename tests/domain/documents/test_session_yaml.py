@@ -19,10 +19,13 @@ import yaml
 from dev10x.domain.dev10x_paths import Dev10xConfigDir
 from dev10x.domain.documents.session_yaml import (
     DURABLE_KEYS,
+    PIN_SCOPES,
     ConfigYamlDocument,
     FrictionYamlDocument,
+    PinScope,
     SessionYamlDocument,
     legacy_durable_prefs,
+    match_globs_for_repo,
     upsert_project_prefs,
 )
 from dev10x.domain.friction_level import FrictionLevel
@@ -47,6 +50,28 @@ def _write_config(*, tmp_path: Path, content: str) -> str:
     (tmp_path / ".claude" / "Dev10x").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".claude" / "Dev10x" / "config.yaml").write_text(content)
     return str(tmp_path)
+
+
+class TestPinScope:
+    def test_default_is_repo(self) -> None:
+        assert PinScope.default() is PinScope.REPO
+
+    def test_values_match_pin_scopes_tuple(self) -> None:
+        assert tuple(scope.value for scope in PinScope) == PIN_SCOPES
+
+    def test_is_a_str(self) -> None:
+        assert PinScope.DIR == "dir"
+
+    def test_coerces_from_plain_string(self) -> None:
+        assert PinScope("repo-only") is PinScope.REPO_ONLY
+
+    def test_rejects_unknown_value(self) -> None:
+        with pytest.raises(ValueError, match="'bogus' is not a valid PinScope"):
+            PinScope("bogus")
+
+    def test_accepted_by_match_globs_for_repo(self) -> None:
+        globs = match_globs_for_repo(repo_name="my-repo", scope=PinScope.REPO_ONLY)
+        assert globs == ["*/my-repo"]
 
 
 class TestPath:
@@ -345,49 +370,42 @@ class TestReadSupervisorReview:
         )
         assert SessionYamlDocument(toplevel=toplevel).read_supervisor_review() == "none"
 
-    @pytest.mark.parametrize(("declared", "expected"), [("required", True), ("none", False)])
-    def test_deprecated_boolean_reader_preserves_polarity(
-        self, tmp_path: Path, declared: str, expected: bool
-    ) -> None:
-        toplevel = _write_config(tmp_path=tmp_path, content=f"supervisor_review: {declared}\n")
-        assert SessionYamlDocument(toplevel=toplevel).read_human_review() is expected
 
-
-class TestReadHumanReview:
+class TestReadSupervisorReviewLegacyHumanReviewKey:
     """ADR-0019 / GH-950: the durable, project-wide review posture.
 
     Replaces the ephemeral ``review-deferred`` mode, which was written to
     the retired per-repo ``session.yaml`` and so was never read back once a
     ``friction.yaml`` entry matched the repo. Absent/malformed must resolve
-    to ``True`` — a bad value fails toward MORE oversight, never less.
+    to ``required`` — a bad value fails toward MORE oversight, never less.
     """
 
     def test_reads_false_from_config(self, tmp_path: Path) -> None:
         toplevel = _write_config(tmp_path=tmp_path, content="human_review: false\n")
-        assert SessionYamlDocument(toplevel=toplevel).read_human_review() is False
+        assert SessionYamlDocument(toplevel=toplevel).read_supervisor_review() == "none"
 
     def test_reads_true_from_config(self, tmp_path: Path) -> None:
         toplevel = _write_config(tmp_path=tmp_path, content="human_review: true\n")
-        assert SessionYamlDocument(toplevel=toplevel).read_human_review() is True
+        assert SessionYamlDocument(toplevel=toplevel).read_supervisor_review() == "required"
 
-    def test_defaults_to_true_when_unset(self, tmp_path: Path) -> None:
+    def test_defaults_to_required_when_unset(self, tmp_path: Path) -> None:
         toplevel = _write_config(tmp_path=tmp_path, content="friction_level: guided\n")
-        assert SessionYamlDocument(toplevel=toplevel).read_human_review() is True
+        assert SessionYamlDocument(toplevel=toplevel).read_supervisor_review() == "required"
 
-    def test_defaults_to_true_when_both_missing(self, tmp_path: Path) -> None:
-        assert SessionYamlDocument(toplevel=str(tmp_path)).read_human_review() is True
+    def test_defaults_to_required_when_both_missing(self, tmp_path: Path) -> None:
+        assert SessionYamlDocument(toplevel=str(tmp_path)).read_supervisor_review() == "required"
 
-    def test_non_boolean_string_reads_as_true(self, tmp_path: Path) -> None:
+    def test_non_boolean_string_reads_as_required(self, tmp_path: Path) -> None:
         toplevel = _write_config(tmp_path=tmp_path, content='human_review: "no"\n')
-        assert SessionYamlDocument(toplevel=toplevel).read_human_review() is True
+        assert SessionYamlDocument(toplevel=toplevel).read_supervisor_review() == "required"
 
-    def test_explicit_null_reads_as_true(self, tmp_path: Path) -> None:
+    def test_explicit_null_reads_as_required(self, tmp_path: Path) -> None:
         toplevel = _write_config(tmp_path=tmp_path, content="human_review: null\n")
-        assert SessionYamlDocument(toplevel=toplevel).read_human_review() is True
+        assert SessionYamlDocument(toplevel=toplevel).read_supervisor_review() == "required"
 
     def test_falls_back_to_pre_split_session(self, tmp_path: Path) -> None:
         toplevel = _write(tmp_path=tmp_path, content="human_review: false\n")
-        assert SessionYamlDocument(toplevel=toplevel).read_human_review() is False
+        assert SessionYamlDocument(toplevel=toplevel).read_supervisor_review() == "none"
 
     def test_matching_friction_project_entry_wins(self, tmp_path: Path) -> None:
         """A matched projects[] entry wins outright — the GH-950 precedence."""
@@ -399,11 +417,11 @@ class TestReadHumanReview:
                 }
             )
         )
-        assert SessionYamlDocument(toplevel=str(tmp_path)).read_human_review() is False
+        assert SessionYamlDocument(toplevel=str(tmp_path)).read_supervisor_review() == "none"
 
     def test_friction_defaults_apply_without_project_entry(self, tmp_path: Path) -> None:
         _write_friction(content=yaml.safe_dump({"defaults": {"human_review": False}}))
-        assert SessionYamlDocument(toplevel=str(tmp_path)).read_human_review() is False
+        assert SessionYamlDocument(toplevel=str(tmp_path)).read_supervisor_review() == "none"
 
     def test_matched_entry_shadows_permissive_default(self, tmp_path: Path) -> None:
         """A project entry that omits the key inherits the defaults' value."""
@@ -415,7 +433,7 @@ class TestReadHumanReview:
                 }
             )
         )
-        assert SessionYamlDocument(toplevel=str(tmp_path)).read_human_review() is False
+        assert SessionYamlDocument(toplevel=str(tmp_path)).read_supervisor_review() == "none"
 
     def test_is_a_durable_key(self) -> None:
         """Must be in DURABLE_KEYS or readers filter it out of project entries."""
@@ -667,13 +685,9 @@ class TestFrictionStarterRender:
 class TestMatchGlobsFor:
     """GH-812 R4: match globs the migration keys a projects[] entry by."""
 
-    def test_returns_basename_glob_and_exact_path(self, tmp_path: Path) -> None:
-        globs = FrictionYamlDocument.match_globs_for(str(tmp_path))
-        assert globs == [f"*/{tmp_path.name}", str(tmp_path)]
-
     def test_generated_entry_matches_its_own_toplevel(self, tmp_path: Path) -> None:
         # The globs must resolve the very repo they were generated for.
-        globs = FrictionYamlDocument.match_globs_for(str(tmp_path))
+        globs = [f"*/{tmp_path.name}", str(tmp_path)]
         _write_friction(
             content=(f"projects:\n  - match: {globs!r}\n    friction_level: adaptive\n")
         )
@@ -823,8 +837,9 @@ class TestUpsertCarriesForwardDurableKeys:
             prefs={"gate_preset": "adaptive"},
             path=target,
         )
+        fresh = tmp_path / "fresh"
         assert yaml.safe_load(target.read_text())["projects"][0] == {
-            "match": FrictionYamlDocument.match_globs_for(str(tmp_path / "fresh")),
+            "match": [f"*/{fresh.name}", str(fresh)],
             "gate_preset": "adaptive",
         }
 

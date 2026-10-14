@@ -7,10 +7,10 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 
-from dev10x.skills.permission import enumerate_mcp
-from dev10x.skills.permission import update_paths as mod
+from dev10x.skills.permission import catalog_rules, enumerate_mcp
+from dev10x.skills.permission import catalog_write as mod
+from dev10x.skills.permission.catalog_paths import load_catalog_document
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +56,7 @@ class TestSanctionedPreCommitCoverage:
         self,
         projects_yaml: Path,
     ) -> None:
-        config = yaml.safe_load(projects_yaml.read_text(encoding="utf-8"))
+        config = load_catalog_document(catalog_path=projects_yaml)
         assert "Bash(pre-commit run:*)" in config["base_permissions"]
 
 
@@ -219,7 +219,7 @@ class TestRefusalsStayVisible:
         path = tmp_path / "settings.local.json"
         path.write_text(json.dumps({"permissions": {"allow": ["Bash(/p/x.sh a:*)"]}}))
         monkeypatch.setattr(mod, "_is_git_tracked", lambda _path: False)
-        monkeypatch.setattr(mod, "is_well_formed_rule", lambda _entry: False)
+        monkeypatch.setattr(catalog_rules, "is_well_formed_rule", lambda _entry: False)
 
         result = mod.generalize(settings_files=[path], dry_run=False, quiet=False)
         rendered = "\n".join(str(m) for m in result["messages"])

@@ -5,7 +5,7 @@ catalogued, but the ``uv run --directory <path> <cmd>`` forms were not.
 Allow-rule matching keys on the literal command string, so the
 catalogued rule never matches the ``--directory`` shape — and that is
 the shape used in the multi-worktree setups Dev10x itself encourages
-via ``Dev10x:git-worktree``.
+via ``dev10x:git-worktree``.
 
 ``catalog-gap`` cannot catch this: it compares settings files against
 the catalog, so a shape absent from *both* reads as full coverage. The
@@ -25,10 +25,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
 
-# Every catalogued command that also has a `--directory` form in use.
-DIRECTORY_FORM_COMMANDS = ("pytest", "mypy", "ruff")
+from dev10x.skills.permission.catalog_paths import load_catalog_document
 
 PAGER_DENIES = (
     "Bash(git -P:*)",
@@ -37,13 +35,16 @@ PAGER_DENIES = (
 
 
 def _catalog(path: Path) -> dict:
-    return yaml.safe_load(path.read_text())
+    return load_catalog_document(catalog_path=path)
 
 
-@pytest.mark.parametrize("command", DIRECTORY_FORM_COMMANDS)
-def test_uv_run_directory_form_is_catalogued(projects_yaml: Path, command: str) -> None:
+def test_uv_run_directory_form_is_left_to_prefix_friction(projects_yaml: Path) -> None:
+    """GH-1472: `uv run --directory * <tool>:*` has a literal `*`, so it
+    never matched. DX007 strips `--directory <path>` and re-matches the
+    inner command against the plain `uv run <tool>` rules instead.
+    """
     allows = _catalog(projects_yaml)["base_permissions"]
-    assert f"Bash(uv run --directory * {command}:*)" in allows
+    assert [rule for rule in allows if rule.startswith("Bash(uv run --directory")] == []
 
 
 @pytest.mark.parametrize("rule", PAGER_DENIES)

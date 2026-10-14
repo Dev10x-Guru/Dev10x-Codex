@@ -6,7 +6,10 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-import dev10x.skills.permission as permission_pkg
+from dev10x.core.skills.permission.enumerate_mcp import (
+    WRITE_TOOLS_NOT_SEEDED,
+    discover_mcp_tools,
+)
 from dev10x.mcp.tool_annotations import (
     LOCAL_DESTRUCTIVE,
     LOCAL_WRITE,
@@ -17,12 +20,8 @@ from dev10x.mcp.tool_annotations import (
     TOOL_ANNOTATIONS,
     apply_tool_annotations,
 )
-from dev10x.skills.permission.enumerate_mcp import (
-    WRITE_TOOLS_NOT_SEEDED,
-    discover_mcp_tools,
-)
 
-REPO_ROOT = Path(permission_pkg.__file__).resolve().parents[4]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 CLI_PREFIX = "mcp__plugin_Dev10x_cli__"
 
 

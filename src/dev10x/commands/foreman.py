@@ -9,7 +9,7 @@ import click
 
 @click.group()
 def foreman() -> None:
-    """Watcher CLI for Dev10x:foreman overnight delivery runs.
+    """Watcher CLI for dev10x:foreman overnight delivery runs.
 
     One pre-approved command surface for every loop/poll the harness
     needs — inline Monitor/Bash loop shapes prompt unpredictably and
@@ -53,7 +53,7 @@ def probe(
     stale local ref (GH-964). The burn line reports how many minutes
     of block budget the current rate leaves (GH-979).
     """
-    from dev10x.skills.foreman import watch as watch_skill
+    from dev10x.coding.skills.foreman import watch as watch_skill
 
     for line in watch_skill.probe_lines(
         scratchpad=scratchpad,
@@ -63,6 +63,62 @@ def probe(
         token_budget=token_budget,
     ):
         click.echo(line)
+
+
+@foreman.command(name="retire")
+@click.option(
+    "--scratchpad",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+    help="Directory holding the run's status-*.md heartbeat files.",
+)
+@click.argument("chunk")
+def retire(*, scratchpad: Path, chunk: str) -> None:
+    """Stop STALL alerts for a finished chunk without touching its files.
+
+    Appends the chunk's heartbeat file name to ``retired`` in the run
+    directory. This is the watchdog's pre-approved shape for quieting a
+    worker that finished without a ``DONE`` line — never ``mv``, ``cp``
+    or ``rm`` on run-dir files, which prompt and freeze the night
+    (GH-1577).
+    """
+    from dev10x.coding.skills.foreman import watch as watch_skill
+    from dev10x.domain.common.result import ErrorResult
+
+    result = watch_skill.retire_chunk(scratchpad=scratchpad, chunk=chunk)
+    if isinstance(result, ErrorResult):
+        raise click.ClickException(result.error)
+    click.echo(f"retired: {result.value}")
+
+
+@foreman.command(name="escalate")
+@click.option(
+    "--scratchpad",
+    type=click.Path(path_type=Path, file_okay=False),
+    required=True,
+    help="Directory holding the run's escalations-*.md files.",
+)
+@click.option(
+    "--role",
+    default="foreman",
+    show_default=True,
+    help="Writes to escalations-<role>.md.",
+)
+@click.argument("line")
+def escalate(*, scratchpad: Path, role: str, line: str) -> None:
+    """Append one MERGE REQUEST / ESCALATION line to the escalations file.
+
+    The overseer's pre-approved append primitive (GH-1582). Edit can
+    only insert next to text it matches, which put newer requests above
+    older ones; this always writes the line last, as one atomic append.
+    """
+    from dev10x.coding.skills.foreman import watch as watch_skill
+    from dev10x.domain.common.result import ErrorResult
+
+    result = watch_skill.append_escalation(scratchpad=scratchpad, role=role, line=line)
+    if isinstance(result, ErrorResult):
+        raise click.ClickException(result.error)
+    click.echo(f"escalated: {result.value}")
 
 
 @foreman.command(name="watch")
@@ -126,11 +182,20 @@ def watch(
 
     Two scratchpad files mute events that need no decision (GH-946):
     ``merged-shas`` (base-branch tips the run merged itself — matching
-    BASE MOVED echoes are dropped) and ``parked`` (while present, STALL
-    and QUOTA MILESTONE are suppressed and milestones roll up into one
-    line on release).
+    BASE MOVED echoes are dropped, and so is a MERGE REQUEST naming a
+    ``PR #N`` recorded there, GH-1582) and ``parked`` (while present,
+    STALL and QUOTA MILESTONE are suppressed and milestones roll up
+    into one line on release).
+
+    Escalation lines are tracked by content, not byte offset, so a line
+    inserted mid-file is delivered once and never replays an older one
+    (GH-1582).
+
+    A finished worker never raises STALL (GH-1577): its heartbeat is
+    retired when the last line is a ``DONE`` report, or when
+    ``dev10x foreman retire`` listed the chunk in ``retired``.
     """
-    from dev10x.skills.foreman import watch as watch_skill
+    from dev10x.coding.skills.foreman import watch as watch_skill
 
     state = watch_skill.initial_watch_state(
         stall_min=stall_min,
@@ -149,16 +214,16 @@ def watch(
     sys.stdout.flush()
 
     # Baseline the escalation cursor at arm time so the run reports what
-    # is appended from here on, not a backlog written before it started.
-    esc_offsets = watch_skill.escalation_offsets(scratchpad=scratchpad)
+    # is written from here on, not a backlog written before it started.
+    esc_cursor = watch_skill.escalation_baseline(scratchpad=scratchpad)
 
     rounds = 0
     while max_rounds <= 0 or rounds < max_rounds:
         time.sleep(interval_s)
         rounds += 1
         now = time.time()
-        escalations, esc_offsets = watch_skill.new_escalation_lines(
-            scratchpad=scratchpad, offsets=esc_offsets
+        escalations, esc_cursor = watch_skill.new_escalation_lines(
+            scratchpad=scratchpad, cursor=esc_cursor
         )
         events = state.observe(
             now=now,
@@ -168,6 +233,8 @@ def watch(
             parked=watch_skill.queue_parked(scratchpad=scratchpad),
             merged_shas=watch_skill.own_merge_shas(scratchpad=scratchpad),
             escalation_lines=escalations,
+            retired=watch_skill.retired_heartbeats(scratchpad=scratchpad),
+            handled_prs=watch_skill.handled_merge_prs(scratchpad=scratchpad),
         )
         for event in events:
             click.echo(event)

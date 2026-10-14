@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -85,8 +86,9 @@ def test_probe_reports_parked_and_own_merge_contracts(scratchpad: Path) -> None:
 def test_watch_mutes_own_merge_base_movement(
     scratchpad: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import dev10x.commands.foreman as commands
     import dev10x.skills.foreman.watch as watch
+
+    import dev10x.commands.foreman as commands
 
     (scratchpad / "merged-shas").write_text("def5678\n", encoding="utf-8")
     shas = iter(["abc1234", "def5678abc", "def5678abc"])
@@ -140,8 +142,9 @@ def test_probe_reports_the_burn_projection(scratchpad: Path) -> None:
 def test_watch_emits_quota_low_before_the_wall(
     scratchpad: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import dev10x.commands.foreman as commands
     import dev10x.skills.foreman.watch as watch
+
+    import dev10x.commands.foreman as commands
 
     monkeypatch.setattr(
         watch,
@@ -178,9 +181,107 @@ def test_watch_emits_quota_low_before_the_wall(
     assert result.output.count("QUOTA LOW:") == 1
 
 
-def test_watch_emits_base_movement(scratchpad: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_watch_stays_quiet_on_a_finished_worker(
+    scratchpad: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import dev10x.commands.foreman as commands
+
+    # GH-1577: a DONE worker never writes again, so its mtime only ages;
+    # it must not re-alarm every stall window.
+    finished = scratchpad / "status-m1.md"
+    finished.write_text("- 2026-10-10T23:29:54Z DONE: PR #1575 green\n", encoding="utf-8")
+    os.utime(finished, (0, 0))
+    monkeypatch.setattr(commands.time, "sleep", lambda seconds: None)
+    result = CliRunner().invoke(
+        foreman,
+        ["watch", "--scratchpad", str(scratchpad), "--max-rounds", "2", "--interval-s", "0"],
+    )
+    assert result.exit_code == 0
+    assert "STALL" not in result.output
+
+
+def test_retire_records_the_chunk_without_touching_its_heartbeat(scratchpad: Path) -> None:
+    before = (scratchpad / "status-m1.md").stat().st_mtime
+    result = CliRunner().invoke(foreman, ["retire", "--scratchpad", str(scratchpad), "m1"])
+    assert result.exit_code == 0
+    assert result.output == "retired: status-m1.md\n"
+    assert (scratchpad / "retired").read_text(encoding="utf-8") == "status-m1.md\n"
+    assert (scratchpad / "status-m1.md").stat().st_mtime == before
+
+
+def test_retire_refuses_an_unknown_chunk(scratchpad: Path) -> None:
+    result = CliRunner().invoke(foreman, ["retire", "--scratchpad", str(scratchpad), "m9"])
+    assert result.exit_code == 1
+    assert "no heartbeat file status-m9.md" in result.output
+    assert not (scratchpad / "retired").exists()
+
+
+def test_escalate_appends_the_line_last(scratchpad: Path) -> None:
+    path = scratchpad / "escalations-foreman.md"
+    path.write_text("- MERGE REQUEST B1: PR #1\n", encoding="utf-8")
+    result = CliRunner().invoke(
+        foreman,
+        ["escalate", "--scratchpad", str(scratchpad), "MERGE REQUEST B2: PR #2"],
+    )
+    assert result.exit_code == 0
+    assert result.output == "escalated: escalations-foreman.md\n"
+    assert path.read_text(encoding="utf-8").splitlines()[-1] == "- MERGE REQUEST B2: PR #2"
+
+
+def test_escalate_refuses_a_line_the_watcher_ignores(scratchpad: Path) -> None:
+    result = CliRunner().invoke(
+        foreman,
+        ["escalate", "--scratchpad", str(scratchpad), "--role", "crew", "just a note"],
+    )
+    assert result.exit_code == 1
+    assert "must open with one of" in result.output
+    assert not (scratchpad / "escalations-crew.md").exists()
+
+
+def test_watch_delivers_a_mid_file_insert_and_drops_a_merged_request(
+    scratchpad: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dev10x.commands.foreman as commands
+
+    # GH-1582: the PLG night-run file order — each new request inserted
+    # above the older ones — with B2 (#1575) already merged.
+    path = scratchpad / "escalations-foreman.md"
+    path.write_text(
+        "- PROBE-DONE\n- MERGE REQUEST B1: PR #1573\n- MERGE REQUEST B2: PR #1575\n",
+        encoding="utf-8",
+    )
+    (scratchpad / "merged-shas").write_text("abc1234  # PR #1575\n", encoding="utf-8")
+
+    def insert_then_sleep(seconds: float) -> None:
+        path.write_text(
+            "- PROBE-DONE\n"
+            "- MERGE REQUEST B1: PR #1573\n"
+            "- MERGE REQUEST B4: PR #1576\n"
+            "- MERGE REQUEST B3: PR #1575\n"
+            "- MERGE REQUEST B2: PR #1575\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(commands.time, "sleep", insert_then_sleep)
+    result = CliRunner().invoke(
+        foreman,
+        ["watch", "--scratchpad", str(scratchpad), "--max-rounds", "2", "--interval-s", "0"],
+    )
+    assert result.exit_code == 0
+    assert result.output.splitlines()[1:] == ["MERGE REQUEST B4: PR #1576"]
+
+
+def test_probe_flags_a_retired_heartbeat(scratchpad: Path) -> None:
+    (scratchpad / "retired").write_text("m1\n", encoding="utf-8")
+    result = CliRunner().invoke(foreman, ["probe", "--scratchpad", str(scratchpad)])
+    assert result.exit_code == 0
+    assert "heartbeat: status-m1.md retired age=" in result.output
+
+
+def test_watch_emits_base_movement(scratchpad: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import dev10x.skills.foreman.watch as watch
+
+    import dev10x.commands.foreman as commands
 
     shas = iter(["abc1234", "def5678", "def5678"])
     monkeypatch.setattr(watch, "base_branch_sha", lambda *, base_branch, repo=None: next(shas))

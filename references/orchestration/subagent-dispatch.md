@@ -80,6 +80,11 @@ appears idle and may be closed prematurely.
 This pattern applies to ALL skills that launch background
 agents, not just `gh-pr-monitor`.
 
+A dispatched agent that dispatches its own sub-agents inherits
+extra rules: don't edit delegated files, read the tree after a "no
+live children" notice, and commit partial edits. See
+[`grandchild-completion.md`](grandchild-completion.md) (GH-1464).
+
 ## Background Friction Preamble (REQUIRED, GH-610)
 
 Background subagents (workflow / monitor / loop / fanout) start
@@ -95,7 +100,7 @@ friction-avoidance preamble to the subagent prompt, and pre-seed
 its tool surface so the preferred tools are actually available.
 
 1. Fetch the preamble text via
-   `mcp__plugin_Dev10x_cli__background_preamble` (no Read prompt,
+   `mcp__plugin_dev10x_cli__background_preamble` (no Read prompt,
    single source of truth). The canonical document is
    [`background-preamble.md`](background-preamble.md).
 2. Prepend the returned text verbatim to the subagent's prompt.
@@ -133,7 +138,7 @@ Set dependencies:
 - Multiple independent analysis phases (e.g., 5+ parallel subagents)
 - Partial dependencies between phases (some are independent, others depend on earlier outputs)
 - Long-running workflows where parallelization saves significant time
-- Example: `Dev10x:skill-audit` with 5 parallel analysis phases + dependency on Phase 1 output
+- Example: `dev10x:skill-audit` with 5 parallel analysis phases + dependency on Phase 1 output
 
 ## Fanout Execution (Multiple Items)
 
@@ -229,9 +234,9 @@ references to the old "Permission-Aware Dispatch table" appear
 in skill docs, treat them as superseded by the Agent Isolation
 Matrix above.
 
-**Example**: `Dev10x:fanout` dispatches each non-conflicting
+**Example**: `dev10x:fanout` dispatches each non-conflicting
 work item as a worktree-isolated `Agent` whose prompt invokes
-`Skill(Dev10x:work-on)`, running the full lifecycle inside the
+`Skill(dev10x:work-on)`, running the full lifecycle inside the
 isolated worktree. Conflict-chain successors wait for upstream
 items to merge, then dispatch in the next wave.
 

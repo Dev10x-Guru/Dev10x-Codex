@@ -1,17 +1,17 @@
 ---
-name: Dev10x:playbook-maintenance
+name: dev10x:playbook-maintenance
 description: >
   Review user playbook overrides against current defaults to detect
   drift. Identifies new steps, improved prompts, updated fragments,
   and structural changes in defaults that overrides have missed.
   Presents findings with recommendations and delegates edits to
-  Dev10x:playbook.
+  dev10x:playbook.
   TRIGGER when: user wants to check if their playbook overrides are
   up to date, after a plugin upgrade, or when defaults have changed.
   DO NOT TRIGGER when: user wants to view or edit a specific play
-  (use Dev10x:playbook instead).
+  (use dev10x:playbook instead).
 user-invocable: true
-invocation-name: Dev10x:playbook-maintenance
+invocation-name: dev10x:playbook-maintenance
 allowed-tools:
   - Read
   - Glob
@@ -19,11 +19,11 @@ allowed-tools:
   - AskUserQuestion
   - TaskCreate
   - TaskUpdate
-  - mcp__plugin_Dev10x_cli__mktmp
-  - Skill(Dev10x:playbook)
+  - mcp__plugin_dev10x_cli__mktmp
+  - Skill(dev10x:playbook)
 ---
 
-# Dev10x:playbook-maintenance — Playbook Drift Detector
+# dev10x:playbook-maintenance — Playbook Drift Detector
 
 ## Overview
 
@@ -33,7 +33,7 @@ drift and helps reconcile it.
 
 It compares each user override against its corresponding default
 play, produces a structured diff, and offers to apply selected
-improvements via `Dev10x:playbook`.
+improvements via `dev10x:playbook`.
 
 ## Orchestration
 
@@ -58,7 +58,12 @@ Scan for all playbook-powered skills and their user overrides.
    - `~/.config/Dev10x/playbooks/*.yaml` (global)
    - `~/.claude/memory/Dev10x/playbooks/*.yaml` (global legacy, backwards compat)
 3. Match override files to default playbooks by filename
-   (e.g., `work-on.yaml` matches `skills/work-on/references/playbook.yaml`)
+   (e.g., `gh-pr-respond.yaml` matches
+   `skills/gh-pr-respond/references/playbook.yaml`). A key with no
+   dedicated default — `work-on` — uses the shared default: the core
+   `skills/playbook/references/playbook.yaml` merged with every
+   `skills/*/references/playbook.d/<plugin>.yaml` fragment (GH-1555).
+   `dev10x playbook diff` resolves that merge for you.
 4. Report skills with overrides vs. skills without
 
 **Output:** A list of `(skill, default_path, override_path)` tuples
@@ -125,7 +130,7 @@ reviewer steps). Flag but do not treat as drift when:
 For each play, collect all drift items into a structured list:
 
 ```
-Skill: Dev10x:work-on
+Skill: dev10x:work-on
 Play: feature
 Findings:
   1. [INFO] New default step: "Draft Job Story" at position 2
@@ -146,7 +151,7 @@ Display all findings grouped by skill and play.
 ```markdown
 ## Playbook Drift Report
 
-### Dev10x:work-on
+### dev10x:work-on
 
 #### feature (5 findings)
 | # | Severity | Category | Step | Detail |
@@ -158,7 +163,7 @@ Display all findings grouped by skill and play.
 #### bugfix (2 findings)
 ...
 
-### Dev10x:release-notes
+### dev10x:release-notes
 
 #### release (1 finding)
 ...
@@ -192,10 +197,10 @@ For each finding (highest severity first):
    - **Skip** — Keep the override as-is (intentional divergence)
    - **Customize** — Merge parts of both
 
-3. If Apply or Customize: delegate to `Dev10x:playbook` to make
+3. If Apply or Customize: delegate to `dev10x:playbook` to make
    the edit:
    ```
-   Skill(skill="Dev10x:playbook", args="edit <skill> <play>")
+   Skill(skill="dev10x:playbook", args="edit <skill> <play>")
    ```
 
 4. After all findings are processed, show a summary of changes
@@ -204,7 +209,7 @@ For each finding (highest severity first):
 ### Apply all non-INFO
 
 Batch-apply all MEDIUM and LOW findings automatically by
-delegating to `Dev10x:playbook edit` for each affected play.
+delegating to `dev10x:playbook edit` for each affected play.
 Show a summary when complete.
 
 ### Export report
@@ -215,7 +220,7 @@ and report the path.
 ## Important Notes
 
 - **Read-only by default** — this skill only reads playbooks and
-  presents findings. All edits are delegated to `Dev10x:playbook`.
+  presents findings. All edits are delegated to `dev10x:playbook`.
 - **Fragment comparison is recursive** — if a fragment references
   another fragment (max depth 3), expand before comparing.
 - **Override dates matter** — if an override's `added` date is
@@ -228,7 +233,7 @@ and report the path.
 
 ### Example 1: After plugin upgrade
 
-**User:** `/Dev10x:playbook-maintenance`
+**User:** `/dev10x:playbook-maintenance`
 
 Phase 1 finds 2 override files: `work-on.yaml`, `release-notes.yaml`
 
@@ -238,7 +243,7 @@ fragment gained a new "Apply fixups" step that the solo override
 
 Phase 3 presents:
 ```
-### Dev10x:work-on
+### dev10x:work-on
 #### feature (1 finding)
 | # | Severity | Category | Step | Detail |
 |---|----------|----------|------|--------|
@@ -250,7 +255,7 @@ add it to their solo fragment.
 
 ### Example 2: No drift detected
 
-**User:** `/Dev10x:playbook-maintenance`
+**User:** `/dev10x:playbook-maintenance`
 
 Phase 1 finds overrides. Phase 2 compares — all overrides are
 current with defaults (only intentional divergences detected).
@@ -260,7 +265,7 @@ detected (INFO level) — no action needed."
 
 ### Example 3: Specific skill check
 
-**User:** `/Dev10x:playbook-maintenance work-on`
+**User:** `/dev10x:playbook-maintenance work-on`
 
 Runs only for the `work-on` skill overrides, skipping other skills.
 Useful for quick checks after modifying a specific playbook.

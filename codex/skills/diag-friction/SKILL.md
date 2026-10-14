@@ -61,7 +61,7 @@ recall mappings from training. The hook's YAML is authoritative
 and ships updates ahead of skill docs; skipping the Read is a
 documented Step 2 violation.
 
-1. `Read(file_path="<plugin-root>/src/dev10x/validators/command-skill-map.yaml")`
+1. `Read(file_path="<plugin-root>/src/dev10x/core/validators/command-skill-map.yaml")`
 
 The YAML in `skills/diag-friction/references/command-skill-map.yaml`
 is a legacy copy — prefer the hook's YAML which is the single

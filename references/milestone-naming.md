@@ -51,6 +51,8 @@ MCP-M6: Installable GitHub bot/Action
 | `GATE` | Friction gate-policy resolver (ADR-0016, GH-751) | active |
 | `SPLIT` | Core-plus-satellite plugin split (ADR-0020, GH-913) | closed (rejected) |
 | `QA` | qa-self evidence integrity & portability (2026-09-08) | active |
+| `ARCH` | Full architecture audit (2026-09-19) — patterns, archetypes, concurrency, best practices | active |
+| `PLG` | Staged plugin split, restructure first (ADR-0034, GH-1522) | active |
 
 When starting a new initiative that spans multiple milestones, register
 its prefix here before creating the first milestone. Pick a prefix that
@@ -62,7 +64,7 @@ Close a milestone as soon as its `open_issues` count reaches 0.
 A milestone with no open issues in `open` state pollutes the active
 list and creates confusion about what is in flight.
 
-Use `mcp__plugin_Dev10x_cli__milestone_close` (not raw `gh api`)
+Use `mcp__plugin_dev10x_cli__milestone_close` (not raw `gh api`)
 to close milestones — the plugin wraps the REST call with proper
 permission handling.
 
@@ -74,5 +76,5 @@ list. Apply the prefix only to new milestones going forward.
 
 ## Reference
 
-- MCP tool: `mcp__plugin_Dev10x_cli__milestone_close`
+- MCP tool: `mcp__plugin_dev10x_cli__milestone_close`
 - MCP tools table: `.claude/rules/mcp-tools.md`

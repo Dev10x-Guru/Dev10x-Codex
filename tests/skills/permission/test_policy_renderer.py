@@ -13,10 +13,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
-
 from dev10x.domain.common.policy import Policy, PolicyEffect, PolicyLifecycle, PolicySource
 from dev10x.domain.common.workspace import Workspace
+from dev10x.skills.permission.catalog_paths import load_catalog_document
 from dev10x.skills.permission.policy_renderer import expand_twin_paths, render_permissions
 
 _HOME = "/home/tester"
@@ -101,7 +100,7 @@ class TestTwinPathExpansion:
         assert expand_twin_paths(rules=rules, home=_HOME) == rules
 
     def test_pathless_rules_pass_through(self) -> None:
-        rules = ["mcp__plugin_Dev10x_cli__mktmp", "Bash(git status:*)"]
+        rules = ["mcp__plugin_dev10x_cli__mktmp", "Bash(git status:*)"]
         assert expand_twin_paths(rules=rules, home=_HOME) == rules
 
     def test_home_trailing_slash_is_normalized(self) -> None:
@@ -128,7 +127,7 @@ class TestParityWithShippedCatalog:
     def _shipped(self, projects_yaml: Path) -> tuple[dict, list[Policy]]:
         from dev10x.skills.permission.policy_catalog_migration import migrate_flat_config
 
-        config = yaml.safe_load(projects_yaml.read_text(encoding="utf-8"))
+        config = load_catalog_document(catalog_path=projects_yaml)
         return config, migrate_flat_config(config=config)
 
     def test_byte_parity_without_twin_expansion(self, projects_yaml: Path) -> None:

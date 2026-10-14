@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import traceback
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
+if TYPE_CHECKING:
+    from dev10x.hooks.permission_diagnostics import DiagnosticResult
+
 _DEBUG = os.environ.get("HOOK_DEBUG", "") != ""
+
+log = logging.getLogger(__name__)
 
 # Tools whose `tool_input.command` is a shell command and so belongs on the
 # validator chain. `Monitor` is here because its command is a Bash command in
@@ -62,7 +69,7 @@ def plan() -> None:
 @plan.command(name="sync")
 def plan_sync() -> None:
     """Sync task state from stdin (PostToolUse hook mode)."""
-    from dev10x.hooks.task_plan_sync import cmd_hook
+    from dev10x.tasks.hooks.task_plan_sync import cmd_hook
 
     cmd_hook()
 
@@ -70,7 +77,7 @@ def plan_sync() -> None:
 @plan.command(name="summary")
 def plan_summary() -> None:
     """Read plan YAML, output JSON summary."""
-    from dev10x.hooks.task_plan_sync import cmd_json_summary
+    from dev10x.tasks.hooks.task_plan_sync import cmd_json_summary
 
     cmd_json_summary()
 
@@ -79,7 +86,7 @@ def plan_summary() -> None:
 @click.argument("pairs", nargs=-1, required=True)
 def plan_set_context(pairs: tuple[str, ...]) -> None:
     """Store plan-level context metadata (K=V pairs, dot-paths supported)."""
-    from dev10x.hooks.task_plan_sync import cmd_set_context
+    from dev10x.tasks.hooks.task_plan_sync import cmd_set_context
 
     cmd_set_context(args=list(pairs))
 
@@ -87,7 +94,7 @@ def plan_set_context(pairs: tuple[str, ...]) -> None:
 @plan.command(name="archive")
 def plan_archive() -> None:
     """Archive completed plan to .claude/session/archive/."""
-    from dev10x.hooks.task_plan_sync import cmd_archive
+    from dev10x.tasks.hooks.task_plan_sync import cmd_archive
 
     cmd_archive()
 
@@ -101,21 +108,53 @@ def permission_denied() -> None:
     validator recognizes the denied command.
 
     Also runs permission diagnostics to explain *why* a pre-approved
-    tool was prompted (settings override semantics, missing rules).
+    tool was prompted (settings override semantics, missing rules), and
+    records which tool was denied so the friction can be counted rather
+    than hand-transcribed (GH-1406).
     Exit codes: 0 always (retry decision is in JSON output).
     """
+    from dev10x.domain.events.hook_event import HookEventName
+    from dev10x.hooks.audit_emit import audit_hook
     from dev10x.hooks.hook_transport import emit, read_hook_input
     from dev10x.validators import get_chain
 
-    inp = read_hook_input()
+    @audit_hook(name="permission-denied", event=HookEventName.PERMISSION_DENIED)
+    def _body() -> None:
+        inp = read_hook_input()
 
-    if inp.command:
-        result = get_chain().correct(inp=inp)
-        if result is not None:
-            emit(result)
+        if inp.command:
+            result = get_chain().correct(inp=inp)
+            if result is not None:
+                emit(result)
 
-    _run_permission_diagnostics(raw=inp.raw, cwd=inp.cwd)
-    sys.exit(0)
+        _run_permission_diagnostics(raw=inp.raw, cwd=inp.cwd)
+        sys.exit(0)
+
+    _body()
+
+
+def _record_denied_tool(*, result: DiagnosticResult) -> None:
+    """Attribute the denial to the tool that was denied (GH-1406).
+
+    Until this existed the PermissionDenied record carried only
+    wrap-phase timing — `hook`, `total_ms`, `exit_code` — so the log
+    could say a prompt happened but never which tool caused it. That is
+    why every friction tracker in this repo was assembled by a human
+    reading their own terminal. `extra` is GH-1390's slot for fields a
+    rule needs under a name of its own; `reason` alone would collapse
+    the signature and the diagnosis into one unparseable string.
+    """
+    from dev10x.hooks.audit_emit import set_decision_attribution
+    from dev10x.skills.permission.catalog_gap import rule_family
+
+    set_decision_attribution(
+        rule_id="permission-denied",
+        reason=result.diagnosis,
+        extra={
+            "tool_signature": result.tool_signature,
+            "rule_family": rule_family(result.tool_signature),
+        },
+    )
 
 
 def _run_permission_diagnostics(*, raw: dict, cwd: str) -> None:
@@ -125,6 +164,7 @@ def _run_permission_diagnostics(*, raw: dict, cwd: str) -> None:
         result = diagnose(raw=raw, cwd=cwd)
         if result is None:
             return
+        _record_denied_tool(result=result)
         message = format_diagnostic(result=result)
         if message:
             print(
@@ -132,9 +172,42 @@ def _run_permission_diagnostics(*, raw: dict, cwd: str) -> None:
                 file=sys.stderr,
             )
     except Exception:
+        _record_diagnostics_failure()
         if _DEBUG:
             print("[HOOK_DEBUG] permission_diagnostics raised:", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
+
+
+def _record_diagnostics_failure() -> None:
+    """Leave a trace when the diagnostic itself breaks (GH-1418).
+
+    The traceback used to be gated behind ``HOOK_DEBUG``, so outside
+    debug mode a raised exception was entirely silent — a bad import or
+    a schema change in ``raw`` degraded the PermissionDenied diagnostic
+    to a no-op with nothing in the audit JSONL the project otherwise
+    relies on for hook observability.
+
+    ``exc_info=True`` mirrors ``mcp.resource_watcher``. The level does
+    not: that module logs at ``debug``, which is below the default
+    threshold and so would reproduce the silence this fixes. The
+    attribution is what makes it reachable from ``audit_hook_recent`` —
+    a log line alone goes wherever the handler points, which in a hook
+    subprocess may be nowhere.
+
+    Recording must not itself raise. We are already in an exception
+    handler for a best-effort diagnostic, and a failure here would
+    propagate into the hook's own exit path.
+    """
+    log.warning("permission_diagnostics raised — diagnostic degraded", exc_info=True)
+    try:
+        from dev10x.hooks.audit_emit import set_decision_attribution
+
+        set_decision_attribution(
+            rule_id="permission-diagnostics-failed",
+            reason="permission_diagnostics raised; see exc_info in the hook log",
+        )
+    except Exception:  # noqa: S110 - see docstring: recording must not raise
+        pass
 
 
 @hook.command(name="validate-edit")
@@ -286,7 +359,7 @@ def audit_group() -> None:
 def audit_summary(since: str | None, hook_filter: str | None) -> None:
     """Summarize hook execution timing by hook name."""
 
-    from dev10x.audit import iter_records, summarize
+    from dev10x.teach.audit import iter_records, summarize
 
     since_dt = None
     if since:
@@ -320,7 +393,7 @@ def audit_summary(since: str | None, hook_filter: str | None) -> None:
 @click.option("--days", type=int, default=None, help="Override retention days.")
 def audit_prune(days: int | None) -> None:
     """Delete log files older than the retention window."""
-    from dev10x.audit import prune
+    from dev10x.teach.audit import prune
 
     deleted = prune(retain_days=days)
     click.echo(f"Deleted {deleted} log file(s).")

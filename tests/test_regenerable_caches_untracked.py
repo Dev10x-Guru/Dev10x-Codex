@@ -4,7 +4,7 @@
 sibling YAML and rewrites it whenever the cache is missing or stale. While
 ``command-skill-map.msgpack`` was tracked, every test run, hook invocation, or
 MCP call that loaded the config dirtied the working tree — so the cache was
-swept into unrelated commits (``Dev10x:git-commit`` mandates ``git add -A``)
+swept into unrelated commits (``dev10x:git-commit`` mandates ``git add -A``)
 and produced a binary rebase conflict that has no meaningful resolution,
 because the YAML is authoritative and the cache self-heals.
 
@@ -24,7 +24,7 @@ _REPO_ROOT = Path(__file__).parents[1]
 
 #: Directories whose YAML files ``load_config`` reads, and therefore whose
 #: sibling ``.msgpack`` caches it writes.
-_CACHED_CONFIG_DIRS: tuple[str, ...] = ("src/dev10x/validators",)
+_CACHED_CONFIG_DIRS: tuple[str, ...] = ("src/dev10x/core/validators",)
 
 #: The suffix ``load_config`` swaps onto the YAML path to locate the cache.
 _CACHE_SUFFIX = ".msgpack"
@@ -61,7 +61,9 @@ def _is_ignored(path: Path) -> bool:
 class TestDerivedCachesAreNotTracked:
     def test_scan_covers_the_cache_that_regressed(self) -> None:
         """Fail loud if the glob stops reaching the GH-1075 defect site."""
-        regressed = _REPO_ROOT / "src" / "dev10x" / "validators" / "command-skill-map.msgpack"
+        regressed = (
+            _REPO_ROOT / "src" / "dev10x" / "core" / "validators" / "command-skill-map.msgpack"
+        )
         assert regressed in _derived_cache_paths()
 
     @pytest.mark.parametrize("cache_path", _derived_cache_paths(), ids=lambda p: p.name)

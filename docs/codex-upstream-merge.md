@@ -39,25 +39,60 @@ Fork-only files: `.codex-plugin/`, `.agents/plugins/`, `.gitattributes`,
 `hooks/codex-hooks.json`, `hooks/scripts/session-guidance-codex.md`,
 `src/dev10x/harness.py`, `src/dev10x/hooks/apply_patch_payload.py`,
 `src/dev10x/hooks/session_codex.py`, `src/dev10x/mcp/tool_annotations.py`,
-`src/dev10x/skills/codex/`, `src/dev10x/skills/permission/codex_rules.py`,
-`src/dev10x/validators/codex_messages.py`, and their tests.
+`src/dev10x/skills/codex/`, `src/dev10x/core/skills/permission/codex_rules.py`,
+`src/dev10x/core/validators/codex_messages.py`, and their tests.
 
-Upstream files the fork patched (as of `v0.105.0+codex.1`; refresh with
+### Upstream module moves (ADR-0034)
+
+Upstream moves modules into plugin namespaces (`dev10x.core`,
+`dev10x.coding`, `dev10x.tasks`, …) and keeps the old dotted path as an
+alias.
+A fork-only module at an old path keeps working only when that old
+package uses `alias_submodules` (it falls through to the old folder for a
+name the new package lacks, as `dev10x.hooks` does).
+A package switched to `alias_package` hides the old folder: move the
+fork module next to its upstream siblings with `git mv` (as
+`codex_rules.py` and `codex_messages.py` moved in `v0.108.0+codex.1`) —
+old imports keep resolving through the alias.
+A `ModuleNotFoundError` from a `dev10x skill codex-*` or
+`dev10x permission codex-rules` run is the symptom.
+Upstream's planned Stage B removes the aliases; every fork module at an
+old path moves then.
+
+### Upstream renames the plugin prefix
+
+Upstream writes skills and MCP tools as `dev10x:<skill>` and
+`mcp__plugin_dev10x_<server>__` since v0.106 (GH-1499); the Codex plugin
+keeps the name `Dev10x`.
+`to_codex_casing()` in `src/dev10x/skills/codex/catalog.py` maps both
+spellings onto the Codex names before the generators and block messages
+match them.
+After regenerating, `rg 'Skill\(.?dev10x:|mcp__plugin_dev10x_' codex/`
+must list only literal Claude permission patterns such as
+`Skill(dev10x:*)`.
+
+Upstream files the fork patched (as of `v0.108.0+codex.1`; refresh with
 `git diff --name-only --diff-filter=M v<previous> HEAD`):
 
-- `hooks/scripts/session-start.py`, `src/dev10x/hooks/session_place.py`,
-  `src/dev10x/hooks/hook_transport.py`, `src/dev10x/hooks/edit_validator.py`
-  — Codex payloads and the Codex SessionStart briefing
-- `src/dev10x/mcp/server_cli.py`, `src/dev10x/mcp/server_db.py` — MCP tool
-  annotations
-- `src/dev10x/validators/skill_redirect.py` — Codex block messages
+- `hooks/scripts/session-start.py`, `src/dev10x/core/hooks/session_place.py`,
+  `src/dev10x/core/hooks/hook_transport.py`,
+  `src/dev10x/core/hooks/edit_validator.py` — Codex payloads and the Codex
+  SessionStart briefing
+- `src/dev10x/mcp/server_cli.py`, `src/dev10x/db/mcp/server_db.py` — MCP
+  tool annotations, applied once every namespace has registered
+- `src/dev10x/core/validators/skill_redirect.py` — Codex block messages
 - `src/dev10x/commands/skill.py`, `src/dev10x/commands/permission.py` — the
   `codex-skills`, `codex-agents` and `codex-rules` commands
-- `src/dev10x/skills/permission/baseline-permissions.yaml`,
+- `src/dev10x/core/skills/permission/baseline-permissions.yaml`,
   `skills/upgrade-cleanup/projects.yaml` — catalog entries for those commands
+- `src/dev10x/core/namespaces.yaml` — the `dev10x.harness: core` entry
+- `tests/fixtures/skill_reference_inventory.json` — upstream's counts plus
+  the `$Dev10x:<skill>` references in `docs/codex*.md`; take upstream's file,
+  run `tests/core/test_skill_references.py`, and paste the counts its failure
+  prints
 - `tests/hooks/test_hook_transport.py`
 
-## 3. Regenerate the Codex artefacts
+## 3. Regenerate the Codex artifacts
 
 ```bash
 uv run dev10x skill codex-skills
@@ -82,7 +117,7 @@ Read the warnings each command prints:
 ## 4. Extend the approval baseline
 
 `codex-rules` translates upstream's command catalog
-(`src/dev10x/skills/permission/baseline-permissions.yaml`).
+(`src/dev10x/core/skills/permission/baseline-permissions.yaml`).
 Check its "skipped" list for a new read-only command that Codex users will
 run often.
 A rule that cannot be expressed as a Codex prefix rule stays skipped —
@@ -99,7 +134,7 @@ Upstream's CI runs on `develop` only, so this fork's PRs to `main` get no
 test CI (#33): the local run is the evidence.
 The suite fails when a generated tree is stale, when a new MCP tool has no
 Codex annotation (`tests/mcp/test_tool_annotations.py`), or when a
-catalogued skill or role is missing.
+cataloged skill or role is missing.
 
 ### Which tests apply to Codex
 
@@ -108,7 +143,7 @@ Tests for Claude-only hooks (Stop, PreCompact, the task-plan mirror,
 permission prompts) and for `.claude/settings*.json` seeding still cover
 code this fork ships unchanged, and deleting upstream test files would
 turn every later upstream edit to them into a merge conflict.
-Codex behaviour is covered by the fork's own tests: `tests/skills/codex/`,
+Codex behavior is covered by the fork's own tests: `tests/skills/codex/`,
 `tests/skills/permission/test_codex_rules.py`,
 `tests/hooks/test_session_start_codex.py`,
 `tests/hooks/test_edit_validator_apply_patch.py`,

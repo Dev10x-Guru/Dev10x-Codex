@@ -18,11 +18,13 @@ What dies is the **first** hop, harness-client ↔ our-stdio-server. Our
 
 Dev10x implements no timeout, keepalive, or ping on that connection —
 `servers/cli_server.py` and `src/dev10x/mcp/` contain no transport
-liveness handling at all. The two things that look like it are not:
-`session_store.py`'s TTL is session-*storage* expiry, and
+liveness handling at all. The one thing that looks like it is not:
 `daemon.py`'s `PING`/`PONG` is a UNIX-socket probe for whether the
-daemon **process** is up. The ~1800s ceiling quoted throughout these
-docs is a number we *stay under*, never one we enforce.
+daemon **process** is up, not the harness-client transport. (GH-1427:
+`session_store.py`, the other module a reader might reach for here,
+was deleted as unwired dead code — it never carried liveness
+semantics either.) The ~1800s ceiling quoted throughout these docs is
+a number we *stay under*, never one we enforce.
 
 **Therefore "reconnect-on-demand in the wrapper layer" — the fix as
 originally specified in GH-1072 and GH-1099 ask 1 — is not
@@ -56,7 +58,7 @@ foreman subagent and every crew worker never had them at all, for a
 whole 27-hour run, while the watchdog session kept all of them
 throughout. Worker heartbeat, verbatim: "Dev10x CLI MCP server failed
 to connect this session — using documented fallbacks (gh api,
-scratchpad env file, uv run pytest, Dev10x:git skill for push)".
+scratchpad env file, uv run pytest, dev10x:git skill for push)".
 Foreman heartbeat: "MCP is still disconnected on my end, retrying
 periodically", all night.
 
@@ -108,8 +110,8 @@ failure the surface split exists to prevent.
 ### Watchdog surface loss — worse, and unrecoverable in-session (GH-1099)
 
 ~18h into the 2026-08-29/30 night run, the **top-level** session lost
-all 86 `mcp__plugin_Dev10x_cli__*` tools — pre-loaded at session
-start, not deferred — with `plugin:Dev10x:cli` listed among
+all 86 `mcp__plugin_dev10x_cli__*` tools — pre-loaded at session
+start, not deferred — with `plugin:dev10x:cli` listed among
 failed-to-connect servers. The drop followed two 5h platform quota
 pauses and long idle stretches, consistent with idle-timeout on a
 connection held across session pauses.

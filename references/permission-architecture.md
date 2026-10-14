@@ -21,6 +21,17 @@ Agent requests tool call
          └─ Hook can ALLOW (or not respond)
 ```
 
+**Which steps are instrumented (GH-1406).** Step 1 fires the
+`PermissionDenied` event, whose record carries `tool_signature` and
+`rule_family`; step 5's blocks carry `rule_id` / `reason` (GH-1095).
+Both are queryable via `dev10x permission report`. Steps 2 and 4 —
+the two paths that *prompt* rather than block — emit no event at all,
+so the friction a user actually sees as a prompt is not recorded
+anywhere. `dev10x permission report --predicted` (GH-1408) is the
+substitute: per checkout it lists catalog allow rules the file neither
+allows nor denies (step 4) and the file's own ask rules (step 2), i.e.
+what *would* prompt here, without needing an event.
+
 Rules are evaluated `deny → ask → allow` and the **first match
 wins** — so a broad `ask` rule cannot be narrowed by a more
 specific `allow`. Source: [Claude Code permissions
@@ -56,11 +67,11 @@ redirects to skill equivalents with educational messages:
 
 | Allow rule | Hook blocks | Redirects to | Guardrails |
 |-----------|-------------|-------------|------------|
-| `Bash(gh pr create:*)` | `gh pr create` | `Dev10x:gh-pr-create` | Job Story, ticket linking |
-| `Bash(git push:*)` | `git push` | `Dev10x:git` | Protected branches, force-push safety |
-| `Bash(git rebase -i:*)` | `git rebase -i` | `Dev10x:git-groom` | Atomic commits, conventions |
-| `Bash(git commit -m:*)` | `git commit -m` | `Dev10x:git-commit` | Gitmoji, JTBD title, 72-char |
-| `Bash(gh pr checks:*)` | `gh pr checks --watch` | `Dev10x:gh-pr-monitor` | Failure detection, fixups |
+| `Bash(gh pr create:*)` | `gh pr create` | `dev10x:gh-pr-create` | Job Story, ticket linking |
+| `Bash(git push:*)` | `git push` | `dev10x:git` | Protected branches, force-push safety |
+| `Bash(git rebase -i:*)` | `git rebase -i` | `dev10x:git-groom` | Atomic commits, conventions |
+| `Bash(git commit -m:*)` | `git commit -m` | `dev10x:git-commit` | Gitmoji, JTBD title, 72-char |
+| `Bash(gh pr checks:*)` | `gh pr checks --watch` | `dev10x:gh-pr-monitor` | Failure detection, fixups |
 
 These allow rules are classified as `HOOK_ENABLED` in permission
 audits. Removing them degrades UX — the user sees a generic
@@ -109,36 +120,46 @@ Source: [Claude Code permissions docs](https://code.claude.com/docs/en/permissio
 — "Rules are evaluated `deny → ask → allow`; the first matching rule
 wins" and "`Bash(git *)` matches `git log --oneline --all`".
 
-### Mid-path wildcards are unverified (GH-1135)
+### A `*` before `:*` is literal (GH-1135, settled by GH-1472)
 
-Whether a `*` in the **middle** of a `Bash(...)` rule matches at all
-is an open empirical question — ADR-0021 records it as "not
-addressed" and GH-925 F2 restates it. It is not academic: the only
-allow-list shape that can cover the read-only git plumbing spelling
-an agent emits from a worktree is a mid-path one:
+Whether a `*` in the **middle** of a `Bash(...)` rule matches was an
+open question (ADR-0021 "not addressed", GH-925 F2). Claude Code now
+answers it at startup, for every such rule:
 
 ```
-Bash(git --git-dir=* --work-tree=* status:*)
+Bash(git --git-dir=* --work-tree=* status:*) mixes * with the trailing
+:* prefix syntax, so it is matched as a literal prefix (the * is not
+expanded) and will likely never match.
 ```
 
-Those rules ship in `base_permissions`, restricted to read-only verbs
-and in both argument orderings agents emit. The
-`permission-investigator` matrix now carries a `mid_path_star`
-wildcard cell in `DEFAULT_WILDCARDS` so the shape is measured rather
-than assumed.
+In the colon form the text before `:*` is a literal prefix, so the
+shape is un-allow-listable. GH-1472 dropped every such rule from
+`base_permissions` (the cross-worktree git spellings, the GH-370
+escape folders, the `/home/*/` twins, `uv run --directory *`), makes
+`ensure-base` refuse to seed one from a stale catalog copy, and makes
+`permission clean` remove existing copies.
 
-**Record the result here when the cell runs.** If it reports
-`PROMPTED`, the shape is un-allow-listable: drop these rules and flip
-`git-dir-worktree-pinning` in `command-skill-map.yaml` to
-`hook_block: true`, so the agent gets a deterministic steer to
-`git -C <repo> <verb>` and the supervisor never sees the prompt — or
-its `git *` option 2. Either outcome satisfies the standing rule that
-a structurally unmatchable shape gets a deterministic answer, never a
-prompt carrying a dangerous default.
+Do **not** convert them to the space form. In `Bash(X *)` the `*`
+matches any text: `git --git-dir=* --work-tree=* status *` also
+matches `git --git-dir=a -c core.fsmonitor='<cmd>' --work-tree=b
+status`, and `~/.claude/tools/* *` matches `~/.claude/tools/../..`.
+
+Since the plumbing spelling can never be allowed, the hook denies it
+instead (GH-1496): `git-dir-worktree-pinning` in
+`src/dev10x/core/validators/command-skill-map.yaml` is `hook_block: true`, and
+`--git-dir` / `--work-tree` are `_QUICK_TOKENS` so the rule reaches the
+engine at all.
+The deny names the sanctioned read path: `cd <path>`, then `pwd`, as two
+calls.
+If they agree, run plain `git <verb>`.
+If they differ, use `git -C <path> <verb>`.
+`git -C <other-checkout>` is deliberately left unblocked.
+It still prompts, but when `pwd` differs from the target it is the only
+route left, and a block there would be a dead end rather than a steer.
 
 | Cell | Result | Recorded |
 |------|--------|----------|
-| `Bash.*.mid_path_star.*` | not yet run | — |
+| `Bash.*.mid_path_star.*` | PROMPTED (harness warning, literal prefix) | GH-1472 |
 
 ### Interpreter footguns are hook-enforced (GH-469)
 
@@ -148,7 +169,7 @@ execution and a total rule bypass. Protection for these does **not**
 rely on a permission deny-rule (which is unreliable: it does not
 suppress the option-2 UI footgun and does not reliably merge
 global→project). Instead, the `DX003` execution-safety validator
-(`src/dev10x/validators/execution_safety.py`, `MINIMAL` profile) runs
+(`src/dev10x/core/validators/execution_safety.py`, `MINIMAL` profile) runs
 on **every** Bash call and blocks inline code (`bash -c`, `python3 -c`)
 and untrusted absolute script paths, steering to the Write-tool /
 uv-script pattern or an approved dir (`~/.claude/{tools,skills,hooks}/`,
@@ -346,7 +367,7 @@ The **hook version drift detector** (SessionStart feature
    highest-installed version.
 3. On mismatch, emits:
    *"Dev10x hooks running v0.72.0 but v0.76.0 is installed on disk.
-   Restart this session (or run `/Dev10x:upgrade-cleanup`) to activate
+   Restart this session (or run `/dev10x:upgrade-cleanup`) to activate
    shipped friction fixes, validators, and catalog improvements."*
 4. Returns an empty string when running == latest or when either
    version is unresolvable (``--plugin-dir`` dev installs bypass the

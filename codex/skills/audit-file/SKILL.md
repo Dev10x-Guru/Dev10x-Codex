@@ -169,8 +169,8 @@ Dev10x plugin finding.
 
 Use the primary skill name (most findings) as the title anchor:
 
-- Single skill: `skill-audit findings: Dev10x:{skill}`
-- Multiple skills: `skill-audit findings: Dev10x:{skill} (+N)`
+- Single skill: `skill-audit findings: dev10x:{skill}`
+- Multiple skills: `skill-audit findings: dev10x:{skill} (+N)`
 
 ### Step 6: Write body to temp file
 
@@ -193,7 +193,7 @@ Apply the resolution algorithm in
 
 1. Start with `enhancement`
 2. Add one `skill:<name>` per unique skill referenced in the
-   findings table (strip the `Dev10x:` prefix; fictionalized names
+   findings table (strip the `dev10x:` prefix; fictionalized names
    only — see Step 3)
 3. Scan finding descriptions + proposed fixes against the topical
    heuristic table in `references/labels.md` § 3; add each matching

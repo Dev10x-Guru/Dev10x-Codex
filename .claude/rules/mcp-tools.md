@@ -41,12 +41,12 @@ registration:
 
 | Server | Function | MCP Name |
 |--------|----------|----------|
-| `cli` | `detect_tracker()` | `mcp__plugin_Dev10x_cli__detect_tracker` |
-| `cli` | `pr_comments()` | `mcp__plugin_Dev10x_cli__pr_comments` |
-| `cli` | `pr_comment_reply()` | `mcp__plugin_Dev10x_cli__pr_comment_reply` |
-| `cli` | `get_commit_log()` | `mcp__plugin_Dev10x_cli__get_commit_log` |
-| `cli` | `mktmp()` | `mcp__plugin_Dev10x_cli__mktmp` |
-| `db` | `list_tables()` | `mcp__plugin_Dev10x_db__list_tables` |
+| `cli` | `detect_tracker()` | `mcp__plugin_dev10x_cli__detect_tracker` |
+| `cli` | `pr_comments()` | `mcp__plugin_dev10x_cli__pr_comments` |
+| `cli` | `pr_comment_reply()` | `mcp__plugin_dev10x_cli__pr_comment_reply` |
+| `cli` | `get_commit_log()` | `mcp__plugin_dev10x_cli__get_commit_log` |
+| `cli` | `mktmp()` | `mcp__plugin_dev10x_cli__mktmp` |
+| `db` | `list_tables()` | `mcp__plugin_dev10x_db__list_tables` |
 
 ## Tool Declaration Pattern
 
@@ -127,6 +127,24 @@ behind it) touches shared state, it MUST follow the write-safety model:
   `subprocess_utils`, which bounds it; standalone uv-scripts via a
   local `_SUBPROCESS_TIMEOUT_SECONDS` constant since they cannot import
   `dev10x`).
+- **Fan-out is bounded for you (GH-1422).** `async_run` holds a permit
+  from a per-event-loop `asyncio.Semaphore` for the child's whole life,
+  capped by `DEV10X_MCP_MAX_SUBPROCESSES` (default 12). Several
+  worktrees running crews could otherwise launch dozens of concurrent
+  `gh` children, and GitHub's secondary rate limits key off burst
+  volume — a lockout hits the whole install, not the worktree that
+  caused it. A new tool that goes through the Gateway inherits this;
+  one that spawns its own subprocess does not, which is another reason
+  not to.
+- **Transient external failures retry once or twice (GH-1423).**
+  `dev10x.domain.retry` holds the policy — `is_retryable`,
+  `is_retryable_status`, `RetryPolicy.delay_for` — and `_gh_api_raw`
+  and `call_slack_api` adopt it. It is pure policy, not a driver,
+  because the two paths are async-over-subprocess and sync-urllib
+  respectively. Retry 408/429/5xx and network faults only, honour
+  `Retry-After` clamped to `max_delay`, and jitter the backoff. Never
+  retry a bounded timeout of our own: GH-1288's principle is that the
+  transport ceiling sets the limit, and re-running multiplies it.
 
 ### A write is a request, not a receipt (GH-1099)
 
@@ -145,6 +163,21 @@ The branch-on-`"error"` rule above still holds; it just does not cover
 the case where nothing comes back at all. Dev10x owns no keepalive on
 that hop and cannot add one, so reconnect-on-demand is not
 implementable in this repo (GH-1072).
+
+**Three wrappers now verify themselves (GH-1424).** `create_pr`,
+`update_pr` and `pr_ready` re-read the PR and report the observed
+value, so a caller of those three does not have to. The rule above was
+prose for six releases and only `create_pr` ever implemented it; the
+sharpest miss was `pr_ready` returning `{"draft": undo}` — its own
+argument handed back, a field that could not disagree with the request
+and so confirmed nothing. Each carries a verification flag
+(`fixes_trailer_verified` / `write_verified` / `draft_verified`), a
+disagreement is an `ErrorResult` naming the PR, and an *unreadable*
+read-back warns rather than fails — being unable to check is not
+evidence the write failed. `tests/github/test_write_verification.py`
+is an AST guard, so a wrapper cannot quietly go back to building its
+payload from its own arguments. **Every other write wrapper still
+needs the caller to re-read.**
 
 The `reviewer-generic` checklist enforces both on `**/*.py` changes.
 
@@ -167,7 +200,7 @@ one session). Use these shapes verbatim:
 | `pr_close` | `pr_number` | `number` (that's `issue_close`'s param name) |
 | `resolve_plugin_origin` | `skill_paths` (list of absolute paths) | singular `skill_path` |
 | `pin_gate_preset` | `preset`; optional `scope` (`repo` default / `repo-only` / `dir`) | passing a `match` or a path — the tool derives the repo stem itself; passing `gate_overrides={"supervisor_review": ...}` — it is not a per-gate toggle (absent from `_ENUM_TOGGLES`), use `pin_supervisor_review` instead (GH-1165) |
-| `supervisor_review_status` | none (optional `cwd`) | reading `friction.yaml` directly instead — the tool owns the precedence; the deprecated `human_review_status` name still answers for one release (ADR-0022 D-2) |
+| `supervisor_review_status` | none (optional `cwd`) | reading `friction.yaml` directly instead — the tool owns the precedence; the deprecated `human_review_status` name still answers until its removal version in `dev10x.domain.deprecations` (ADR-0022 D-2, ADR-0028) |
 | `pin_supervisor_review` | `supervisor_review` (`required`/`none`); optional `scope` (`repo` default / `repo-only` / `dir`) | reaching for `pin_gate_preset`'s `gate_overrides` — `supervisor_review` is a project-wide fact, not a gate toggle (GH-1165) |
 | `tracker_status` | none (optional `cwd`) | treating `pinned: false` as "no tracker" — it still reports a resolved `tracker` (the default) |
 | `pin_tracker` | `tracker` (`linear`/`jira`/`github`); optional `scope` | passing `gitlab`/`clickup` — not in v1 scope, and an unknown value errors rather than defaulting |
@@ -194,18 +227,48 @@ Behavioral caveats:
   `.claude/` it trips the self-settings consent gate that no allow rule
   suppresses, and anywhere it bypasses the file lock, so two parallel
   worktrees parking at once lose an entry. `task_index_get` reads the
-  retired path as a fallback for one release (`legacy_read: true`), and
+  retired path as a fallback until its removal version in the ADR-0028
+  register, `dev10x.domain.deprecations` (`legacy_read: true`), and
   the next append folds it forward (`folded_legacy`).
 
 - `pr_labels` carries the durable `review:cleared` signal (GH-1008).
-  `Dev10x:gh-pr-request-review` reads it before the stand-by clearance
+  `dev10x:gh-pr-request-review` reads it before the stand-by clearance
   gate and skips asking when present; the two "I reviewed it" answers
   write it. Because a sign-off covers the commits that were read,
-  `Dev10x:git-groom` removes it after a force-push — a clearance must
+  `dev10x:git-groom` removes it after a force-push — a clearance must
   not survive the rewrite that invalidated it. Both writes are
   idempotent (`add` skips present labels, `remove` intersects against
   the current set first, so clearing an unset label is a no-op rather
   than a 404), so call them unconditionally instead of probing.
+
+  `remove` issues **one `PUT` of the surviving set** rather than a
+  `DELETE` per label (GH-1446) — the old loop paid a subprocess plus an
+  HTTP round trip each time, on a path `dev10x:git-groom` runs after
+  every force-push. Idempotence is unchanged. One property is: a `PUT`
+  is a read-modify-write, so a label added by another process between
+  the read and the write is dropped, where a per-label `DELETE` was
+  immune. The window is one round trip and the no-op guard keeps a
+  remove-nothing call from issuing a `PUT` at all — do not remove that
+  guard. `issue_labels` still uses the `DELETE` loop; it is not on a
+  hot path.
+
+- `notify_slack`, `notify_gchat`, and `pr_notify(action="send")` append
+  a failed notification to
+  `~/.config/Dev10x/undelivered-notifications.jsonl` (GH-1421,
+  GH-1479). The error used to exist only in the call's return value,
+  which is fine when an agent surfaces it to a user and useless under
+  `foreman`'s unattended crews — the one mode where a lost "crew
+  stalled" costs most and nobody is watching. **It is a dead-letter
+  log, not a retry queue**: nothing re-sends, nothing reads the file, a
+  person greps it. `record_undelivered` never raises, because losing
+  the caller on top of the notification turns a missed message into a
+  broken crew. `pr_notify(action="prepare")` dispatches nothing and so
+  records nothing. `notify_gchat` mirrors `notify_slack`'s retry loop
+  (`domain/retry.py`) and dead-letter call through the same shared
+  `domain/` policy modules — ADR-0029 deliberately keeps the two
+  provider transports as separate modules with no shared base class,
+  so `tests/skills/notifications/test_transport_parity.py` guards
+  against the next protocol-level fix landing on only one provider.
 
 - `issue_labels` is `pr_labels`'s issue-side counterpart (GH-1322),
   with the same idempotence contract. `issue_edit`'s `labels`
@@ -221,7 +284,12 @@ Behavioral caveats:
   (GH-931). Raw `gh pr ready --undo` is hook-blocked like every other
   form, so this parameter is the only sanctioned way to un-publish —
   which is the *safe* direction when a problem surfaces after marking
-  ready. The success payload carries `draft` reflecting the new state.
+  ready. The success payload's `draft` is **read back from GitHub**
+  since GH-1424, with `draft_verified: true` alongside it; it used to
+  be the `undo` argument echoed back, which could never disagree with
+  the request. A PR still in the wrong state returns an `ErrorResult`
+  naming it, rather than a plausible receipt the caller acts on and
+  then fails to merge.
 
 - `pr_ready` must be re-run after ANY force-push (GH-958). A
   `--force-with-lease` push resets a published PR back to draft, so a
@@ -264,7 +332,7 @@ Behavioral caveats:
   session recorded 0 of 7 across two merges, and a third closed two of
   three; both the full-URL and bare-`#N` spellings failed in the 0-of-7
   run, so the form is not the variable. Never treat a merged bundle as
-  self-closing: `Dev10x:gh-pr-monitor` Phase 3.6 reconciles each link
+  self-closing: `dev10x:gh-pr-monitor` Phase 3.6 reconciles each link
   against the issue's real state after the merge
   (`fixes_scope.reconcile_link_closure`), and a straggler is reported
   for the supervisor to confirm — not closed silently.
@@ -311,7 +379,7 @@ Behavioral caveats:
   milestone by title or number (GH-1098). Nothing on the MCP surface
   could write that field before, so a PR opened through the
   sanctioned path always had `milestone: null` and
-  `Dev10x:gh-pr-monitor` Phase 3.5 (post-merge milestone cleanup)
+  `dev10x:gh-pr-monitor` Phase 3.5 (post-merge milestone cleanup)
   silently took its skip branch on every milestone-bundle PR. The
   write goes through the `issues/{n}` endpoint — the `pulls/{n}`
   endpoint has no milestone field — so `gh pr edit --milestone` stays
@@ -328,7 +396,7 @@ Behavioral caveats:
 
 - `issue_create` / `issues_bulk_create` accept `milestone` and
   `labels`, and filing is expected to POPULATE them (GH-1102). Reach
-  them through `Dev10x:ticket-create`, whose Step 4 reads the live
+  them through `dev10x:ticket-create`, whose Step 4 reads the live
   roster via `triage_roster` and proposes a milestone plus label set;
   calling `issue_create` bare is what left 11 of 16 open issues
   unmilestoned and 10 of 13 unlabeled in the 2026-08-30 sweep. When no
@@ -418,7 +486,7 @@ Behavioral caveats:
   on the command inside it. Which steer a *PR-shaped* loop receives is a
   separate, still-open question: `gh pr view` is matched by an earlier
   rule, so such a loop gets the one-shot `pr_get` steer rather than
-  `Dev10x:gh-pr-monitor` (tracked on #1100 E21).
+  `dev10x:gh-pr-monitor` (tracked on #1100 E21).
 - `ci_check_status(wait=true)` budgets its own wait against the
   transport ceiling, and `max_polls` is a request rather than a grant
   (GH-1288). The cap used to be summed inline as `initial_wait +
@@ -434,6 +502,27 @@ Behavioral caveats:
   exit. This is the same clamp `run_tests` and `run_node_tests` take,
   reaching the one long-running tool that had been left restating the
   budget in prose.
+
+- `ci_check_status(wait=true)` survives a transient `gh` failure
+  mid-poll (GH-1420). `read_checks` exits on any unrecognised non-zero
+  `gh pr checks` exit and the loop called it every iteration, so one
+  rate limit at poll 30 of 40 discarded `initial_wait` plus thirty
+  intervals and reported a transient condition as an infrastructure
+  failure. A failed probe is now treated as "no news": the last good
+  result is kept and the wait continues, giving up only after **three
+  consecutive** failures — tolerating a blip is the goal, outlasting an
+  outage is not, and the poll budget still bounds the whole loop. The
+  up-front fast-path probe is tolerated on the same terms. A run where
+  *every* probe failed reports that explicitly rather than reporting
+  `empty`, which would read as "CI registered no checks at all".
+  A probe whose `gh` call hits its 30s subprocess timeout is tolerated
+  the same way (GH-1518). This is the one bounded exception to "never
+  retry a bounded timeout of our own": the next poll was already
+  scheduled, so nothing is re-run that the loop would not have run
+  anyway. Because a timed-out probe costs seconds the poll count never
+  budgeted, the loop also holds a wall-clock deadline (the poll budget
+  plus 60s grace, still under the 1080s cap), so alternating timeouts
+  end the wait on time instead of outliving the transport.
 
 - `ci_check_status(wait=true)` probes once before sleeping and returns
   straight away when the verdict is already terminal (GH-1088). A call
@@ -529,7 +618,8 @@ Behavioral caveats:
   idempotent: an entry already covering the checkout is replaced, never
   duplicated. Gate the onboarding ask on `supervisor_review_status` →
   `pinned: false` — the deprecated `human_review` boolean alias (ADR-0019)
-  still counts as pinned for one release, so a repo migrated before this
+  still counts as pinned until its removal version in the ADR-0028
+  register (`dev10x.domain.deprecations`), so a repo migrated before this
   tool existed is not reported as unset. Nothing is written under a
   repo's `.claude/` (ADR-0018).
 - `resolve_gate` returns `{gate, effect (ask|auto-advance|skip),
@@ -676,7 +766,7 @@ forever — while looking fully wired up everywhere a reader would think
 to check.
 
 `triage_roster` was the worked example: registered, declared in
-`Dev10x:ticket-create`'s front matter, and present in the table above
+`dev10x:ticket-create`'s front matter, and present in the table above
 — and still prompting. The guard that found six more of them
 (`audit_hook_log_path`, `audit_hook_recent`, `background_preamble`,
 `resolve_plugin_origin`, `slack_thread_is_forward`, all read-only and
@@ -725,12 +815,12 @@ In SKILL.md, declare MCP tool access via `allowed-tools:`:
 
 ```yaml
 allowed-tools:
-  - mcp__plugin_Dev10x_cli__detect_tracker
-  - mcp__plugin_Dev10x_cli__pr_comments
+  - mcp__plugin_dev10x_cli__detect_tracker
+  - mcp__plugin_dev10x_cli__pr_comments
   - Bash(/path/to/script:*)
 ```
 
-Use wildcard sparingly: `mcp__plugin_Dev10x_cli__*` grants access to all cli
+Use wildcard sparingly: `mcp__plugin_dev10x_cli__*` grants access to all cli
 server tools. Prefer explicit tool names for security and clarity.
 
 ## Server Registration
@@ -760,7 +850,7 @@ the primary invocation method. MCP calls avoid permission friction
 
 ```
 # ✅ PREFERRED — MCP tool call (no permission prompt)
-mcp__plugin_Dev10x_cli__mktmp(namespace="git", prefix="msg", ext=".txt")
+mcp__plugin_dev10x_cli__mktmp(namespace="git", prefix="msg", ext=".txt")
 
 # ⚠️ FALLBACK — direct script (needs Bash allow-rule)
 /tmp/Dev10x/bin/mktmp.sh git msg .txt
@@ -772,14 +862,14 @@ protocol).
 
 ### MCP tool names cannot appear in shell scripts
 
-MCP tool names (e.g., `mcp__plugin_Dev10x_cli__mktmp`) are
+MCP tool names (e.g., `mcp__plugin_dev10x_cli__mktmp`) are
 Claude tool-call primitives. They cannot be used inside bash
 code blocks, shell scripts, or Makefiles — only via Claude's
 tool-use protocol.
 
 ```bash
 # ❌ WRONG — MCP name in a bash block (not a shell command)
-mcp__plugin_Dev10x_cli__mktmp git commit-msg .txt
+mcp__plugin_dev10x_cli__mktmp git commit-msg .txt
 
 # ✅ CORRECT — use the underlying CLI script in shell contexts
 /tmp/Dev10x/bin/mktmp.sh git commit-msg .txt
@@ -798,30 +888,30 @@ the MCP server is unavailable.
 
 | Raw CLI | MCP tool |
 |---------|----------|
-| `gh issue view` | `mcp__plugin_Dev10x_cli__issue_get` |
-| `gh issue create` | `mcp__plugin_Dev10x_cli__issue_create` |
-| `gh issue edit` | `mcp__plugin_Dev10x_cli__issue_edit` |
-| `gh issue edit --add-label` / `--remove-label` | `mcp__plugin_Dev10x_cli__issue_labels` (GH-1322) |
-| `gh issue close` | `mcp__plugin_Dev10x_cli__issue_close` |
-| `gh issue reopen` | `mcp__plugin_Dev10x_cli__issue_reopen` |
-| `gh issue comment` | `mcp__plugin_Dev10x_cli__issue_comment` |
-| `gh issue list` | `mcp__plugin_Dev10x_cli__issue_list` (advisory) |
-| `gh pr view` | `mcp__plugin_Dev10x_cli__pr_get` |
-| `gh pr list` | `mcp__plugin_Dev10x_cli__pr_list` (GH-1359, advisory) |
-| `gh api .../milestones POST` | `mcp__plugin_Dev10x_cli__milestone_create` |
-| `gh api .../milestones/{n} PATCH state=open` | `mcp__plugin_Dev10x_cli__milestone_reopen` |
-| `gh api .../milestones/{n} PATCH` (title/desc/state/due) | `mcp__plugin_Dev10x_cli__milestone_edit` |
-| `gh api .../milestones GET` | `mcp__plugin_Dev10x_cli__milestone_list` (GH-1319) |
-| `gh pr edit` | `mcp__plugin_Dev10x_cli__update_pr` |
-| `gh pr ready` | `mcp__plugin_Dev10x_cli__pr_ready` |
-| `gh pr edit --add-label` / `--remove-label` | `mcp__plugin_Dev10x_cli__pr_labels` (GH-1008) |
-| `gh pr close` | `mcp__plugin_Dev10x_cli__pr_close` (GH-924) |
-| `gh pr create` | `Dev10x:gh-pr-create` (wraps `create_pr`) |
-| `gh pr merge` | `Dev10x:gh-pr-merge` (wraps `merge_pr`) |
+| `gh issue view` | `mcp__plugin_dev10x_cli__issue_get` |
+| `gh issue create` | `mcp__plugin_dev10x_cli__issue_create` |
+| `gh issue edit` | `mcp__plugin_dev10x_cli__issue_edit` |
+| `gh issue edit --add-label` / `--remove-label` | `mcp__plugin_dev10x_cli__issue_labels` (GH-1322) |
+| `gh issue close` | `mcp__plugin_dev10x_cli__issue_close` |
+| `gh issue reopen` | `mcp__plugin_dev10x_cli__issue_reopen` |
+| `gh issue comment` | `mcp__plugin_dev10x_cli__issue_comment` |
+| `gh issue list` | `mcp__plugin_dev10x_cli__issue_list` (advisory) |
+| `gh pr view` | `mcp__plugin_dev10x_cli__pr_get` |
+| `gh pr list` | `mcp__plugin_dev10x_cli__pr_list` (GH-1359, advisory) |
+| `gh api .../milestones POST` | `mcp__plugin_dev10x_cli__milestone_create` |
+| `gh api .../milestones/{n} PATCH state=open` | `mcp__plugin_dev10x_cli__milestone_reopen` |
+| `gh api .../milestones/{n} PATCH` (title/desc/state/due) | `mcp__plugin_dev10x_cli__milestone_edit` |
+| `gh api .../milestones GET` | `mcp__plugin_dev10x_cli__milestone_list` (GH-1319) |
+| `gh pr edit` | `mcp__plugin_dev10x_cli__update_pr` |
+| `gh pr ready` | `mcp__plugin_dev10x_cli__pr_ready` |
+| `gh pr edit --add-label` / `--remove-label` | `mcp__plugin_dev10x_cli__pr_labels` (GH-1008) |
+| `gh pr close` | `mcp__plugin_dev10x_cli__pr_close` (GH-924) |
+| `gh pr create` | `dev10x:gh-pr-create` (wraps `create_pr`) |
+| `gh pr merge` | `dev10x:gh-pr-merge` (wraps `merge_pr`) |
 
 For a stale severity token in a **review body** (state=COMMENTED)
 that trips gh-pr-merge Check 1b, edit it via
-`mcp__plugin_Dev10x_cli__pr_review_edit` (GH-778) — the review-body
+`mcp__plugin_dev10x_cli__pr_review_edit` (GH-778) — the review-body
 counterpart to `pr_review_comment_edit` (inline) and
 `issue_comment_edit` (top-level).
 
@@ -834,8 +924,8 @@ no allow-rule can suppress (GH-703).
 
 | Raw command | MCP tool |
 |-------------|----------|
-| `pytest` / `uv run pytest` | `Dev10x:py-test` (wraps `run_tests`) |
-| `jest` / `yarn … test` / `npm test` / `pnpm test` / `vitest` | `mcp__plugin_Dev10x_cli__run_node_tests` |
+| `pytest` / `uv run pytest` | `dev10x:py-test` (wraps `run_tests`) |
+| `jest` / `yarn … test` / `npm test` / `pnpm test` / `vitest` | `mcp__plugin_dev10x_cli__run_node_tests` |
 
 `run_node_tests` accepts a `runner` arg (`jest` default, plus
 `vitest`/`yarn`/`npm`/`pnpm`); `jest`/`vitest` get `--coverage` when
@@ -865,7 +955,7 @@ depend on.
 ## Official GitHub MCP Server
 
 We do **not** use [`github/github-mcp-server`](https://github.com/github/github-mcp-server).
-The internal `Dev10x:cli` server is the sole GitHub surface — its
+The internal `dev10x:cli` server is the sole GitHub surface — its
 composite tools are shaped to Dev10x workflows rather than mirroring
 the REST/GraphQL primitives.
 

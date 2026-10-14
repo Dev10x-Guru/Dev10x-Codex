@@ -40,7 +40,7 @@ Dev10x conventions that sit on top of that foundation.
     references/         # markdown reference docs (optional)
 ```
 
-Active namespaces: `my:`, `Dev10x:`, `ticket:`, `pr:`, `commit:`
+Active namespaces: `my:`, `dev10x:`, `ticket:`, `pr:`, `commit:`
 
 ## Frontmatter Template
 
@@ -58,7 +58,7 @@ allowed-tools:                # pre-approve bash commands (removes prompts)
 
 | Field | When to use |
 |---|---|
-| `name` | Canonical identifier; MUST use `Dev10x:` prefix |
+| `name` | Canonical identifier; MUST use `dev10x:` prefix |
 | `invocation-name` | Required on every skill; matches `name:` by default, or shorter alias |
 | `user-invocable: true` | Skill appears in MOTD and is callable via Skill tool |
 | `allowed-tools` | Pre-approve bash commands Claude needs; use `:*` for any args |

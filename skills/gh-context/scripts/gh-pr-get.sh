@@ -17,7 +17,7 @@
 # Note: ``merged`` is not a valid gh pr view field (GH-329); use mergedAt.
 # The isDraft/mergeable/reviewDecision/reviewRequests fields (GH-668) make
 # pr_get a drop-in for the hook-blocked ``gh pr view --json ...`` checks in
-# Dev10x:gh-pr-merge (Checks 3/4/7) and Dev10x:verify-acc-dod.
+# dev10x:gh-pr-merge (Checks 3/4/7) and dev10x:verify-acc-dod.
 # autoMergeRequest (GH-848 F4) is null unless auto-merge is armed; the merge
 # gate reads it to detect a PR that will self-merge on green before its
 # pre-merge checks run.
@@ -62,7 +62,8 @@ for _ in $(seq 1 "$MAX_ATTEMPTS"); do
         exit 0
     fi
 
-    UNKNOWN_FIELD=$(grep -oP 'Unknown JSON field: "\K[^"]+' "$STDERR_FILE" | head -1 || true)
+    # GH-1492: portable sed — BSD grep (macOS) has no PCRE mode.
+    UNKNOWN_FIELD=$(sed -nE 's/.*Unknown JSON field: "([^"]+)".*/\1/p' "$STDERR_FILE" | head -n 1 || true)
     if [[ -z "$UNKNOWN_FIELD" ]]; then
         break
     fi

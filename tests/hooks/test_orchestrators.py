@@ -28,6 +28,18 @@ PLUGIN_LOAD_GUARD = SCRIPTS / "plugin-load-guard.sh"
 # decouples assertions from the host's home layout (GH-570).
 _ISOLATED_HOME = tempfile.mkdtemp(prefix="dev10x-orchestrator-home-")
 
+# Default cwd for hooks run without an explicit repo. The Stop hook reads the
+# plan under its cwd, so defaulting to the real checkout made results depend on
+# the developer's live plan.yaml (GH-1583, GH-1587). An empty, plan-less git
+# repo keeps the default deterministic.
+_ISOLATED_CWD = Path(tempfile.mkdtemp(prefix="dev10x-orchestrator-cwd-"))
+subprocess.run(
+    ["git", "init", "-q", str(_ISOLATED_CWD)],
+    check=True,
+    timeout=30,
+    env={"HOME": _ISOLATED_HOME, "PATH": "/usr/bin:/bin:/usr/local/bin"},
+)
+
 
 def _run(script: Path, payload: dict, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -36,7 +48,7 @@ def _run(script: Path, payload: dict, cwd: Path | None = None) -> subprocess.Com
         capture_output=True,
         text=True,
         timeout=30,
-        cwd=str(cwd or SCRIPTS.parent.parent),
+        cwd=str(cwd or _ISOLATED_CWD),
         env={
             "DEV10X_HOOK_AUDIT": "0",
             "PATH": "/usr/bin:/bin:/usr/local/bin",
@@ -63,6 +75,28 @@ def _git(*args: str, cwd: Path) -> None:
         cwd=str(cwd),
         env={"HOME": _ISOLATED_HOME, "PATH": "/usr/bin:/bin:/usr/local/bin"},
     )
+
+
+def _repo_with_open_plan(*, tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    (repo / ".claude" / "session").mkdir(parents=True)
+    (repo / ".claude" / "session" / "plan.yaml").write_text(
+        "plan:\n  status: in_progress\ntasks:\n  - subject: Ship it\n    status: pending\n",
+        encoding="utf-8",
+    )
+    _git("init", "-q", str(repo), cwd=tmp_path)
+    _git("add", "-A", cwd=repo)
+    _git(
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "user.name=test",
+        "commit",
+        "-qm",
+        "seed",
+        cwd=repo,
+    )
+    return repo
 
 
 def _repo_with_depleted_plan(*, tmp_path: Path, commit: bool = True) -> Path:
@@ -170,7 +204,27 @@ class TestSessionStopVerdict:
         assert result.returncode == 0
         envelope = json.loads(result.stdout)
         assert envelope["decision"] == "block"
-        assert "Dev10x:ask" in envelope["reason"]
+        assert "dev10x:ask" in envelope["reason"]
+
+    def test_default_cwd_ignores_an_open_plan_elsewhere(self, tmp_path: Path) -> None:
+        """GH-1583/GH-1587: an open plan in another checkout must not leak in.
+
+        The open plan lives in a seeded repo that is never passed as cwd,
+        so a plain run must end quietly and only the explicit cwd blocks.
+        """
+        open_repo = _repo_with_open_plan(tmp_path=tmp_path)
+        payload = {
+            "session_id": f"isolation-{uuid.uuid4()}",
+            "transcript_path": self._transcript(tmp_path=tmp_path, closing="Committed."),
+        }
+
+        default_run = _run(SESSION_STOP, payload)
+        open_run = _run(
+            SESSION_STOP, {**payload, "session_id": f"isolation-{uuid.uuid4()}"}, cwd=open_repo
+        )
+
+        assert '"decision"' not in default_run.stdout
+        assert json.loads(open_run.stdout)["decision"] == "block"
 
     def test_a_block_suppresses_the_goodbye(self, tmp_path: Path) -> None:
         """A farewell while the turn is being continued would be a lie."""
@@ -204,7 +258,7 @@ class TestSessionStopVerdict:
         assert result.returncode == 0
         envelope = json.loads(result.stdout)
         assert envelope["decision"] == "block"
-        assert "Dev10x:git-commit" in envelope["reason"]
+        assert "dev10x:git-commit" in envelope["reason"]
         # Porcelain collapses a wholly-untracked tree to its directory,
         # so this is `.claude/` rather than the plan file itself.
         assert ".claude" in envelope["reason"]
@@ -509,7 +563,7 @@ class TestModeGuardWiring:
 
 class TestFrictionSetupNudge:
     """GH-886: SessionStart detects unconfigured repos and nudges the
-    supervisor to run Dev10x:friction-setup instead of silently falling back
+    supervisor to run dev10x:friction-setup instead of silently falling back
     to a preset. Global friction.yaml absent → seed a strict baseline + note;
     present but this repo unmatched → nudge (no write); matched → silent."""
 
@@ -526,7 +580,7 @@ class TestFrictionSetupNudge:
 
         text = FrictionSetupNudgeRule(state=FrictionSetupState.SEEDED).apply()
         assert "strict" in text
-        assert "/Dev10x:friction-setup" in text
+        assert "/dev10x:friction-setup" in text
 
     def test_rule_unmatched_names_repo(self) -> None:
         from dev10x.domain.session_rules import FrictionSetupNudgeRule, FrictionSetupState
@@ -535,7 +589,7 @@ class TestFrictionSetupNudge:
             state=FrictionSetupState.UNMATCHED, repo_name="my-repo"
         ).apply()
         assert "my-repo" in text
-        assert "/Dev10x:friction-setup" in text
+        assert "/dev10x:friction-setup" in text
 
     def test_rule_matched_is_silent(self) -> None:
         from dev10x.domain.session_rules import FrictionSetupNudgeRule, FrictionSetupState
@@ -564,7 +618,7 @@ class TestFrictionSetupNudge:
             friction = Dev10xConfigDir.friction_yaml()
             assert friction.exists()
             assert "supervisor_review: required" in friction.read_text()
-            assert "/Dev10x:friction-setup" in text
+            assert "/dev10x:friction-setup" in text
         finally:
             Dev10xConfigDir.reset_cache()
 
@@ -584,7 +638,7 @@ class TestFrictionSetupNudge:
             from dev10x.domain.dev10x_paths import Dev10xConfigDir
 
             text = SessionService().build_friction_setup_context(toplevel=str(repo))
-            assert "/Dev10x:friction-setup" in text
+            assert "/dev10x:friction-setup" in text
             assert "repo" in text
             # Skip = no write: an unmatched project must not mutate friction.yaml.
             assert friction.read_text() == before
@@ -640,7 +694,7 @@ class TestFrictionSetupNudge:
     ) -> None:
         # A failing seed write must not degrade to a silent "" (GH-886 failure
         # mode, one layer down) — the supervisor still gets the nudge.
-        from dev10x.domain.documents import session_yaml
+        from dev10x.domain.documents import friction_yaml
         from dev10x.session.service import SessionService
 
         self._isolate_config(monkeypatch=monkeypatch, tmp_path=tmp_path)
@@ -650,10 +704,10 @@ class TestFrictionSetupNudge:
         def _boom(*, path: Path | None = None) -> bool:
             raise OSError("disk full")
 
-        monkeypatch.setattr(session_yaml, "seed_strict_baseline_if_absent", _boom)
+        monkeypatch.setattr(friction_yaml, "seed_safe_baseline_if_absent", _boom)
         try:
             text = SessionService().build_friction_setup_context(toplevel=str(repo))
-            assert "/Dev10x:friction-setup" in text
+            assert "/dev10x:friction-setup" in text
         finally:
             from dev10x.domain.dev10x_paths import Dev10xConfigDir
 
@@ -860,13 +914,14 @@ class TestPluginLoadGuard:
         assert result.returncode == 0
         assert result.stdout.strip() == ""
 
-    def test_silent_when_plugin_disabled(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("plugin_id", ["dev10x@Dev10x-Guru", "Dev10x@Dev10x-Guru"])
+    def test_silent_when_plugin_disabled(self, tmp_path: Path, plugin_id: str) -> None:
         marker_dir = tmp_path / "sessions"
         marker_dir.mkdir()  # dir exists, marker absent — would warn if enabled
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
         (claude_dir / "settings.json").write_text(
-            json.dumps({"enabledPlugins": {"Dev10x@Dev10x-Guru": False}})
+            json.dumps({"enabledPlugins": {plugin_id: False}})
         )
         result = self._run_guard(
             payload={"session_id": "s-4"}, marker_dir=marker_dir, home=tmp_path

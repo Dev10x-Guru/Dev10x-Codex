@@ -208,19 +208,37 @@ class TestPlanContextFromDict:
             data={
                 "work_type": "feature",
                 "tickets": ["GH-1", "GH-2"],
-                "routing_table": {"commit": "Skill(Dev10x:git-commit)"},
+                "routing_table": {"commit": "Skill(dev10x:git-commit)"},
                 "gathered_summary": "Summary here",
             }
         )
 
         assert ctx.work_type == "feature"
         assert ctx.tickets == ["GH-1", "GH-2"]
-        assert ctx.routing_table["commit"] == "Skill(Dev10x:git-commit)"
+        assert ctx.routing_table["commit"] == "Skill(dev10x:git-commit)"
 
     def test_wraps_string_tickets_in_list(self) -> None:
         ctx = PlanContext.from_dict(data={"tickets": "GH-1"})
 
         assert ctx.tickets == ["GH-1"]
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (["GH-1", 3, None, "GH-2"], ["GH-1", "GH-2"]),
+            ({"GH-1": True}, []),
+            (7, []),
+            (None, []),
+        ],
+    )
+    def test_keeps_only_string_tickets(self, raw: object, expected: list[str]) -> None:
+        ctx = PlanContext.from_dict(data={"tickets": raw})
+
+        assert ctx.tickets == expected
+
+    @pytest.mark.parametrize("data", [None, "context", ["GH-1"]])
+    def test_non_mapping_context_is_empty(self, data: object) -> None:
+        assert PlanContext.from_dict(data=data) == PlanContext()
 
 
 class TestPlanSummaryFormatForDisplay:
@@ -233,7 +251,7 @@ class TestPlanSummaryFormatForDisplay:
             context=PlanContext(
                 work_type="feature",
                 tickets=["GH-1"],
-                routing_table={"commit": "Skill(Dev10x:git-commit)"},
+                routing_table={"commit": "Skill(dev10x:git-commit)"},
             ),
             tasks=[
                 {"id": "1", "subject": "Task A", "status": "completed"},
@@ -463,14 +481,14 @@ class TestPlanSummaryFormatForCompaction:
     def test_includes_routing_table(self) -> None:
         summary = PlanSummary(
             context=PlanContext(
-                routing_table={"push": "Skill(Dev10x:git)"},
+                routing_table={"push": "Skill(dev10x:git)"},
             ),
         )
 
         result = summary.format_for_compaction()
 
         assert "Skill Routing Table" in result
-        assert "push → Skill(Dev10x:git)" in result
+        assert "push → Skill(dev10x:git)" in result
 
     def test_includes_gathered_summary(self) -> None:
         summary = PlanSummary(

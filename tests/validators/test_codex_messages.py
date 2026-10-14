@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from dev10x.domain.rules.validation_rule import Compensation
-from dev10x.hooks.hook_transport import emit
-from dev10x.validators.codex_messages import (
+from dev10x.core.domain.rules.validation_rule import Compensation
+from dev10x.core.hooks.hook_transport import emit
+from dev10x.core.validators.codex_messages import (
     CODEX_ISSUE_REPO,
     CODEX_OVERRIDE_HINT,
     adapt_message_for_codex,
@@ -12,7 +12,7 @@ from dev10x.validators.codex_messages import (
     codex_tool_name,
     format_codex_skill_block,
 )
-from dev10x.validators.skill_redirect import (
+from dev10x.core.validators.skill_redirect import (
     MCP_UNAVAILABLE_HINT,
     OVERRIDE_HINT,
     UNRATIONALIZED_SKIP_MSG,
@@ -60,8 +60,10 @@ def claude_harness(monkeypatch: pytest.MonkeyPatch) -> None:
 def _assert_no_claude_vocabulary(message: str) -> None:
     assert "Skill(" not in message
     assert "mcp__plugin_Dev10x" not in message
+    assert "mcp__plugin_dev10x" not in message
     assert CLAUDE_ISSUE_REPO not in message
     assert "/Dev10x:" not in message
+    assert "/dev10x:" not in message
 
 
 class TestCodexToolName:
@@ -78,8 +80,9 @@ class TestCodexToolName:
     ) -> None:
         assert codex_tool_name(claude_name) == codex_name
 
-    def test_skill_with_mcp_equivalent_maps_to_cli_tool(self) -> None:
-        assert codex_tool_for_skill("Dev10x:git") == "mcp__cli__push_safe"
+    @pytest.mark.parametrize("skill", ["Dev10x:git", "dev10x:git"])
+    def test_skill_with_mcp_equivalent_maps_to_cli_tool(self, skill: str) -> None:
+        assert codex_tool_for_skill(skill) == "mcp__cli__push_safe"
 
     def test_skill_without_mcp_equivalent_has_no_tool(self) -> None:
         assert codex_tool_for_skill("Dev10x:git-commit") is None
@@ -103,9 +106,14 @@ class TestAdaptMessageForCodex:
         assert CODEX_ISSUE_REPO in adapted
         assert CLAUDE_ISSUE_REPO not in adapted
 
-    def test_skill_call_with_codex_skill_names_the_skill(self) -> None:
-        adapted = adapt_message_for_codex("Invoke `Skill(Dev10x:gh-pr-monitor)`.")
+    @pytest.mark.parametrize("prefix", ["Dev10x", "dev10x"])
+    def test_skill_call_with_codex_skill_names_the_skill(self, prefix: str) -> None:
+        adapted = adapt_message_for_codex(f"Invoke `Skill({prefix}:gh-pr-monitor)`.")
         assert adapted == "Use the `$Dev10x:gh-pr-monitor` skill."
+
+    def test_rewrites_upstream_lowercase_tool_names(self) -> None:
+        adapted = adapt_message_for_codex("Use `mcp__plugin_dev10x_cli__pr_get` now.")
+        assert adapted == "Use `mcp__cli__pr_get` now."
 
     def test_skill_call_with_only_a_tool_equivalent_names_the_tool(self) -> None:
         adapted = adapt_message_for_codex("Invoke `Skill(Dev10x:git-alias-setup)`.")
@@ -289,13 +297,13 @@ class TestSkillRedirectUnderClaudeIsUnchanged:
     def test_push_block_keeps_claude_skill_wording(self) -> None:
         message = _block("git push --force origin main")
         assert message.startswith(
-            "⛔  `git push` blocked — use the skill instead.\n\n  Skill: `Skill(Dev10x:git)`\n\n"
+            "⛔  `git push` blocked — use the skill instead.\n\n  Skill: `Skill(dev10x:git)`\n\n"
         )
-        assert "mcp__plugin_Dev10x_cli__push_safe" in message
+        assert "mcp__plugin_dev10x_cli__push_safe" in message
         assert CLAUDE_ISSUE_REPO in message
         assert message.endswith(OVERRIDE_HINT)
 
     def test_tool_block_keeps_claude_tool_name(self) -> None:
         message = _block("gh pr view 12")
-        assert "Tool: `mcp__plugin_Dev10x_cli__pr_get`" in message
+        assert "Tool: `mcp__plugin_dev10x_cli__pr_get`" in message
         assert MCP_UNAVAILABLE_HINT in message

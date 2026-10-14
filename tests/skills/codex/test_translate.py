@@ -155,6 +155,10 @@ class TestRewriteText:
             ("Skill(test)", "$Dev10x:py-test"),
             ("run /Dev10x:git-groom now", "run $Dev10x:git-groom now"),
             ("(`/Dev10x:git`)", "(`$Dev10x:git`)"),
+            ("mcp__plugin_dev10x_cli__push_safe", "mcp__cli__push_safe"),
+            ("Skill(dev10x:git-commit)", "$Dev10x:git-commit"),
+            ("run /dev10x:git-groom now", "run $Dev10x:git-groom now"),
+            ("use dev10x:git-commit", "use Dev10x:git-commit"),
         ],
     )
     def test_maps_exact_claude_names_to_codex(self, source: str, expected: str) -> None:
@@ -181,6 +185,9 @@ class TestUnknownSkillMentions:
 
     def test_ignores_path_segments(self) -> None:
         assert unknown_skill_mentions("cache/Dev10x:gone", []) == []
+
+    def test_reports_upstream_lowercase_names_without_a_skill(self) -> None:
+        assert unknown_skill_mentions("use dev10x:git and dev10x:gone", ["git"]) == ["gone"]
 
 
 class TestRewriteLinks:

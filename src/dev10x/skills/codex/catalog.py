@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+import re
+
+UPSTREAM_MCP_PREFIX = "mcp__plugin_dev10x_"
+CODEX_MCP_PREFIX = "mcp__plugin_Dev10x_"
+CODEX_SKILL_PREFIX = "Dev10x:"
+
+# Upstream lowercased its plugin name (GH-1499); the Codex plugin stays `Dev10x`.
+_UPSTREAM_SKILL_PREFIX_RE = re.compile(r"(?<![\w.-])dev10x:(?=[a-z0-9])")
+
 VERIFIED_SKILLS: frozenset[str] = frozenset(
     {
         "gh-context",
@@ -25,6 +34,7 @@ PERMISSION_FRICTION_ISSUE = 10
 PLAN_MIRROR_ISSUE = 13
 AUDIT_ISSUE = 17
 IDE_ISSUE = 18
+MESSAGE_BUS_ISSUE = 43
 
 DEFERRED_SKILLS: dict[str, int] = {
     "foreman": FOREMAN_ISSUE,
@@ -43,6 +53,7 @@ DEFERRED_SKILLS: dict[str, int] = {
     "skill-audit": AUDIT_ISSUE,
     "skill-audit-queue": AUDIT_ISSUE,
     "ide-normalize": IDE_ISSUE,
+    "bus": MESSAGE_BUS_ISSUE,
 }
 
 DEFERRED_AGENTS: dict[str, int] = {"permission-auditor": PERMISSION_FRICTION_ISSUE}
@@ -80,6 +91,11 @@ SKILL_CAVEATS: dict[str, str] = {
 }
 
 
+def to_codex_casing(text: str) -> str:
+    text = text.replace(UPSTREAM_MCP_PREFIX, CODEX_MCP_PREFIX)
+    return _UPSTREAM_SKILL_PREFIX_RE.sub(CODEX_SKILL_PREFIX, text)
+
+
 def codex_skill_for(skill: str) -> str | None:
-    name = skill.removeprefix("Dev10x:")
-    return f"$Dev10x:{name}" if name in VERIFIED_SKILLS else None
+    name = to_codex_casing(skill).removeprefix(CODEX_SKILL_PREFIX)
+    return f"${CODEX_SKILL_PREFIX}{name}" if name in VERIFIED_SKILLS else None

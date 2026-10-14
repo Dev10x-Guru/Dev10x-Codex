@@ -12,7 +12,7 @@ not run (GH-922).
 
 ## 1. Background preamble (verbatim, first)
 
-Fetch via `mcp__plugin_Dev10x_cli__background_preamble` and prepend
+Fetch via `mcp__plugin_dev10x_cli__background_preamble` and prepend
 unmodified. Never hand-write a summary of it.
 
 ## 2. Fatal shapes + tool-surface bootstrap (immediately after the preamble)
@@ -71,14 +71,14 @@ need is inlined below. MCP wrappers ARE available, but only as
 deferred tools: load their schemas ONCE at start with a single
 ToolSearch call —
 
-ToolSearch(query="select:mcp__plugin_Dev10x_cli__issue_get,
-mcp__plugin_Dev10x_cli__issue_comment,mcp__plugin_Dev10x_cli__issue_create,
-mcp__plugin_Dev10x_cli__push_safe,mcp__plugin_Dev10x_cli__create_pr,
-mcp__plugin_Dev10x_cli__pr_get,mcp__plugin_Dev10x_cli__pr_ready,
-mcp__plugin_Dev10x_cli__pr_comments,mcp__plugin_Dev10x_cli__pr_comment_reply,
-mcp__plugin_Dev10x_cli__ci_check_status,
-mcp__plugin_Dev10x_cli__unresolved_threads,
-mcp__plugin_Dev10x_cli__resolve_review_thread,mcp__plugin_Dev10x_cli__mktmp")
+ToolSearch(query="select:mcp__plugin_dev10x_cli__issue_get,
+mcp__plugin_dev10x_cli__issue_comment,mcp__plugin_dev10x_cli__issue_create,
+mcp__plugin_dev10x_cli__push_safe,mcp__plugin_dev10x_cli__create_pr,
+mcp__plugin_dev10x_cli__pr_get,mcp__plugin_dev10x_cli__pr_ready,
+mcp__plugin_dev10x_cli__pr_comments,mcp__plugin_dev10x_cli__pr_comment_reply,
+mcp__plugin_dev10x_cli__ci_check_status,
+mcp__plugin_dev10x_cli__unresolved_threads,
+mcp__plugin_dev10x_cli__resolve_review_thread,mcp__plugin_dev10x_cli__mktmp")
 
 If that call returns no matching tools, STOP and report the empty
 surface to the foreman — do not improvise a raw-CLI equivalent for a
@@ -104,7 +104,7 @@ and [`mcp-connectivity.md`](mcp-connectivity.md) (GH-1099).
 
 ```
 You are the {{chunk_id}} delivery worker in an unattended
-Dev10x:foreman run for repo {{repo}}. You have full decision
+dev10x:foreman run for repo {{repo}}. You have full decision
 authority on scope. Deliver {{chunk_description}} — implemented, CI
 green, review addressed, PR OPEN AND READY (verified NOT draft). You
 do NOT merge and you do NOT close issues — the orchestrator owns
@@ -382,7 +382,9 @@ Every ~15 minutes AND at each phase transition, append one line to
 by running `date -u` — never compose, estimate, or carry one forward
 from earlier in the session. Invented times corrupt the morning audit
 trail (field case: a worker logged `20:49:00Z` when real UTC was
-`17:57`).
+`17:57`). Your LAST line, once the chunk is handed off, is
+`- <UTC timestamp> DONE: <PR, CI verdict, what remains>` — the
+watcher stops stall-alarming on a file that ends with `DONE:`.
 
 You own {{run_dir}}/status-{{chunk_id}}.md EXCLUSIVELY. Nobody else
 writes to it, and you write to no other agent's status file — a

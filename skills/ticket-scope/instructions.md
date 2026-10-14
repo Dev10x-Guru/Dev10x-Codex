@@ -11,7 +11,7 @@ This skill creates comprehensive technical scoping documents for Linear tickets.
 - Creating detailed implementation plan
 
 **Do NOT use for:**
-- Architectural decisions (use `Dev10x:adr` instead)
+- Architectural decisions (use `dev10x:adr` instead)
 - Simple bug fixes with obvious solutions
 - Quick tasks under 1 story point
 
@@ -94,7 +94,7 @@ Look for:
 
 When a Slack thread URL is part of the input context, after the
 `slack_read_thread` fetch, pass the parent message body and reply
-count to `mcp__plugin_Dev10x_cli__slack_thread_is_forward`. The
+count to `mcp__plugin_dev10x_cli__slack_thread_is_forward`. The
 tool returns `is_forward`, `confidence`, `signals`, and any
 extracted `upstream_hints` (external URLs found in the parent).
 
@@ -113,8 +113,8 @@ Options:
 When `confidence` is `low`, proceed normally to Phase 2.
 
 The heuristic itself lives in the MCP tool, not in this document
-— sibling skills (`Dev10x:investigate`, `Dev10x:ticket-create`,
-`Dev10x:work-on`) that ingest Slack URLs should call the same
+— sibling skills (`dev10x:investigate`, `dev10x:ticket-create`,
+`dev10x:work-on`) that ingest Slack URLs should call the same
 tool rather than re-implement the logic.
 
 ### Phase 2: Technical Research (Uses base scope skill)
@@ -134,7 +134,7 @@ Follow the base `scope` skill for:
 | Search code by pattern/keyword | `Grep` tool with `output_mode: count` or `head_limit` | Bash `grep -rn ... \| head` or `grep \| wc -l` |
 | Read a file or excerpt | `Read` tool (with `offset`/`limit` for excerpts) | Bash `cat`, `head`, `tail` |
 | Combine setup + search | Two separate Bash calls | `cat ... && grep ...` or `;`-chained shells |
-| Create a temp file path | `mcp__plugin_Dev10x_cli__mktmp` | `/tmp/Dev10x/bin/mktmp.sh` (bash fallback) |
+| Create a temp file path | `mcp__plugin_dev10x_cli__mktmp` | `/tmp/Dev10x/bin/mktmp.sh` (bash fallback) |
 
 The bash forms are blocked by security hooks (heredoc/redirect
 checks, chained commands) or trip Claude's prefix-matching allow
@@ -179,30 +179,18 @@ Order steps by dependencies:
 
 ### Phase 4: Estimate Complexity
 
-#### Story Points (Fibonacci)
-
-| Points | Complexity | Duration |
-|--------|------------|----------|
-| 1 | Trivial | Hours |
-| 2 | Small | < 1 day |
-| 3 | Medium | 1-2 days |
-| 5 | Large | 2-3 days |
-| 8 | Complex | 3-5 days |
-| 13 | Epic-sized | Should be split |
-
-#### Estimation Factors
-
-- New patterns vs. following existing
-- Database migrations
-- External dependencies
-- Test complexity
-- Review/iteration cycles
+**REQUIRED: Call `Skill(dev10x:estimate)`** with the scope gathered
+in Phases 1-3 (do NOT size the ticket inline). It owns the point
+scale and the five line items (agent implementation, human review,
+review wait, testing and documentation), with effort reported
+separately from elapsed time. Put its output table in the scoping
+document under `## Estimate`. A 13 means split the ticket (GH-1495).
 
 ### Phase 4b: Draft Job Story
 
 After estimating complexity, draft a Job Story for the ticket using the JTBD framework. This captures the business "why" early — before implementation begins — and will later be used in the PR description and release notes.
 
-**REQUIRED: Call `Skill(Dev10x:jtbd)` in attended mode** (do NOT
+**REQUIRED: Call `Skill(dev10x:jtbd)` in attended mode** (do NOT
 draft the Job Story inline as prose inside the scope document).
 Inline drafting bypasses jtbd's own context-gathering and
 approval gate and breaks reusable orchestration (GH-27).
@@ -210,7 +198,7 @@ approval gate and breaks reusable orchestration (GH-27).
 1. Pass the ticket context already gathered in Phase 1 (ticket
    details, parent ticket, related tickets) via the `context`
    parameter to avoid redundant API calls
-2. The `Dev10x:jtbd` skill handles: situation identification,
+2. The `dev10x:jtbd` skill handles: situation identification,
    drafting, and user approval
 3. Include the approved Job Story (the string returned by the
    skill) in the scoping document under a `## Job Story` section
@@ -218,12 +206,12 @@ approval gate and breaks reusable orchestration (GH-27).
 
 **Anti-pattern (GH-27):** Writing a Job Story sentence directly
 into the scope document Write call without a preceding
-`Skill(Dev10x:jtbd)` invocation. Even when the resulting story
+`Skill(dev10x:jtbd)` invocation. Even when the resulting story
 reads correctly, the skipped delegation is a compliance
 violation — the jtbd skill's own attended-mode approval gate
 must fire.
 
-**Do NOT update the Linear ticket description at this point** — the story is saved in the scoping document and will be applied to the PR later via `Dev10x:ticket-jtbd` or `Dev10x:gh-pr-create`.
+**Do NOT update the Linear ticket description at this point** — the story is saved in the scoping document and will be applied to the PR later via `dev10x:ticket-jtbd` or `dev10x:gh-pr-create`.
 
 ### Phase 5: Format Scoping Document
 
@@ -270,7 +258,7 @@ the diverged structure breaks audits and PR generation.
 - **Safeguards** (invariants & validation, distinct from Risks —
   REASONS)
 - Risks and Mitigations (rollout-only failures)
-- Story Points
+- Estimate (from `dev10x:estimate`)
 
 **REASONS coverage check:** The seven SPDD REASONS dimensions are
 Requirements, Approach, Structure, Operations, Entities, Norms,
@@ -287,7 +275,7 @@ Safeguards. Map them to template sections:
 | Safeguards | **Safeguards** (new) |
 
 If a saved scope is missing any of the three new headings, the
-spec is incomplete — `Dev10x:spec-sync` will flag it as drift.
+spec is incomplete — `dev10x:spec-sync` will flag it as drift.
 
 #### 5.3 Invoke the Norms / Safeguards Autopopulator (GH-170)
 
@@ -297,11 +285,11 @@ inject them inline. **Render at generation time, not at
 scope-save time** — re-render whenever the spec is fed back
 into a generation prompt so stale rule text never lies.
 
-Use the `dev10x.scope` Python API:
+Use the `dev10x.scoping.scope` Python API:
 
 ```python
 from pathlib import Path
-from dev10x.scope import render_norms, render_safeguards
+from dev10x.scoping.scope import render_norms, render_safeguards
 
 affected = [
     "src/payments/square/orders.py",
@@ -372,7 +360,7 @@ Generate the scope-document path via the mktmp MCP tool, then
 write the rendered template to it:
 
 ```
-mcp__plugin_Dev10x_cli__mktmp(namespace="ticket-scope",
+mcp__plugin_dev10x_cli__mktmp(namespace="ticket-scope",
     prefix="<TICKET-ID>-scope", ext=".md")
 ```
 
@@ -389,10 +377,10 @@ detected in Phase 1:
 
 | Tracker | Comment transport |
 |---------|-------------------|
-| GitHub issue (plain) | `mcp__plugin_Dev10x_cli__issue_comment(number=N, repo="OWNER/REPO", body="...")` (GH-228 — added in v0.73.0) |
-| GitHub PR | `mcp__plugin_Dev10x_cli__pr_issue_comment(pr_number=N, repo="OWNER/REPO", body="...")` |
+| GitHub issue (plain) | `mcp__plugin_dev10x_cli__issue_comment(number=N, repo="OWNER/REPO", body="...")` (GH-228 — added in v0.73.0) |
+| GitHub PR | `mcp__plugin_dev10x_cli__pr_issue_comment(pr_number=N, repo="OWNER/REPO", body="...")` |
 | Linear | `mcp__claude_ai_Linear__save_comment` against the issue ID |
-| JIRA | `Dev10x:jira` skill, comment subcommand |
+| JIRA | `dev10x:jira` skill, comment subcommand |
 
 **Do NOT misuse `pr_issue_comment` for plain GitHub issues** —
 the dedicated `issue_comment` tool exists for that path (GH-228).
@@ -473,11 +461,10 @@ Include `# language: <code>` when writing feature-file-style blocks.
 ## Out of Scope
 - [What we're NOT doing]
 
-## Story Points
-**[N] points**
+## Estimate
+**[N] points** — [why]
 
-Rationale:
-- [Breakdown of estimate]
+[dev10x:estimate output table: five line items, effort vs elapsed]
 ```
 
 ### Technical Task
@@ -512,8 +499,8 @@ Rationale:
 ## Acceptance Criteria
 - [ ] Technical criterion 1
 
-## Story Points
-**[N] points**
+## Estimate
+**[N] points** — [dev10x:estimate output table]
 ```
 
 ### Bug Fix
@@ -546,8 +533,8 @@ Rationale:
 - [ ] Bug no longer occurs
 - [ ] No regressions
 
-## Story Points
-**[N] points**
+## Estimate
+**[N] points** — [dev10x:estimate output table]
 ```
 
 ## Quality Checklist
@@ -571,8 +558,8 @@ Before finalizing, verify:
 - [ ] Risks identified
 
 ### Estimation
-- [ ] Story points justified
-- [ ] Complexity factors considered
+- [ ] Estimate produced by `dev10x:estimate`, not sized inline
+- [ ] All five line items present, effort separate from elapsed
 
 ### Review
 - [ ] User approved scoping
@@ -581,12 +568,12 @@ Before finalizing, verify:
 ## Integration with Other Skills
 
 ```
-Dev10x:ticket-scope
+dev10x:ticket-scope
 ├── Extends: scope (base scoping workflow)
 ├── Uses: Linear MCP (ticket data)
-├── Uses: Dev10x:jtbd (JTBD story drafting in Phase 4b)
-├── May lead to: Dev10x:work-on (start implementation)
-├── Alternative: Dev10x:adr (for architectural decisions)
+├── Uses: dev10x:jtbd (JTBD story drafting in Phase 4b)
+├── May lead to: dev10x:work-on (start implementation)
+├── Alternative: dev10x:adr (for architectural decisions)
 └── Saves to: /tmp/Dev10x/ticket-scope/TICKET-ID-scope.md
 ```
 
@@ -594,7 +581,7 @@ Dev10x:ticket-scope
 
 ### User Request
 ```
-/Dev10x:ticket-scope PAY-329
+/dev10x:ticket-scope PAY-329
 ```
 
 ### Workflow
@@ -606,7 +593,7 @@ Dev10x:ticket-scope
 6. Apply YAGNI
 7. Create implementation plan
 8. Estimate story points
-9. Draft Job Story (using Dev10x:jtbd base skill)
+9. Draft Job Story (using dev10x:jtbd base skill)
 10. Present to user for review
 11. Incorporate feedback
 12. Save scoping document
@@ -622,5 +609,5 @@ Dev10x:ticket-scope
 
 ### Related Skills
 - `scope` - Base scoping skill
-- `Dev10x:adr` - For architectural decisions
-- `Dev10x:work-on` - Start implementation
+- `dev10x:adr` - For architectural decisions
+- `dev10x:work-on` - Start implementation

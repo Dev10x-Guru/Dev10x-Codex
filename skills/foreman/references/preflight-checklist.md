@@ -65,7 +65,7 @@ manifest rather than letting workers improvise raw CLI
 (GH-1214 finding 2).** A probe this session spawns is depth 1; a crew
 worker is spawned by the foreman overseer, at depth 2. Those are not
 the same surface, and one run passed this checklist 12 of 12 while the
-foreman and every worker had no `mcp__plugin_Dev10x_cli__*` at all.
+foreman and every worker had no `mcp__plugin_dev10x_cli__*` at all.
 
 So spawn the overseer FIRST, have it spawn the probe, and have the
 result travel back up — then repeat the two read-only calls from the
@@ -174,6 +174,7 @@ routing in the manifest:
 | CI verdict at the merge gate | `ci_check_status(wait=false)` | `gh pr checks` |
 | draft / mergeability / ancestry | `pr_get` | `gh pr view --json …` |
 | run-dir state during stall triage | `dev10x foreman probe` | `ls -lt`, `stat`, `git log` |
+| quiet a finished worker's STALL | nothing (a `DONE:` line retires it), else `dev10x foreman retire` | `mv` / `cp` / `rm` on run-dir files — globally `ask`, froze a night (GH-1577) |
 
 Where no wrapper exists, dry-run the raw shape here like any other.
 The rule is the same one item 3 makes for workers — the watchdog's

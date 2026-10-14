@@ -11,15 +11,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
-
-import dev10x.skills.permission as permission_pkg
 from dev10x.domain.common.baseline_catalog import load_baseline_dict
 from dev10x.domain.common.command_spellings import SPELLINGS_KEY, expand_spellings
-from dev10x.skills.permission.catalog_paths import CATALOG_RELPATH
+from dev10x.skills.permission.catalog_paths import CATALOG_RELPATH, load_catalog_document
+
+import dev10x.skills.permission as permission_pkg
 
 PERMISSION_DIR = Path(permission_pkg.__file__).resolve().parent
-REPO_ROOT = PERMISSION_DIR.parents[3]
+REPO_ROOT = PERMISSION_DIR.parents[4]
 BASELINE_YAML = PERMISSION_DIR / "baseline-permissions.yaml"
 PROJECTS_YAML = REPO_ROOT / CATALOG_RELPATH
 
@@ -54,6 +53,7 @@ PRE_MIGRATION_UVX_RULES = (
 #: heartbeat and collected seventeen unsynced per-checkout catch-alls.
 FOREMAN_VERBS = (
     "dev10x foreman probe",
+    "dev10x foreman retire",
     "dev10x foreman watch",
     "dev10x watchdog probe",
     "dev10x watchdog sessions",
@@ -63,7 +63,7 @@ FOREMAN_PREFIXES = ("", "uvx ", "uv run ", "uv run --project $CLAUDE_PLUGIN_ROOT
 
 
 def _projects() -> dict:
-    return expand_spellings(yaml.safe_load(PROJECTS_YAML.read_text(encoding="utf-8")))
+    return expand_spellings(load_catalog_document(catalog_path=PROJECTS_YAML))
 
 
 def _base_permissions() -> list[str]:

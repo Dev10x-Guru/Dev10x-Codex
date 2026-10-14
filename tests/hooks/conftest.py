@@ -21,6 +21,7 @@ between tests, which is the problem a shared fixture solves.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -52,8 +53,30 @@ PENDING_PLAN = {"tasks": [{"subject": "Monitor CI", "status": "pending"}]}
 
 
 @pytest.fixture()
+def sandbox_repo(tmp_path: Path) -> Path:
+    """A throwaway git repo for tests that run the task-plan-sync hook.
+
+    The hook writes ``<toplevel>/.claude/session/plan.yaml``. Run with no
+    ``cwd`` it resolves the checkout running the tests, and cleanup then
+    deletes that checkout's live task mirror (GH-1514). Pass this repo as
+    ``cwd`` to every hook subprocess instead.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (
+        ["init", "-q", "-b", "develop"],
+        ["config", "user.email", "t@example.com"],
+        ["config", "user.name", "Test"],
+        ["config", "commit.gpgsign", "false"],
+        ["commit", "-q", "--allow-empty", "-m", "init"],
+    ):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    return repo
+
+
+@pytest.fixture()
 def isolated_markers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point the cooldown and standby markers at a temp dir."""
+    """Point the cooldown, standby and stand-down markers at a temp dir."""
     marker_dir = tmp_path / "markers"
     monkeypatch.setattr(
         "dev10x.hooks.stop_verdict._marker_path",
@@ -62,5 +85,9 @@ def isolated_markers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(
         "dev10x.hooks.stop_verdict._standby_path",
         lambda *, session_id: marker_dir / f"{session_id or 'unknown'}.standby",
+    )
+    monkeypatch.setattr(
+        "dev10x.hooks.stop_verdict._stand_down_path",
+        lambda *, session_id: marker_dir / f"{session_id or 'unknown'}.standdown",
     )
     return marker_dir

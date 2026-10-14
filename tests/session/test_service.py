@@ -119,6 +119,13 @@ class TestBuildGuidanceContext:
         result = svc.build_guidance_context()
         assert len(result) > 0
 
+    def test_real_guidance_routes_every_estimate_to_the_estimate_skill(self) -> None:
+        """GH-1495: SessionStart guidance is the one channel present in a
+        session with no scoping skill loaded, so it must carry the pointer."""
+        result = SessionService().build_guidance_context()
+        assert "/dev10x:estimate" in result
+        assert "outside a scoping skill" in result
+
 
 class TestBuildSkillsIndexContext:
     def test_empty_when_index_missing(
@@ -226,7 +233,7 @@ class TestBuildInstallCheckContext:
         result = svc.build_install_check_context()
 
         assert "config folder is missing" in result
-        assert "/Dev10x:upgrade-cleanup" in result
+        assert "/dev10x:upgrade-cleanup" in result
 
     def test_guides_upgrade_on_version_mismatch(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -252,7 +259,7 @@ class TestBuildInstallCheckContext:
 
         assert "0.72.0" in result
         assert "0.71.0" in result
-        assert "/Dev10x:upgrade-cleanup" in result
+        assert "/dev10x:upgrade-cleanup" in result
 
 
 class TestBuildHookVersionDriftContext:

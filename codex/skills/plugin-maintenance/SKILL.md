@@ -202,7 +202,7 @@ AskUserQuestion(questions=[{
 **Execute the chosen update(s):**
 
 - **Plugin update:** Run `claude plugin update` using the scope
-  detected in Step 3 (e.g., `claude plugin update Dev10x@Dev10x-Guru`
+  detected in Step 3 (e.g., `claude plugin update dev10x@Dev10x-Guru`
   for user-scoped installs, or with `--local` for local-scoped).
   After a successful plugin update, surface this hint:
   > **Restart required** — the running Claude session keeps the
@@ -791,6 +791,25 @@ uvx dev10x permission clean
 - Shell control flow fragments (`do`, `done`, `fi`, …)
 - Double-slash path typos (`Read(//work/...)`)
 
+**What the default migrates (GH-1501), in every layer — the
+user-scope pair and each project `settings.json` too:**
+`Dev10x:`-namespaced skill rules, `mcp__plugin_Dev10x_…` rules and the
+`Dev10x@Dev10x-Guru` `enabledPlugins` id move to the post-rename
+`dev10x` spelling. Deny and ask rules are rewritten, never dropped;
+a legacy copy whose new spelling is already listed is pruned. The
+`plugin-doctor` `legacy-plugin-namespace` strategy reports the same
+moves. `Dev10x` config dirs and `~/.claude/skills/Dev10x:upgrade-cleanup/`
+are left alone.
+
+**What the default repairs (GH-1503), in the same layers:** Bash
+rules with a `*` before the trailing `:*` never match and warn at
+every startup. Allows are dropped — never rewritten to the space
+form, which would widen a never-active grant into a real wildcard.
+Denies and asks are rewritten to the space form the harness suggests
+(`Bash(mv * /dev/null:*)` → `Bash(mv * /dev/null*)`), never dropped.
+Every drop and rewrite is listed; the `plugin-doctor`
+`unmatchable-star-prefix` strategy reports the same set.
+
 **Opt-in global-dedup (`--aggressive`):** Removing exact
 duplicates of global rules and rules covered by global wildcards
 requires `--aggressive`, and only after
@@ -826,7 +845,7 @@ of friction not covered by the other steps:
   are NOT rewritten to `**` wildcards (GH-715) — `**` matching is
   unreliable; `update-paths` (step 1) keeps pinned paths current instead.
 - **Catalog deprecations** — `action: remove` entries from
-  `src/dev10x/skills/permission/baseline-permissions.yaml` (e.g., legacy
+  `src/dev10x/core/skills/permission/baseline-permissions.yaml` (e.g., legacy
   `/tmp/claude/bin/mktmp.sh:*`) are dropped. No shipped entry rewrites a
   path to a `**` wildcard (GH-715).
 - **Cross-contamination** — rules whose absolute paths point outside
