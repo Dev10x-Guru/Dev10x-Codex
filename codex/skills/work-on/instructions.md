@@ -693,10 +693,12 @@ that can be overridden per project.
    `projects[].match` globs, use first hit's `overrides`/`fragments`);
    fall back to `~/.claude/memory/Dev10x/playbooks/work-on.yaml` for
    backwards compatibility when the XDG path is absent.
-3. `<plugin-root>/skills/playbook/references/playbook.yaml`
+3. `<plugin-root>/skills/work-on/references/playbook.d/coding.yaml`
+   — the plugin default plays (GH-1555)
 
 **Playbook schema:** See the `Dev10x:playbook` skill's
-`references/playbook.yaml` for the full schema with all 5 plays.
+`references/playbook.yaml` for the full schema; the plays themselves
+live in the work-on fragment named in tier 3.
 Users can customize plays interactively via
 `$Dev10x:playbook edit work-on <play>`.
 
@@ -715,6 +717,10 @@ Each step in the play has:
 - `skills` — list of skills to delegate to (optional)
 - `steps` — child steps for pre-templated epic expansion (optional)
 - `condition` — hint for conditional execution (optional)
+- `optional` — when `true`, drop the step from the plan if none of its
+  `skills` is installed in this session — e.g. the `structured-spec`
+  ADR / spec-update / spec-sync steps when the scoping skills are absent
+  (GH-1555). Never drop a step whose skill is available.
 
 ### Self-Check Before Plan Generation
 
@@ -733,7 +739,7 @@ cat ~/.config/Dev10x/playbooks/work-on.yaml
 # ✅ REQUIRED — use Read with absolute paths, one call per tier
 Read(file_path="/abs/path/.claude/Dev10x/playbooks/work-on.yaml")
 Read(file_path="/home/<user>/.config/Dev10x/playbooks/work-on.yaml")
-Read(file_path="<plugin-root>/skills/playbook/references/playbook.yaml")
+Read(file_path="<plugin-root>/skills/work-on/references/playbook.d/coding.yaml")
 ```
 
 The `ls; ls` pattern triggers `PREFIX_POISONED_CHAIN` friction
@@ -752,7 +758,7 @@ resolution algorithm needs.
       via `git remote get-url origin`, walk `projects[].match` globs;
       use first matching entry's config.
       Top-level `fragments` are shared across all matched projects.
-   c. Fall back to `<plugin-root>/skills/playbook/references/playbook.yaml`
+   c. Fall back to `<plugin-root>/skills/work-on/references/playbook.d/coding.yaml`
 3. **VERIFY: Confirm the playbook loaded successfully.** Check that
    the read returned YAML with play steps present (either under
    `defaults.<work_type>.steps`, `overrides[].steps`, or
@@ -938,6 +944,13 @@ so any pure-refactor commit lands before the feature commit that
 depends on it. Implement (4.5) executes this plan; deviations are
 expected but should be reconciled back into the plan, not
 silently improvised.
+
+**Estimates (GH-1495).** Whenever the supervisor asks how long the
+plan will take, or the plan needs a size (e.g. deciding between
+Strategy A and B), call `$Dev10x:estimate`. Never size the
+plan inline: the skill reports agent implementation, human review,
+review wait, testing and documentation, with effort separate from
+elapsed time.
 
 **Bug fix from Sentry + ticket:**
 
@@ -1776,7 +1789,8 @@ the scope decision explicit so the DoD reflects it:
    not a session flag: it lives as `supervisor_review: required|none` in
    the matching `projects[]` entry of the global
    `~/.config/Dev10x/friction.yaml` (ADR-0022 D-2; the deprecated
-   `human_review: true|false` spelling is still read for one release).
+   `human_review: true|false` spelling is still read until removal in
+   `0.112.0` per the deprecation register, GH-1161, ADR-0028).
    Resolve the current value via
    `mcp__cli__supervisor_review_status()` (default
    `required`) — never by reading the durable file directly — and branch:

@@ -26,7 +26,8 @@ The merge strategy is resolved using the config resolution order
 1. **Global with repo matching** — read
    `<Dev10x config>/settings-pr-merge.yaml`, match the current repo's
    `org/repo` against `projects[].match_repo` globs (`match:` is a
-   deprecated alias for one release, ADR-0026). With no `origin`
+   deprecated alias, ADR-0026, until removal in `0.112.0` per the
+   deprecation register — GH-1375, ADR-0028). With no `origin`
    remote there is no `org/repo` to match, so the list is not
    evaluated at all and the default applies.
 2. **Default** — `rebase`
@@ -352,11 +353,18 @@ mechanically before spending judgment on the rest:
 
 ```bash
 <plugin-root>/skills/gh-pr-merge/scripts/reconcile-fixes-links.py \
-  --body-file <pr-body.txt> --base origin/<base>
+  --body-file <pr-body.txt> --base origin/<base> --repo-dir <pr-checkout>
 ```
 
 Write the PR body to a file via `mcp__cli__mktmp`
-first. The script prints a JSON verdict on stdout and exits
+first. Pass `--repo-dir` whenever the PR's branch is checked out
+somewhere other than your CWD — an orchestrator merging a worktree
+child's PR from the main checkout otherwise reads an empty
+`base..HEAD` and gets a false `unbacked` (GH-1464). A verdict with
+`commits_read: 0` carries a `hint` naming that cause; treat it as a
+wrong-checkout read to re-run, not as a missing commit.
+
+The script prints a JSON verdict on stdout and exits
 non-zero when any link is unbacked; `unbacked` names the specific
 issues. **Exit 1 blocks the merge** — the link would close an
 issue this PR never touched.

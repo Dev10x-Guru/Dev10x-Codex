@@ -36,7 +36,10 @@ a pointer entry to the project task index so
 ## Prerequisites
 
 - Slack token available (env `SLACK_TOKEN` or system keyring)
-- `slack-notify.py` accessible at `<plugin-root>/skills/slack/slack-notify.py`
+- `self_user_id` set in `~/.config/Dev10x/slack-config.yaml` (or the
+  `SLACK_SELF_USER_ID` env var)
+- The `dev10x` CLI reachable via `uvx` (the reminder goes through
+  `dev10x skill notify slack-send --remind`, GH-1554)
 
 ## Workflow
 
@@ -71,8 +74,8 @@ separate line after the item text.
 
 ### 3. Send DM
 
-For multi-line messages, write the formatted text to a unique temp file
-using the Write tool first, then pass it via command substitution:
+Write the formatted text to a unique temp file with the Write tool
+first:
 
 ```
 mcp__cli__mktmp(namespace="slack", prefix="remind-msg", ext=".txt")
@@ -80,13 +83,12 @@ mcp__cli__mktmp(namespace="slack", prefix="remind-msg", ext=".txt")
 
 Write content to the returned path using Write tool, then:
 ```bash
-<plugin-root>/skills/slack/slack-notify.py \
-  --remind "$(cat <unique-path>)"
+uvx dev10x skill notify slack-send --remind --message-file <unique-path>
 ```
 
-Do NOT use heredoc (`cat <<'EOF'`) to build the message inline —
-the bash security hook blocks it. Always use Write tool → temp file
-→ `$(cat ...)` for multi-line content.
+Do NOT use heredoc (`cat <<'EOF'`) or `$(cat ...)` to build the
+message inline — the bash security hook blocks both. Always use
+Write tool → temp file → `--message-file`.
 
 ### 4. Append to the task index
 
@@ -101,8 +103,8 @@ mcp__cli__task_index_append(entry={
     "created_at": "<YYYY-MM-DD>",
     "metadata": {
         "branch": "<current-branch>",
-        "slack_ts": "<timestamp returned by slack-notify>",
-        "slack_permalink": "<permalink returned by slack-notify>",
+        "slack_ts": "<timestamp returned by slack-send>",
+        "slack_permalink": "<permalink, when known>",
     },
 })
 ```
