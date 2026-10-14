@@ -63,7 +63,7 @@ git operation.
 title — all through pre-approved tool calls that never trigger
 permission prompts.
 
-When Claude uses `/Dev10x:gh-pr-create` instead of raw `gh` commands, every
+When Claude uses `/dev10x:gh-pr-create` instead of raw `gh` commands, every
 step matches an allow rule. Zero interruptions.
 
 ### Guardrails that teach, not just block
@@ -92,7 +92,7 @@ uses raw CLI commands instead of skill wrappers, and produces PRs
 missing ticket links, Job Stories, or CI verification. You come
 back to a branch that *looks* done but isn't merge-worthy.
 
-[`Dev10x:work-on`](skills/work-on/SKILL.md) solves this with a
+[`dev10x:work-on`](skills/work-on/SKILL.md) solves this with a
 four-phase orchestrator — parse inputs, gather context in
 parallel, build a supervisor-approved plan from a YAML playbook,
 then execute with enforced skill routing:
@@ -112,7 +112,7 @@ then execute with enforced skill routing:
   later. Task state persists through context compaction, and
   deferred work is routed to PR bookmarks or project TODOs.
 
-[`Dev10x:fanout`](skills/fanout/SKILL.md) extends this to
+[`dev10x:fanout`](skills/fanout/SKILL.md) extends this to
 multiple issues in parallel — each issue gets the **full
 playbook** (branch → implement → test → review → PR → CI →
 merge), not a collapsed shortcut. Issues run in isolated
@@ -131,21 +131,27 @@ projects — the ones that span bounded contexts, require
 migration sequencing, and involve three teams — are where AI
 sessions usually produce shallow plans that miss dependencies.
 
-[`Dev10x:project-scope`](skills/project-scope/SKILL.md) turns a
+[`dev10x:project-scope`](skills/project-scope/SKILL.md) turns a
 parent ticket or free-text description into a structured project
 with milestones, blocking relationships, and tracker integration
 (Linear, JIRA, or GitHub Issues). Each child ticket gets
-acceptance criteria, story point estimates, and clear dependency
-links so future sessions know what to build next.
+acceptance criteria, estimates, and clear dependency links so
+future sessions know what to build next.
 
-[`Dev10x:ticket-scope`](skills/ticket-scope/SKILL.md) goes
+[`dev10x:estimate`](skills/estimate/SKILL.md) is the one method
+behind every estimate. It sizes implementation at agent pace and
+counts the human gates that still decide the calendar: review,
+review wait, testing and documentation. Effort and elapsed time
+are reported separately.
+
+[`dev10x:ticket-scope`](skills/ticket-scope/SKILL.md) goes
 deeper on individual tickets — technical research, architecture
 design, component identification, and implementation strategy.
 The output is a scoping document that replaces ad-hoc
 implementation decisions with structured planning before code is
 written.
 
-[`Dev10x:ddd`](skills/ddd/SKILL.md) supports the earliest phase:
+[`dev10x:ddd`](skills/ddd/SKILL.md) supports the earliest phase:
 domain exploration via Event Storming workshops. When a feature
 spans multiple bounded contexts and the right decomposition isn't
 obvious, the skill guides structured discovery of domain events,
@@ -171,14 +177,14 @@ their phone:
 
 | Step | Skill | Output |
 |------|-------|--------|
-| Scope | [`Dev10x:ticket-scope`](skills/ticket-scope/SKILL.md) | Architecture research, ticket update |
-| Branch | [`Dev10x:work-on`](skills/work-on/SKILL.md) | Named branch, gathered context |
-| Commit | [`Dev10x:git-commit`](skills/git-commit/SKILL.md) | Atomic commits with benefit-focused titles |
-| Groom | [`Dev10x:git-groom`](skills/git-groom/SKILL.md) | Clean history, no fixup commits |
-| PR | [`Dev10x:gh-pr-create`](skills/gh-pr-create/SKILL.md) | Job Story description, ticket links |
-| Monitor | [`Dev10x:gh-pr-monitor`](skills/gh-pr-monitor/SKILL.md) | Background CI + review watch |
-| Respond | [`Dev10x:gh-pr-respond`](skills/gh-pr-respond/SKILL.md) | Batched review responses, minimal noise |
-| Review | [`Dev10x:gh-pr-review`](skills/gh-pr-review/SKILL.md) | Domain-routed review across 5 agents |
+| Scope | [`dev10x:ticket-scope`](skills/ticket-scope/SKILL.md) | Architecture research, ticket update |
+| Branch | [`dev10x:work-on`](skills/work-on/SKILL.md) | Named branch, gathered context |
+| Commit | [`dev10x:git-commit`](skills/git-commit/SKILL.md) | Atomic commits with benefit-focused titles |
+| Groom | [`dev10x:git-groom`](skills/git-groom/SKILL.md) | Clean history, no fixup commits |
+| PR | [`dev10x:gh-pr-create`](skills/gh-pr-create/SKILL.md) | Job Story description, ticket links |
+| Monitor | [`dev10x:gh-pr-monitor`](skills/gh-pr-monitor/SKILL.md) | Background CI + review watch |
+| Respond | [`dev10x:gh-pr-respond`](skills/gh-pr-respond/SKILL.md) | Batched review responses, minimal noise |
+| Review | [`dev10x:gh-pr-review`](skills/gh-pr-review/SKILL.md) | Domain-routed review across 5 agents |
 
 No step produces wall-of-text. Each output is sized for a Slack
 preview, a PR comment, or a task list glance.
@@ -213,10 +219,10 @@ review comment) is concise enough to evaluate in seconds.
 | Family | Skills | What it automates |
 |--------|--------|-------------------|
 | **Git** | [`git-commit`](skills/git-commit/SKILL.md), [`git-commit-split`](skills/git-commit-split/SKILL.md), [`git-fixup`](skills/git-fixup/SKILL.md), [`git-groom`](skills/git-groom/SKILL.md), [`git-promote`](skills/git-promote/SKILL.md), [`git-worktree`](skills/git-worktree/SKILL.md), [`git`](skills/git/SKILL.md), [`git-alias-setup`](skills/git-alias-setup/SKILL.md), [`release-notes`](skills/release-notes/SKILL.md) | Atomic commits, clean history, workspace isolation, release notes |
-| **PR** | [`gh-pr-create`](skills/gh-pr-create/SKILL.md), [`gh-pr-review`](skills/gh-pr-review/SKILL.md), [`gh-pr-respond`](skills/gh-pr-respond/SKILL.md), [`gh-pr-monitor`](skills/gh-pr-monitor/SKILL.md), [`gh-pr-triage`](skills/gh-pr-triage/SKILL.md), [`gh-pr-fixup`](skills/gh-pr-fixup/SKILL.md), [`gh-pr-request-review`](skills/gh-pr-request-review/SKILL.md), [`gh-pr-bookmark`](skills/gh-pr-bookmark/SKILL.md), [`gh-pr-doctor`](skills/gh-pr-doctor/SKILL.md), [`gh-pr-merge`](skills/gh-pr-merge/SKILL.md), [`gh-context`](skills/gh-context/SKILL.md), [`request-review`](skills/request-review/SKILL.md), [`review`](skills/review/SKILL.md), [`review-fix`](skills/review-fix/SKILL.md) | Full PR lifecycle, domain-routed review, self-review |
+| **PR** | [`gh-pr-create`](skills/gh-pr-create/SKILL.md), [`gh-pr-review`](skills/gh-pr-review/SKILL.md), [`gh-pr-respond`](skills/gh-pr-respond/SKILL.md), [`gh-pr-monitor`](skills/gh-pr-monitor/SKILL.md), [`gh-pr-triage`](skills/gh-pr-triage/SKILL.md), [`gh-pr-fixup`](skills/gh-pr-fixup/SKILL.md), [`gh-pr-request-review`](skills/gh-pr-request-review/SKILL.md), [`gh-pr-bookmark`](skills/gh-pr-bookmark/SKILL.md), [`gh-pr-doctor`](skills/gh-pr-doctor/SKILL.md), [`gh-pr-merge`](skills/gh-pr-merge/SKILL.md), [`gh-context`](skills/gh-context/SKILL.md), [`request-review`](skills/request-review/SKILL.md), [`review`](skills/review/SKILL.md), [`review-fix`](skills/review-fix/SKILL.md), [`review-pack`](skills/review-pack/SKILL.md) | Full PR lifecycle, domain-routed review, self-review, reviewer-facing evidence packs |
 | **Tickets** | [`ticket-create`](skills/ticket-create/SKILL.md), [`ticket-branch`](skills/ticket-branch/SKILL.md), [`ticket-scope`](skills/ticket-scope/SKILL.md), [`ticket-jtbd`](skills/ticket-jtbd/SKILL.md), [`work-on`](skills/work-on/SKILL.md), [`linear`](skills/linear/SKILL.md), [`project-scope`](skills/project-scope/SKILL.md), [`investigate`](skills/investigate/SKILL.md) | Issue tracker integration, ticket scoping, bug investigation |
 | **Park** | [`park`](skills/park/SKILL.md), [`park-todo`](skills/park-todo/SKILL.md), [`park-remind`](skills/park-remind/SKILL.md), [`park-discover`](skills/park-discover/SKILL.md) | Deferred work parking |
-| **Scoping** | [`scope`](skills/scope/SKILL.md), [`jtbd`](skills/jtbd/SKILL.md), [`adr`](skills/adr/SKILL.md), [`adr-evaluate`](skills/adr-evaluate/SKILL.md), [`ddd`](skills/ddd/SKILL.md) | Architecture decisions, Job Story format, DDD workshops |
+| **Scoping** | [`scope`](skills/scope/SKILL.md), [`estimate`](skills/estimate/SKILL.md), [`jtbd`](skills/jtbd/SKILL.md), [`adr`](skills/adr/SKILL.md), [`adr-evaluate`](skills/adr-evaluate/SKILL.md), [`ddd`](skills/ddd/SKILL.md) | Architecture decisions, Job Story format, DDD workshops |
 | **QA** | [`qa-scope`](skills/qa-scope/SKILL.md), [`qa-self`](skills/qa-self/SKILL.md), [`playwright`](skills/playwright/SKILL.md), [`py-test`](skills/py-test/SKILL.md) | Test planning, self-review, browser testing, pytest runner |
 | **Session** | [`session-tasks`](skills/session-tasks/SKILL.md), [`session-wrap-up`](skills/session-wrap-up/SKILL.md), [`plan-sync`](skills/plan-sync/SKILL.md), [`fanout`](skills/fanout/SKILL.md), [`verify-acc-dod`](skills/verify-acc-dod/SKILL.md) | In-session work tracking, parallel execution, acceptance verification |
 | **DB** | [`db`](skills/db/SKILL.md), [`db-psql`](skills/db-psql/SKILL.md) | Safe database query planning and execution |
@@ -224,14 +230,14 @@ review comment) is concise enough to evaluate in seconds.
 | **Meta** | [`skill-create`](skills/skill-create/SKILL.md), [`skill-audit`](skills/skill-audit/SKILL.md), [`skill-index`](skills/skill-index/SKILL.md), [`audit-file`](skills/audit-file/SKILL.md), [`playbook`](skills/playbook/SKILL.md), [`diag-friction`](skills/diag-friction/SKILL.md), [`onboarding`](skills/onboarding/SKILL.md) | Create, audit, discover, and learn skills |
 | **Maintenance** | [`memory-maintenance`](skills/memory-maintenance/SKILL.md), [`plugin-maintenance`](skills/plugin-maintenance/SKILL.md), [`upgrade-cleanup`](skills/upgrade-cleanup/SKILL.md), [`playbook-maintenance`](skills/playbook-maintenance/SKILL.md), [`context-audit`](skills/context-audit/SKILL.md) | Memory, permission, playbook, and context hygiene |
 
-All skills use the `Dev10x:` prefix — type `/Dev10x:git-commit` in the Claude
-Code CLI to run it. Run `/Dev10x:skill-index` for the full reference.
+All skills use the `dev10x:` prefix — type `/dev10x:git-commit` in the Claude
+Code CLI to run it. Run `/dev10x:skill-index` for the full reference.
 
 ## Installation
 
 ```bash
 claude plugin marketplace add Dev10x-Guru/dev10x-claude
-claude plugin install Dev10x@Dev10x-Guru
+claude plugin install dev10x@Dev10x-Guru
 ```
 
 Run these in your shell, not inside a Claude Code session — the

@@ -1,5 +1,5 @@
 ---
-name: Dev10x:ask
+name: dev10x:ask
 description: >
   Surface what is still open in a session and route it where it
   survives. Reformulate plain-text decision questions into
@@ -12,7 +12,7 @@ description: >
   DO NOT TRIGGER when: agent is already using AskUserQuestion
   correctly, or the question is purely informational (no decision).
 user-invocable: true
-invocation-name: Dev10x:ask
+invocation-name: dev10x:ask
 allowed-tools:
   - AskUserQuestion
   - TaskCreate
@@ -22,9 +22,9 @@ allowed-tools:
   - Read(${CLAUDE_PLUGIN_ROOT}/.claude/rules/essentials.md)
 ---
 
-# Dev10x:ask — Structured Decision Widgets
+# dev10x:ask — Structured Decision Widgets
 
-**Announce:** "Using Dev10x:ask to surface open decisions and
+**Announce:** "Using dev10x:ask to surface open decisions and
 loops."
 
 ## Orchestration
@@ -62,10 +62,19 @@ Determine the mode from arguments and context:
 | User says "ask that again" or "convert that to options" | Reformulate |
 | Argument `--loops` or `loops` | Open loops |
 | User says "open loops", "what's still open", "anything unanswered", "loose ends" | Open loops |
+| **Invoked from the Stop hook's stand-down steer** | **Open loops** |
 | Argument `--reinforce` or `reinforce` | Reinforce |
 
 If ambiguous, default to **Reformulate** — it is the more
 common use case.
+
+**The stand-down row is not conditional on `--loops` (GH-1404).**
+That steer prescribes the flag, but a prescription is model-side and
+so skippable — which is the weakness GH-1404 is about. Routing on the
+invocation context as well means an agent that calls this skill bare
+at that gate still reaches the Step 5 ordering rule, instead of
+landing in Reformulate and rebuilding the fixed option list the fix
+removed.
 
 ## Mode 1: Reformulate
 
@@ -92,7 +101,7 @@ confirmations without alternatives, optional preferences).
 
 Scan recent conversation for the plain-text question that
 triggered this invocation. If the user provided arguments
-(e.g., `/Dev10x:ask reinforce`), use the most recent
+(e.g., `/dev10x:ask reinforce`), use the most recent
 plain-text decision question as the target.
 
 ### Step 2: Read the rules
@@ -174,6 +183,37 @@ became a new task or annotated an existing one, and whether it
 was presented as a widget. Naming the shape lets the supervisor
 spot a false positive without re-reading the session.
 
+### Step 5: Order a stand-down gate from the sweep (GH-1404)
+
+The Stop hook routes its stand-down question through this skill, so
+when this invocation was triggered by that gate, the sweep above is
+the state the option list must be built from — not a fixed
+prescription.
+
+An empty task list is the only thing the hook can see. A loop the
+sweep just found — a tracker issue holding deferred work, a PR
+awaiting review, a promised follow-up — is exactly the pending work
+that is invisible to it, which is why the sweep runs first.
+
+**REQUIRED: Call `AskUserQuestion`.** Order the options from the
+sweep result:
+
+| Sweep found | Lead option `(Recommended)` | Then |
+|---|---|---|
+| Any actionable loop | The concrete next action, named | "Stand down — the work is complete", "On standby — not waiting on you" |
+| Nothing | "Stand down — the work is complete" | "On standby — not waiting on you" |
+
+Standby parks the gate until the supervisor speaks again; it is not
+a permanent disable (GH-1314). Never offer it as the lead option
+while a loop is open — parking the gate is the one answer that
+discards what the sweep just found.
+
+Exactly one option carries `(Recommended)` and it is listed first
+(`.claude/rules/skill-gates.md`).
+
+**Subagents do not render this gate at all.** Report the sweep
+result to the orchestrator that dispatched you instead.
+
 ## Examples
 
 See [`references/examples.md`](references/examples.md) for
@@ -186,14 +226,14 @@ no-loops-found case.
 This skill can be referenced by other skills as a
 reinforcement mechanism:
 
-- **`Dev10x:diag-friction`** — handles CLI-to-skill
-  redirects and permission-friction diagnosis; `Dev10x:ask`
+- **`dev10x:diag-friction`** — handles CLI-to-skill
+  redirects and permission-friction diagnosis; `dev10x:ask`
   handles plain-text-to-widget redirects
-- **`Dev10x:work-on`** — can invoke `Dev10x:ask reinforce` if
+- **`dev10x:work-on`** — can invoke `dev10x:ask reinforce` if
   an agent within the work-on pipeline uses plain text for a
-  decision point, or `Dev10x:ask --loops` before the Verify-AC
+  decision point, or `dev10x:ask --loops` before the Verify-AC
   gate to catch loops that never reached the task list
-- **`Dev10x:session-wrap-up`** — run `--loops` first so nothing
+- **`dev10x:session-wrap-up`** — run `--loops` first so nothing
   open is lost at session close
 - **Skill authors** — reference this skill in SKILL.md when
   documenting decision gates as a fallback enforcement mechanism

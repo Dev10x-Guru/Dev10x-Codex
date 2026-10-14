@@ -23,7 +23,7 @@ supervisor reads the PR.
 Machine-global, keyed by project. The resolver reads the first
 matching `projects[]` entry, then the legacy per-repo `config.yaml`,
 then `defaults:`. Written once when absent by `dev10x session seed`
-(or `Skill(Dev10x:session-config-seed)`), hand-authored thereafter.
+(or `Skill(dev10x:session-config-seed)`), hand-authored thereafter.
 
 ```yaml
 defaults:
@@ -76,7 +76,7 @@ deliberately also `"None"` — read as `required`, so every typo fails
 toward more oversight. Case folding is withheld on purpose: `"None"`
 is likelier a stray Python literal than a considered answer.
 
-Read it with `mcp__plugin_Dev10x_cli__supervisor_review_status`
+Read it with `mcp__plugin_dev10x_cli__supervisor_review_status`
 (which also reports `pinned` — whether an entry names the key at all)
 and write it with `pin_supervisor_review`. The gate reads the durable
 value **unconditionally**: a `supervisor_review` key passed in a
@@ -98,7 +98,7 @@ sign-off signal that lifts the floor for the commits under review.
 ### `active_modes`
 
 Named modes customising **non-gate** behaviour — structural skill
-steps, `Dev10x:verify-acc-dod`'s check filter, and playbook step
+steps, `dev10x:verify-acc-dod`'s check filter, and playbook step
 `modes:` blocks. It has no gate-resolution role; see
 `references/active-modes.md` for the catalog and the reasoning.
 Nothing derives overlays from it, so an overlay-only entry leaves
@@ -178,9 +178,12 @@ Readers degrade softly; no missing or malformed field raises.
 ## Readers
 
 `FrictionYamlDocument`
-(`src/dev10x/domain/documents/session_yaml.py`) owns the read —
-`read_supervisor_review()`, `read_active_modes()`, and the `matched()`
-first-match-wins lookup. Policy rules in
+(`src/dev10x/domain/documents/friction_yaml.py`) owns the file and its
+`matched()` first-match-wins lookup; `SessionYamlDocument`
+(`src/dev10x/domain/documents/session_yaml.py`) is the read facade that
+layers it over the legacy `config.yaml` (`config_yaml.py`) and exposes
+the typed readers — `read_supervisor_review()`, `read_active_modes()`.
+Policy rules in
 `src/dev10x/domain/session_rules.py` consume the parsed values and
 perform no I/O (ADR-0007 D3). `resolve_gate` is the only sanctioned
 gate consumer; `supervisor_review_status` / `pin_supervisor_review`

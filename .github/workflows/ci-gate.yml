@@ -85,7 +85,9 @@ jobs:
           uv run --extra dev pytest tests/hooks/ \
             -v --tb=short \
             -o 'addopts=' \
+            --cov=src/dev10x/core/hooks \
             --cov=src/dev10x/hooks \
+            --cov=src/dev10x/tasks/hooks \
             --cov-config=.coveragerc-hooks \
             --cov-report=term-missing --cov-fail-under=70
 
@@ -113,17 +115,30 @@ jobs:
             -v --tb=short \
             -o 'addopts=' \
             --cov=src/dev10x/mcp \
+            --cov=src/dev10x/core/mcp \
             --cov=src/dev10x/audit \
             --cov=src/dev10x/db \
             --cov=src/dev10x/git \
+            --cov=src/dev10x/coding/git \
+            --cov=src/dev10x/coding/github \
+            --cov=src/dev10x/coding/monitor \
+            --cov=src/dev10x/coding/release \
+            --cov=src/dev10x/coding/mcp \
+            --cov=src/dev10x/comm/mcp \
             --cov=src/dev10x/github \
             --cov=src/dev10x/monitor \
-            --cov=src/dev10x/permission \
+            --cov=src/dev10x/core/permission \
             --cov=src/dev10x/plan \
+            --cov=src/dev10x/tasks/plan \
+            --cov=src/dev10x/tasks/mcp \
             --cov=src/dev10x/release \
             --cov=src/dev10x/skill_index \
-            --cov=src/dev10x/utilities \
-            --cov=src/dev10x/subprocess_utils \
+            --cov=src/dev10x/teach/audit \
+            --cov=src/dev10x/teach/skill_index \
+            --cov=src/dev10x/teach/mcp \
+            --cov=src/dev10x/core/utilities \
+            --cov=src/dev10x/core/github \
+            --cov=src/dev10x/core/subprocess_utils \
             --cov-config=.coveragerc-servers \
             --cov-report=term-missing --cov-fail-under=80
 
@@ -166,28 +181,28 @@ jobs:
         run: uv run coverage report --include='src/dev10x/commands/*' --fail-under=60
 
       - name: Enforce mcp floor
-        run: uv run coverage report --include='src/dev10x/mcp/*' --fail-under=95
+        run: uv run coverage report --include='src/dev10x/mcp/*,src/dev10x/*/mcp/*' --fail-under=95
 
       - name: Enforce domain floor
-        run: uv run coverage report --include='src/dev10x/domain/*' --fail-under=95
+        run: uv run coverage report --include='src/dev10x/core/domain/*' --fail-under=95
 
       - name: Enforce validators floor
-        run: uv run coverage report --include='src/dev10x/validators/*' --fail-under=90
+        run: uv run coverage report --include='src/dev10x/core/validators/*' --fail-under=90
 
       - name: Enforce config floor
-        run: uv run coverage report --include='src/dev10x/config/*' --fail-under=90
+        run: uv run coverage report --include='src/dev10x/core/config/*' --fail-under=90
 
       - name: Enforce spec floor
-        run: uv run coverage report --include='src/dev10x/spec/*' --fail-under=90
+        run: uv run coverage report --include='src/dev10x/core/spec/*' --fail-under=90
 
       - name: Enforce audit floor
-        run: uv run coverage report --include='src/dev10x/audit/*' --fail-under=87
+        run: uv run coverage report --include='src/dev10x/audit/*,src/dev10x/teach/audit/*' --fail-under=87
 
       - name: Enforce hooks floor
-        run: uv run coverage report --include='src/dev10x/hooks/*' --fail-under=80
+        run: uv run coverage report --include='src/dev10x/core/hooks/*,src/dev10x/hooks/*,src/dev10x/tasks/hooks/*' --fail-under=80
 
       - name: Enforce skills floor
-        run: uv run coverage report --include='src/dev10x/skills/*' --fail-under=78
+        run: uv run coverage report --include='src/dev10x/skills/*,src/dev10x/*/skills/*' --fail-under=78
 
   ci-gate:
     # `always()` is load-bearing: without it this job is skipped whenever

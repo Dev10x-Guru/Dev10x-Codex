@@ -1,0 +1,132 @@
+{
+  "skill_name": "dev10x:estimate",
+  "eval_dimensions": [
+    {
+      "id": "line-items",
+      "name": "Five line items reported",
+      "description": "The estimate breaks out agent implementation, human review, review wait, testing and documentation — none silently omitted."
+    },
+    {
+      "id": "effort-vs-elapsed",
+      "name": "Effort separated from elapsed time",
+      "description": "Effort and elapsed are reported as separate columns, and review wait adds elapsed time without adding effort."
+    },
+    {
+      "id": "agent-baseline",
+      "name": "Agent implementation baseline",
+      "description": "Implementation is sized at agent pace, not as one engineer at human pace."
+    },
+    {
+      "id": "rollup",
+      "name": "Project roll-up follows the critical path",
+      "description": "Parallel agent work overlaps; one reviewer's work serialises."
+    }
+  ],
+  "evals": [
+    {
+      "id": "ticket-level-estimate",
+      "name": "Ticket-level estimate breaks out the human gates",
+      "description": "A single 3-point ticket on a team repo is estimated with all five line items and separate effort and elapsed totals.",
+      "input": "/dev10x:estimate GH-1495 — one skill, three skill edits, a SessionStart pointer and a test, on a team repo with one reviewer",
+      "assertions": [
+        {
+          "dimension": "line-items",
+          "check": "rubric",
+          "signal": "Output table has rows for Agent implementation, Human review, Review wait, Testing and Documentation; a row that does not apply shows 0 with a reason"
+        },
+        {
+          "dimension": "effort-vs-elapsed",
+          "check": "rubric",
+          "signal": "Review wait shows 0 effort and a non-zero elapsed value; the totals row reports effort and elapsed separately"
+        },
+        {
+          "dimension": "agent-baseline",
+          "check": "plain_text",
+          "signal": "No single blended figure such as 'one engineer, 2-3 days' stands in for the table"
+        }
+      ]
+    },
+    {
+      "id": "project-level-estimate",
+      "name": "Project-level estimate rolls up along the critical path",
+      "description": "A two-milestone project with six tickets, where four have no blockers, is rolled up with overlapping agent work and serialised review.",
+      "input": "/dev10x:estimate the Codex port, release R1: six tickets over two milestones, four unblocked, one reviewer",
+      "assertions": [
+        {
+          "dimension": "rollup",
+          "check": "rubric",
+          "signal": "Agent implementation elapsed for the unblocked tickets is the longest chain, not the sum; review effort is summed for the single reviewer"
+        },
+        {
+          "dimension": "effort-vs-elapsed",
+          "check": "rubric",
+          "signal": "Per-milestone and whole-project totals each report effort and elapsed separately, with review wait counted once per review cycle along the chain"
+        },
+        {
+          "dimension": "agent-baseline",
+          "check": "rubric",
+          "signal": "Implementation lines are sized in hours at agent pace; the estimate does not read '1-1.5 weeks, one engineer'"
+        }
+      ]
+    },
+    {
+      "id": "ad-hoc-question-follows-method",
+      "name": "An ad-hoc question with no scoping skill loaded follows the method",
+      "description": "A prose question with no ticket ID and no scoping skill in play still yields the five-line estimate, reached via this skill's trigger or the SessionStart pointer (GH-1495 AC4).",
+      "input": "what would it take to add a --json flag to the dev10x permission doctor command?",
+      "assertions": [
+        {
+          "dimension": "line-items",
+          "check": "rubric",
+          "signal": "The answer separates agent implementation from human review, review wait, testing and documentation"
+        },
+        {
+          "dimension": "effort-vs-elapsed",
+          "check": "rubric",
+          "signal": "The answer gives effort and elapsed time as separate figures"
+        },
+        {
+          "dimension": "agent-baseline",
+          "check": "plain_text",
+          "signal": "No 'one engineer, N days' figure answers the question"
+        }
+      ]
+    },
+    {
+      "id": "thirteen-points-splits",
+      "name": "An epic-sized change gets a split, not a number",
+      "description": "When sizing reaches 13 points the skill recommends decomposition and proposes the parts instead of planning on one figure.",
+      "input": "/dev10x:estimate a single ticket that rewrites the permission catalog, every hook and plugin-doctor in one change",
+      "assertions": [
+        {
+          "dimension": "agent-baseline",
+          "check": "rubric",
+          "signal": "The output recommends splitting the ticket and names the parts, rather than a single 13-point estimate to plan on"
+        }
+      ]
+    }
+  ],
+  "trigger_evals": {
+    "description": "Queries that should/should-not trigger the estimate skill",
+    "should_trigger": [
+      {
+        "query": "how long would it take to add retry metrics to the payment client?",
+        "rationale": "Ad-hoc estimate outside a scoping skill — the GH-1495 case the SessionStart pointer routes here"
+      },
+      {
+        "query": "/dev10x:estimate PAY-133",
+        "rationale": "Direct invocation for a ticket-level estimate"
+      }
+    ],
+    "should_not_trigger": [
+      {
+        "query": "log two hours against PAY-133",
+        "rationale": "Time tracking, not estimation"
+      },
+      {
+        "query": "draft release notes for the last milestone",
+        "rationale": "Reporting what shipped — use dev10x:release-notes"
+      }
+    ]
+  }
+}

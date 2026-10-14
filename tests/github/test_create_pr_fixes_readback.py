@@ -40,8 +40,8 @@ def _created() -> subprocess.CompletedProcess[str]:
 @pytest.mark.usefixtures("stub_feature_branch")
 class TestCreatePrFixesTrailerReadback:
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_get", new_callable=AsyncMock)
-    @patch("dev10x.github.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_a_body_without_a_trailer_is_refused(
         self, mock_run: AsyncMock, mock_pr_get: AsyncMock
     ) -> None:
@@ -53,8 +53,8 @@ class TestCreatePrFixesTrailerReadback:
         assert isinstance(result, ErrorResult)
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_get", new_callable=AsyncMock)
-    @patch("dev10x.github.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_the_refusal_names_the_pr_it_already_opened(
         self, mock_run: AsyncMock, mock_pr_get: AsyncMock
     ) -> None:
@@ -70,8 +70,8 @@ class TestCreatePrFixesTrailerReadback:
         assert "https://github.com/owner/repo/pull/42" in result.error
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_get", new_callable=AsyncMock)
-    @patch("dev10x.github.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_the_refusal_points_at_the_repair(
         self, mock_run: AsyncMock, mock_pr_get: AsyncMock
     ) -> None:
@@ -84,8 +84,8 @@ class TestCreatePrFixesTrailerReadback:
         assert "update_pr" in result.error
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_get", new_callable=AsyncMock)
-    @patch("dev10x.github.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_a_landed_trailer_is_reported_verified(
         self, mock_run: AsyncMock, mock_pr_get: AsyncMock
     ) -> None:
@@ -98,8 +98,8 @@ class TestCreatePrFixesTrailerReadback:
         assert result.value["fixes_trailer_verified"] is True
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_get", new_callable=AsyncMock)
-    @patch("dev10x.github.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_an_explicit_repo_reaches_the_read_back(
         self, mock_run: AsyncMock, mock_pr_get: AsyncMock
     ) -> None:
@@ -119,8 +119,8 @@ class TestCreatePrFixesTrailerReadback:
         mock_pr_get.assert_awaited_once_with(number=42, repo="owner/repo")
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_get", new_callable=AsyncMock)
-    @patch("dev10x.github.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_the_check_reads_github_not_the_text_we_sent(
         self, mock_run: AsyncMock, mock_pr_get: AsyncMock
     ) -> None:
@@ -143,8 +143,8 @@ class TestCreatePrFixesTrailerReadback:
         mock_pr_get.assert_awaited_once_with(number=42, repo=None)
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_get", new_callable=AsyncMock)
-    @patch("dev10x.github.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_an_unreadable_readback_warns_instead_of_failing(
         self, mock_run: AsyncMock, mock_pr_get: AsyncMock
     ) -> None:

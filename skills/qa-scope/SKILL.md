@@ -1,18 +1,19 @@
 ---
-name: Dev10x:qa-scope
+name: dev10x:qa-scope
 description: >
   Analyze a PR for QA needs, check e2e coverage gaps, and create QA
   sub-tickets when manual testing or new e2e tests are needed.
   TRIGGER when: PR needs QA analysis for coverage gaps or manual test
   requirements.
-  DO NOT TRIGGER when: executing QA test cases (use Dev10x:qa-self),
+  DO NOT TRIGGER when: executing QA test cases (use dev10x:qa-self),
   or PR has no user-facing changes.
 user-invocable: true
-invocation-name: Dev10x:qa-scope
+invocation-name: dev10x:qa-scope
 allowed-tools:
+  - AskUserQuestion
   - Bash(gh pr diff:*)
   - Bash(grep:*)
-  - mcp__plugin_Dev10x_cli__pr_detect
+  - mcp__plugin_dev10x_cli__pr_detect
   - mcp__claude_ai_Linear__list_issues
   - mcp__claude_ai_Linear__get_issue
   - mcp__claude_ai_Linear__save_issue
@@ -40,7 +41,7 @@ sub-tickets in Linear when manual testing or new e2e scenarios are needed.
 **Use when:**
 - A PR is ready for merge and needs QA assessment
 - You want to check if a change needs manual QA testing
-- `/Dev10x:gh-pr-monitor` triggers Phase 2.5 (automatic)
+- `/dev10x:gh-pr-monitor` triggers Phase 2.5 (automatic)
 
 **Do NOT use for:**
 - Test-only PRs (no production code changes)
@@ -69,7 +70,7 @@ Accept input as PR URL, PR number, or auto-detect from current branch.
 One call resolves all four values:
 
 ```
-mcp__plugin_Dev10x_cli__pr_detect(pr="<URL, bare number, or empty>")
+mcp__plugin_dev10x_cli__pr_detect(pr="<URL, bare number, or empty>")
 ```
 
 It returns `PR_NUMBER`, `REPO`, `PR_URL` and `BRANCH`. Take `BRANCH`
@@ -241,7 +242,8 @@ New E2E Scenarios Needed:
 Create QA sub-ticket? (y/n)
 ```
 
-Use `AskUserQuestion` to get approval:
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text) to get
+approval:
 - **"Create QA sub-ticket"** → proceed to Phase 5
 - **"Skip QA"** → end with summary
 - **"Edit assessment"** → let user modify before creating
@@ -322,7 +324,8 @@ New scenarios needed:
 
 #### 5.4 Ask About Assignment
 
-Use `AskUserQuestion` to ask who to assign. Offer the project's QA
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text) to ask
+who to assign. Offer the project's QA
 assignee when its config names one, otherwise offer the tracker's own
 candidates (team members already assigned to QA tickets) — never a
 name hardcoded here, which belongs to one deployment's staffing and
@@ -335,7 +338,7 @@ Output the created ticket ID and URL.
 ## Integration with Other Skills
 
 ```
-Dev10x:qa-scope
+dev10x:qa-scope
 ├── Uses: Linear MCP (ticket data, create sub-ticket)
 ├── Uses: GitHub CLI (PR diff, PR details)
 ├── Reads: $E2E_ROOT (e2e coverage check, resolved at Phase 3.0)

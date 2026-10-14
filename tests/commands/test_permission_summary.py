@@ -9,6 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from dev10x.commands.permission import clean, update_paths
+from dev10x.domain.claude_paths import CLAUDE_HOME_ENV_VAR
 from dev10x.domain.common.result import ok
 
 
@@ -46,7 +47,7 @@ def project_with_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
 
     fake_home = tmp_path
     monkeypatch.setattr(
-        "dev10x.skills.permission.update_paths.Path.home",
+        "dev10x.skills.permission.catalog_write.Path.home",
         classmethod(lambda cls: fake_home),
     )
     monkeypatch.setattr(
@@ -152,7 +153,71 @@ def project_with_clean_targets(
         "dev10x.skills.permission.clean_project_files.detect_current_version",
         lambda _cache: None,
     )
+    # GH-1501: clean now also migrates the user-scope layers, so keep them
+    # off the developer's real ~/.claude.
+    monkeypatch.setenv(CLAUDE_HOME_ENV_VAR, str(global_settings.parent))
     return tmp_path
+
+
+class TestCleanMigratesLegacyNamespace:
+    """GH-1501: clean carries pre-rename rule spellings in every layer."""
+
+    @pytest.fixture
+    def legacy_global_deny(self, project_with_clean_targets: Path) -> Path:
+        global_settings = project_with_clean_targets / ".claude" / "settings.json"
+        global_settings.write_text(
+            json.dumps({"permissions": {"deny": ["mcp__plugin_Dev10x_cli__merge_pr"]}})
+        )
+        return global_settings
+
+    def test_user_scope_deny_is_rewritten(self, legacy_global_deny: Path) -> None:
+        result = CliRunner().invoke(clean, [])
+
+        assert result.exit_code == 0, result.output
+        deny = json.loads(legacy_global_deny.read_text())["permissions"]["deny"]
+        assert deny == ["mcp__plugin_dev10x_cli__merge_pr"]
+
+    def test_the_move_is_reported(self, legacy_global_deny: Path) -> None:
+        result = CliRunner().invoke(clean, ["--dry-run"])
+
+        assert "Would move 1 rules to the dev10x namespace" in result.output
+        assert "mcp__plugin_Dev10x_cli__merge_pr -> mcp__plugin_dev10x_cli__merge_pr" in (
+            result.output
+        )
+
+
+class TestCleanRepairsStarPrefix:
+    """GH-1503: clean repairs `*`-before-`:*` rules in the user-scope layer."""
+
+    @pytest.fixture
+    def user_star_rules(self, project_with_clean_targets: Path) -> Path:
+        global_settings = project_with_clean_targets / ".claude" / "settings.json"
+        global_settings.write_text(
+            json.dumps(
+                {
+                    "permissions": {
+                        "allow": ["Bash(~/.claude/tools/*:*)"],
+                        "ask": ["Bash(cp * ~/.claude:*)"],
+                    }
+                }
+            )
+        )
+        return global_settings
+
+    def test_user_scope_rules_are_repaired(self, user_star_rules: Path) -> None:
+        result = CliRunner().invoke(clean, [])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(user_star_rules.read_text())["permissions"] == {
+            "allow": [],
+            "ask": ["Bash(cp * ~/.claude*)"],
+        }
+
+    def test_the_repair_is_reported(self, user_star_rules: Path) -> None:
+        result = CliRunner().invoke(clean, ["--dry-run"])
+
+        assert "Would repair 2 rules with `*` before `:*` (GH-1503)" in result.output
+        assert "ask: Bash(cp * ~/.claude:*) -> Bash(cp * ~/.claude*)" in result.output
 
 
 class TestCleanSummary:

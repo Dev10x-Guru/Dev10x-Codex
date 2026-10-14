@@ -109,8 +109,8 @@ class TestNetImports:
     @pytest.mark.parametrize(
         "module",
         [
-            "src/dev10x/skills/notifications/gchat_notify.py",
-            "src/dev10x/skills/notifications/slack_notify.py",
+            "src/dev10x/comm/skills/notifications/gchat_notify.py",
+            "src/dev10x/comm/skills/notifications/slack_notify.py",
         ],
     )
     def test_documented_notification_transports_are_exempt(
@@ -150,7 +150,7 @@ class TestPolicyParser:
 |-------------|-------------|----------------|
 | GitHub (`gh` CLI, MCP) | Your GitHub token | PR payloads |
 | Linear (MCP) | Your Linear OAuth session | Issues |
-| JIRA (`Dev10x:jira`) | API token | Issues |
+| JIRA (`dev10x:jira`) | API token | Issues |
 
 ## Children
 """

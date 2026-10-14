@@ -44,7 +44,7 @@ prompts or brittle command matching.
   2. `git rebase origin/develop`
   3. `git merge-base --is-ancestor origin/develop HEAD` must exit 0 —
      the rebase success message alone is not proof
-- If aliases are missing, run `/Dev10x:git-alias-setup`
+- If aliases are missing, run `/dev10x:git-alias-setup`
 
 ### Multiline content (commit messages, PR bodies)
 1. Write content to a temp file via Write tool
@@ -66,29 +66,39 @@ prompts or brittle command matching.
 - Never prefix with `uv run --script` — the shebang handles it
 
 ### Worktrees
-- When a worktree is created via `/Dev10x:git-worktree`, the session
+- When a worktree is created via `/dev10x:git-worktree`, the session
   CWD switches to it automatically — no `cd` needed
 - If CWD is already a worktree (`.git` is a file), do not
   `cd` into it before running commands — you are already there
 - Check with `git rev-parse --show-toplevel` if unsure
 
 ### Temporary files
-- **Preferred**: Use MCP tool `mcp__plugin_Dev10x_cli__mktmp`
+- **Preferred**: Use MCP tool `mcp__plugin_dev10x_cli__mktmp`
   with params `namespace`, `prefix`, `ext`, `directory`
 - **Fallback**: `/tmp/Dev10x/bin/mktmp.sh <namespace> <prefix> [.ext]`
   (requires `Bash()` allow rule in skills)
 - Never `mkdir -p && script` — both methods create dirs automatically
 
+## Estimates
+
+Any estimate goes through `/dev10x:estimate`, including an ad-hoc
+"how long would it take to…?" outside a scoping skill.
+Do not fall back to a single "one engineer, N days" figure.
+The skill sizes implementation at agent pace, and it breaks out
+human review, review wait, testing and documentation, with effort
+reported separately from elapsed time.
+
 ## Key Skills for Common Tasks
 
 | Task | Skill |
 |------|-------|
-| Create commit | `/Dev10x:git-commit` |
-| Create PR | `/Dev10x:gh-pr-create` |
-| Review PR | `/Dev10x:gh-pr-review` |
-| Respond to PR review | `/Dev10x:gh-pr-respond` |
-| Create branch from ticket | `/Dev10x:ticket-branch` |
-| Create worktree | `/Dev10x:git-worktree` |
-| Groom commits before merge | `/Dev10x:git-groom` |
-| Push safely | `/Dev10x:git` (validates protected branches) |
-| Audit this session | `/Dev10x:skill-audit` |
+| Create commit | `/dev10x:git-commit` |
+| Create PR | `/dev10x:gh-pr-create` |
+| Review PR | `/dev10x:gh-pr-review` |
+| Respond to PR review | `/dev10x:gh-pr-respond` |
+| Create branch from ticket | `/dev10x:ticket-branch` |
+| Estimate a ticket or project | `/dev10x:estimate` |
+| Create worktree | `/dev10x:git-worktree` |
+| Groom commits before merge | `/dev10x:git-groom` |
+| Push safely | `/dev10x:git` (validates protected branches) |
+| Audit this session | `/dev10x:skill-audit` |

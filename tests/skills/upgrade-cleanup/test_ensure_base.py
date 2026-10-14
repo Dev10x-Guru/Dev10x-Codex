@@ -9,6 +9,7 @@ import yaml
 from dev10x.domain.common.accepted_findings import DEFAULT_ACCEPTED_FINDINGS, find_acceptance
 from dev10x.domain.common.tracker_choice import Tracker
 from dev10x.skills.permission import update_paths
+from dev10x.skills.permission.catalog_paths import load_catalog_document
 from dev10x.skills.permission.update_paths import (
     _is_nonfunctional_mcp_wildcard,
     _load_global_allow_rules,
@@ -19,7 +20,7 @@ class TestIsNonfunctionalMcpWildcard:
     @pytest.mark.parametrize(
         "rule",
         [
-            "mcp__plugin_Dev10x_*",
+            "mcp__plugin_dev10x_*",
             "mcp__plugin_SomePlugin_*",
         ],
     )
@@ -29,11 +30,11 @@ class TestIsNonfunctionalMcpWildcard:
     @pytest.mark.parametrize(
         "rule",
         [
-            "mcp__plugin_Dev10x_cli__mktmp",
-            "mcp__plugin_Dev10x_cli__detect_tracker",
+            "mcp__plugin_dev10x_cli__mktmp",
+            "mcp__plugin_dev10x_cli__detect_tracker",
             "Bash(gh pr view:*)",
-            "Skill(Dev10x:*)",
-            "mcp__plugin_Dev10x_cli__*",
+            "Skill(dev10x:*)",
+            "mcp__plugin_dev10x_cli__*",
         ],
     )
     def test_ignores_non_wildcard_patterns(self, rule: str) -> None:
@@ -46,7 +47,7 @@ class TestLoadGlobalAllowRules:
         settings = tmp_path / ".claude" / "settings.json"
         settings.parent.mkdir(parents=True)
         monkeypatch.setattr(
-            "dev10x.skills.permission.update_paths.Path.home",
+            "dev10x.skills.permission.catalog_write.Path.home",
             lambda: tmp_path,
         )
         return settings
@@ -57,8 +58,8 @@ class TestLoadGlobalAllowRules:
                 {
                     "permissions": {
                         "allow": [
-                            "mcp__plugin_Dev10x_*",
-                            "mcp__plugin_Dev10x_cli__mktmp",
+                            "mcp__plugin_dev10x_*",
+                            "mcp__plugin_dev10x_cli__mktmp",
                             "Bash(gh pr view:*)",
                         ]
                     }
@@ -68,19 +69,19 @@ class TestLoadGlobalAllowRules:
 
         effective, wildcards = _load_global_allow_rules()
 
-        assert "mcp__plugin_Dev10x_*" not in effective
-        assert "mcp__plugin_Dev10x_cli__mktmp" in effective
+        assert "mcp__plugin_dev10x_*" not in effective
+        assert "mcp__plugin_dev10x_cli__mktmp" in effective
         assert "Bash(gh pr view:*)" in effective
-        assert wildcards == ["mcp__plugin_Dev10x_*"]
+        assert wildcards == ["mcp__plugin_dev10x_*"]
 
     def test_returns_empty_when_no_wildcards(self, global_settings: Path) -> None:
         global_settings.write_text(
-            json.dumps({"permissions": {"allow": ["mcp__plugin_Dev10x_cli__mktmp"]}})
+            json.dumps({"permissions": {"allow": ["mcp__plugin_dev10x_cli__mktmp"]}})
         )
 
         effective, wildcards = _load_global_allow_rules()
 
-        assert "mcp__plugin_Dev10x_cli__mktmp" in effective
+        assert "mcp__plugin_dev10x_cli__mktmp" in effective
         assert wildcards == []
 
     def test_returns_empty_sets_when_file_missing(
@@ -89,7 +90,7 @@ class TestLoadGlobalAllowRules:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(
-            "dev10x.skills.permission.update_paths.Path.home",
+            "dev10x.skills.permission.catalog_write.Path.home",
             lambda: tmp_path,
         )
 
@@ -115,7 +116,7 @@ class TestEnsureBasePermissionsWithWildcard:
                 {
                     "permissions": {
                         "allow": [
-                            "mcp__plugin_Dev10x_*",
+                            "mcp__plugin_dev10x_*",
                         ]
                     }
                 }
@@ -124,16 +125,16 @@ class TestEnsureBasePermissionsWithWildcard:
 
         count, _ = update_paths.ensure_base_permissions(
             settings_file,
-            ["mcp__plugin_Dev10x_cli__mktmp", "mcp__plugin_Dev10x_cli__push_safe"],
+            ["mcp__plugin_dev10x_cli__mktmp", "mcp__plugin_dev10x_cli__push_safe"],
             expand_mcp=False,
         )
 
         assert count == 3
         data = json.loads(settings_file.read_text())
         allow = data["permissions"]["allow"]
-        assert "mcp__plugin_Dev10x_cli__mktmp" in allow
-        assert "mcp__plugin_Dev10x_cli__push_safe" in allow
-        assert "mcp__plugin_Dev10x_*" not in allow
+        assert "mcp__plugin_dev10x_cli__mktmp" in allow
+        assert "mcp__plugin_dev10x_cli__push_safe" in allow
+        assert "mcp__plugin_dev10x_*" not in allow
 
     def test_removes_wildcard_even_when_no_missing_permissions(
         self,
@@ -144,8 +145,8 @@ class TestEnsureBasePermissionsWithWildcard:
                 {
                     "permissions": {
                         "allow": [
-                            "mcp__plugin_Dev10x_*",
-                            "mcp__plugin_Dev10x_cli__mktmp",
+                            "mcp__plugin_dev10x_*",
+                            "mcp__plugin_dev10x_cli__mktmp",
                         ]
                     }
                 }
@@ -154,15 +155,15 @@ class TestEnsureBasePermissionsWithWildcard:
 
         count, messages = update_paths.ensure_base_permissions(
             settings_file,
-            ["mcp__plugin_Dev10x_cli__mktmp"],
+            ["mcp__plugin_dev10x_cli__mktmp"],
             expand_mcp=False,
         )
 
         assert count == 1
         data = json.loads(settings_file.read_text())
         allow = data["permissions"]["allow"]
-        assert "mcp__plugin_Dev10x_*" not in allow
-        assert "mcp__plugin_Dev10x_cli__mktmp" in allow
+        assert "mcp__plugin_dev10x_*" not in allow
+        assert "mcp__plugin_dev10x_cli__mktmp" in allow
         assert any("non-functional" in m for m in messages)
 
 
@@ -178,11 +179,11 @@ class TestEnsureBaseExpandsStaleWildcards:
     @pytest.fixture()
     def fake_catalog(self, monkeypatch: pytest.MonkeyPatch) -> dict:
         catalog = {
-            "Dev10x_cli": [
-                "mcp__plugin_Dev10x_cli__alpha",
-                "mcp__plugin_Dev10x_cli__beta",
+            "dev10x_cli": [
+                "mcp__plugin_dev10x_cli__alpha",
+                "mcp__plugin_dev10x_cli__beta",
             ],
-            "Dev10x_db": ["mcp__plugin_Dev10x_db__query"],
+            "dev10x_db": ["mcp__plugin_dev10x_db__query"],
         }
         monkeypatch.setattr(
             "dev10x.skills.permission.enumerate_mcp.discover_mcp_tools",
@@ -195,7 +196,7 @@ class TestEnsureBaseExpandsStaleWildcards:
         settings_file: Path,
         fake_catalog: dict,
     ) -> None:
-        settings_file.write_text(json.dumps({"permissions": {"allow": ["mcp__plugin_Dev10x_*"]}}))
+        settings_file.write_text(json.dumps({"permissions": {"allow": ["mcp__plugin_dev10x_*"]}}))
 
         count, messages = update_paths.ensure_base_permissions(
             settings_file,
@@ -204,10 +205,10 @@ class TestEnsureBaseExpandsStaleWildcards:
 
         data = json.loads(settings_file.read_text())
         allow = data["permissions"]["allow"]
-        assert "mcp__plugin_Dev10x_*" not in allow
-        assert "mcp__plugin_Dev10x_cli__alpha" in allow
-        assert "mcp__plugin_Dev10x_cli__beta" in allow
-        assert "mcp__plugin_Dev10x_db__query" in allow
+        assert "mcp__plugin_dev10x_*" not in allow
+        assert "mcp__plugin_dev10x_cli__alpha" in allow
+        assert "mcp__plugin_dev10x_cli__beta" in allow
+        assert "mcp__plugin_dev10x_db__query" in allow
         # 1 wildcard removed + 3 tools added
         assert count == 4
         assert any("expanded from MCP wildcard" in m for m in messages)
@@ -222,8 +223,8 @@ class TestEnsureBaseExpandsStaleWildcards:
                 {
                     "permissions": {
                         "allow": [
-                            "mcp__plugin_Dev10x_*",
-                            "mcp__plugin_Dev10x_cli__alpha",
+                            "mcp__plugin_dev10x_*",
+                            "mcp__plugin_dev10x_cli__alpha",
                         ]
                     }
                 }
@@ -238,10 +239,10 @@ class TestEnsureBaseExpandsStaleWildcards:
         data = json.loads(settings_file.read_text())
         allow = data["permissions"]["allow"]
         # alpha kept once, beta + query added, wildcard removed
-        assert allow.count("mcp__plugin_Dev10x_cli__alpha") == 1
-        assert "mcp__plugin_Dev10x_cli__beta" in allow
-        assert "mcp__plugin_Dev10x_db__query" in allow
-        assert "mcp__plugin_Dev10x_*" not in allow
+        assert allow.count("mcp__plugin_dev10x_cli__alpha") == 1
+        assert "mcp__plugin_dev10x_cli__beta" in allow
+        assert "mcp__plugin_dev10x_db__query" in allow
+        assert "mcp__plugin_dev10x_*" not in allow
         # 1 removed + 2 expanded (alpha already present)
         assert count == 3
 
@@ -251,12 +252,12 @@ class TestEnsureBaseExpandsStaleWildcards:
         fake_catalog: dict,
     ) -> None:
         settings_file.write_text(
-            json.dumps({"permissions": {"allow": ["mcp__plugin_Dev10x_cli__alpha"]}})
+            json.dumps({"permissions": {"allow": ["mcp__plugin_dev10x_cli__alpha"]}})
         )
 
         count, _ = update_paths.ensure_base_permissions(
             settings_file,
-            base_permissions=["mcp__plugin_Dev10x_cli__alpha"],
+            base_permissions=["mcp__plugin_dev10x_cli__alpha"],
         )
 
         assert count == 0
@@ -266,7 +267,7 @@ class TestEnsureBaseExpandsStaleWildcards:
         settings_file: Path,
         fake_catalog: dict,
     ) -> None:
-        settings_file.write_text(json.dumps({"permissions": {"allow": ["mcp__plugin_Dev10x_*"]}}))
+        settings_file.write_text(json.dumps({"permissions": {"allow": ["mcp__plugin_dev10x_*"]}}))
 
         count, _ = update_paths.ensure_base_permissions(
             settings_file,
@@ -514,7 +515,7 @@ class TestEnsureBaseDenies:
     @pytest.fixture
     def home_settings(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.setattr(
-            "dev10x.skills.permission.update_paths.Path.home",
+            "dev10x.skills.permission.catalog_write.Path.home",
             lambda: tmp_path / "home",
         )
         (tmp_path / "home" / ".claude").mkdir(parents=True)
@@ -575,6 +576,48 @@ class TestEnsureBaseDenies:
         data = json.loads(home_settings.read_text())
         assert data["permissions"]["ask"] == ["Bash(gh api -X DELETE:*)"]
 
+    STALE_CATALOG = {
+        "base_permissions": ["Bash(git status:*)", "Bash(/tmp/Dev10x/*.py:*)"],
+        "base_denies": [],
+    }
+
+    def test_refuses_to_seed_a_star_before_colon_star(self, home_settings: Path) -> None:
+        result = update_paths.ensure_base(
+            config=self.STALE_CATALOG,
+            settings_files=[home_settings],
+            dry_run=False,
+        )
+
+        assert result["exit_code"] == 0
+        assert json.loads(home_settings.read_text())["permissions"]["allow"] == [
+            "Bash(git status:*)"
+        ]
+        assert "    - Bash(/tmp/Dev10x/*.py:*)" in result["messages"]
+
+    def test_refusal_is_silent_when_quiet(self, home_settings: Path) -> None:
+        result = update_paths.ensure_base(
+            config=self.STALE_CATALOG,
+            settings_files=[home_settings],
+            dry_run=False,
+            quiet=True,
+        )
+
+        assert not any("Refusing to seed" in m for m in result["messages"])
+
+    def test_catalog_gap_does_not_count_an_unseedable_rule(self, home_settings: Path) -> None:
+        update_paths.ensure_base(
+            config=self.STALE_CATALOG,
+            settings_files=[home_settings],
+            dry_run=False,
+        )
+
+        result = update_paths.catalog_gap(
+            config=self.STALE_CATALOG,
+            settings_files=[home_settings],
+        )
+
+        assert result["exit_code"] == 0
+
     def test_ensure_base_emits_home_twin_for_tilde_rule(
         self,
         tmp_path: Path,
@@ -584,7 +627,7 @@ class TestEnsureBaseDenies:
         merges non-destructively AND gains its resolved /home/<user>/ twin
         (GH-47) — additive over the pre-PAP flat-shim output."""
         monkeypatch.setattr(
-            "dev10x.skills.permission.update_paths.Path.home",
+            "dev10x.skills.permission.catalog_write.Path.home",
             lambda: tmp_path / "home",
         )
         (tmp_path / "home" / ".claude").mkdir(parents=True)
@@ -617,7 +660,7 @@ class TestEnsureBaseSeedsOneTracker:
         "tracker_permissions": {
             "linear": ["mcp__claude_ai_Linear__get_issue"],
             "jira": ["mcp__claude_ai_Atlassian_Rovo__getJiraIssue"],
-            "github": ["mcp__plugin_Dev10x_cli__issue_get"],
+            "github": ["mcp__plugin_dev10x_cli__issue_get"],
         },
         "tracker_denies": {"linear": ["mcp__claude_ai_Linear__delete_comment"]},
     }
@@ -625,7 +668,7 @@ class TestEnsureBaseSeedsOneTracker:
     @pytest.fixture()
     def settings(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.setattr(
-            "dev10x.skills.permission.update_paths.Path.home",
+            "dev10x.skills.permission.catalog_write.Path.home",
             lambda: tmp_path / "home",
         )
         (tmp_path / "home" / ".claude").mkdir(parents=True)
@@ -723,7 +766,7 @@ class TestPrivilegeEscalationDenies:
         projects_yaml = (
             Path(__file__).resolve().parents[3] / "skills" / "upgrade-cleanup" / "projects.yaml"
         )
-        config = yaml.safe_load(projects_yaml.read_text())
+        config = load_catalog_document(catalog_path=projects_yaml)
         return config.get("base_denies", [])
 
     @pytest.mark.parametrize("rule", PRIVILEGE_ESCALATION_DENIES)
@@ -758,7 +801,7 @@ def shipped_base_permissions() -> list[str]:
     projects_yaml = (
         Path(__file__).resolve().parents[3] / "skills" / "upgrade-cleanup" / "projects.yaml"
     )
-    config = yaml.safe_load(projects_yaml.read_text())
+    config = load_catalog_document(catalog_path=projects_yaml)
     return config.get("base_permissions", [])
 
 
@@ -911,6 +954,7 @@ class TestGhProjectReadsAllowed:
             Path(__file__).resolve().parents[3]
             / "src"
             / "dev10x"
+            / "core"
             / "skills"
             / "permission"
             / "baseline-permissions.yaml"
@@ -960,7 +1004,7 @@ class TestEnsureBaseSeedsSafetyKeys:
     @pytest.fixture()
     def settings(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.setattr(
-            "dev10x.skills.permission.update_paths.Path.home",
+            "dev10x.skills.permission.catalog_write.Path.home",
             lambda: tmp_path / "home",
         )
         (tmp_path / "home" / ".claude").mkdir(parents=True)
@@ -993,7 +1037,7 @@ class TestEnsureBaseSeedsSafetyKeys:
         fully deduped against global, and no denies/asks are configured —
         the exact shape that used to return before touching any file."""
         monkeypatch.setattr(
-            "dev10x.skills.permission.update_paths._load_global_allow_rules",
+            "dev10x.skills.permission.catalog_write._load_global_allow_rules",
             lambda: ({"Bash(git status:*)"}, []),
         )
 
@@ -1015,7 +1059,7 @@ class TestEnsureBaseSeedsSafetyKeys:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(
-            "dev10x.skills.permission.update_paths.Path.home",
+            "dev10x.skills.permission.catalog_write.Path.home",
             lambda: tmp_path / "home",
         )
         (tmp_path / "home" / ".claude").mkdir(parents=True)

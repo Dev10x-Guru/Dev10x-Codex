@@ -10,6 +10,49 @@ import pytest
 doctor = pytest.importorskip("dev10x.skills.permission.doctor")
 
 
+class TestDetectWorkspace:
+    """GH-1445: the common-dir lookup is GitContext's, and may be absent."""
+
+    @staticmethod
+    def _stub(
+        monkeypatch: pytest.MonkeyPatch, *, toplevel: str | None, common_dir: str | None
+    ) -> None:
+        monkeypatch.setattr(doctor.GitContext, "toplevel", property(lambda self: toplevel))
+        monkeypatch.setattr(doctor.GitContext, "common_dir", property(lambda self: common_dir))
+
+    def test_reports_the_common_dir_when_git_supplies_one(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._stub(monkeypatch, toplevel=str(tmp_path), common_dir=str(tmp_path / ".git"))
+
+        workspace = doctor.detect_workspace(tmp_path)
+
+        assert workspace.project_root == tmp_path
+        assert workspace.git_common_dir == tmp_path / ".git"
+
+    def test_falls_back_to_the_toplevel_when_there_is_no_common_dir(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._stub(monkeypatch, toplevel=str(tmp_path), common_dir=None)
+
+        workspace = doctor.detect_workspace(tmp_path)
+
+        assert workspace.project_root == tmp_path
+        assert workspace.git_common_dir is None
+
+    def test_falls_back_to_the_cwd_outside_a_repo(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The toplevel lookup is now bounded too, so its failure path is a
+        # None rather than a CalledProcessError.
+        self._stub(monkeypatch, toplevel=None, common_dir=None)
+
+        workspace = doctor.detect_workspace(tmp_path)
+
+        assert workspace.project_root == tmp_path
+        assert workspace.git_common_dir is None
+
+
 class TestCanonicalizeRule:
     def test_version_pinned_path_is_not_rewritten(self) -> None:
         # GH-715: version-pinned paths must NOT be rewritten to `**`
@@ -83,6 +126,42 @@ class TestCanonicalizeRule:
         assert doctor.canonicalize_rule(rule) == (
             "Bash(${CLAUDE_PLUGIN_ROOT}/skills/foo/scripts/bar.sh:*)"
         )
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            "Read(//tmp/Dev10x/**)",
+            "Edit(//tmp/Dev10x/**)",
+            "Read(//tmp/claude-1000/**)",
+        ],
+    )
+    def test_preserves_leading_root_anchor(self, rule: str) -> None:
+        # GH-1401: a `//` that OPENS a path token is the filesystem-root
+        # anchor the catalog ships, not ${CLAUDE_PLUGIN_ROOT} pollution.
+        # Collapsing it silently rewrites a shipped rule into one that
+        # anchors at the settings source instead of at `/`.
+        assert doctor.canonicalize_rule(rule) is None
+
+    def test_collapses_mid_path_slash_under_a_root_anchor(self) -> None:
+        # GH-1401: the exemption is positional, so real pollution deeper in
+        # the same root-anchored path is still repaired.
+        assert doctor.canonicalize_rule("Read(//tmp/Dev10x//bin/**)") == (
+            "Read(//tmp/Dev10x/bin/**)"
+        )
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            """Bash(jq '.a // "default"' f.json)""",
+            """Bash(jq -r '.x.y // empty')""",
+            """Bash(gh pr view --jq '.title // "untitled"')""",
+        ],
+    )
+    def test_preserves_jq_alternative_operator(self, rule: str) -> None:
+        # GH-1402: `//` is jq's alternative operator. Collapsing it to `/`
+        # turns the expression into division — a rule that still parses as
+        # a permission string but no longer means what it said.
+        assert doctor.canonicalize_rule(rule) is None
 
     def test_never_emits_double_star_wildcard(self) -> None:
         # GH-715 regression: no input should yield a `**` path wildcard.
@@ -276,16 +355,12 @@ class TestCrossContamination:
         )
         assert findings == []
 
-    def test_shipped_catalog_home_glob_rules_are_not_flagged(self, tmp_path: Path) -> None:
-        project = tmp_path / "p"
-        project.mkdir()
-        workspace = doctor.WorkspaceContext(project_root=project)
+    def test_shipped_catalog_carries_no_home_glob_bash_rule(self) -> None:
+        # GH-1472: `Bash(/home/*/...:*)` never matches — the `*` is literal.
         home_glob_rules = [
             rule for rule in doctor.catalogued_rules() if rule.startswith("Bash(/home/*/")
         ]
-        assert home_glob_rules, "the catalog is expected to ship /home/*/ twins"
-        findings = doctor.detect_cross_contamination(home_glob_rules, workspace=workspace)
-        assert findings == []
+        assert home_glob_rules == []
 
 
 class TestCatalogueLoadVisibility:

@@ -37,8 +37,9 @@ include_user_settings: true
 # `Read`/`Edit`/`Write` patterns are gitignore patterns — `**` crosses
 # directories, `*` stays inside one segment, and the leading token picks
 # the anchor: `//` the filesystem root, `~/` the home directory, a lone
-# `/` the settings source. A `Bash()` rule is a literal command prefix
-# where `**` is two characters. Enumerate by intent, collapse by
+# `/` the settings source. In a `Bash(X:*)` rule the text before `:*` is
+# a literal command prefix where `*` and `**` are plain characters
+# (GH-1472). Enumerate by intent, collapse by
 # redundancy: one tree rule replaces a per-subdirectory list, and no
 # rule is widened to absorb a neighbour it was not granted for.
 # Enforced by tests/skills/permission/test_path_rule_anchors.py.
@@ -77,6 +78,7 @@ command_spellings:
       - dev10x permission merge-worktree
       - dev10x permission ensure-ignored
       - dev10x permission record-upgrade
+      - dev10x permission report
       - dev10x permission update-paths
       - dev10x doctor run
       - dev10x playbook diff
@@ -98,7 +100,9 @@ command_spellings:
   - prefixes:
       ["", "uvx ", "uv run ", "uv run --project $CLAUDE_PLUGIN_ROOT "]
     commands:
+      - dev10x foreman escalate  # GH-1582
       - dev10x foreman probe
+      - dev10x foreman retire  # GH-1577
       - dev10x foreman watch
       - dev10x watchdog probe
       - dev10x watchdog sessions
@@ -115,18 +119,16 @@ base_permissions:
   # --- Plugin infrastructure (GH-274, GH-101, GH-426) ---
   - "Bash(/tmp/Dev10x/bin/mktmp.sh:*)"
 
-  # --- Arbitrary-code escape destinations (GH-370) ---
-  # GH-308 steers agents to extract inline probes into /tmp/Dev10x/*.py
-  # or ~/.claude/tools/*.py. Write is already permitted; without these,
-  # executing the extracted script prompts again (GH-271 #192, #215).
-  - "Bash(/tmp/Dev10x/*.py:*)"
-  - "Bash(/tmp/Dev10x/**/*.py:*)"
-  - "Bash(/tmp/Dev10x/*.sh:*)"
-  - "Bash(/tmp/Dev10x/**/*.sh:*)"
-  - "Bash(~/.claude/tools/*:*)"
-  - "Bash(~/.claude/tools/*.py:*)"
-  - "Bash(~/.claude/tools/*.sh:*)"
-  - "Bash(/home/*/.claude/tools/*:*)"
+  # GH-1472: no Bash rule here may put a `*` before a trailing `:*`.
+  # The text before `:*` is a literal prefix, so that `*` is a plain
+  # character — the rule never matches and Claude Code flags it at every
+  # startup. Do not "fix" one by switching to the space form
+  # (`Bash(X *)`): there `*` matches any text, `..` and `-c` included, so
+  # the rule would grant far more than it ever did. The GH-370 escape
+  # folders (/tmp/Dev10x/*.py, ~/.claude/tools/*), the /home/*/ twins and
+  # the cross-worktree git and `uv run --directory` spellings were all
+  # this shape and were dropped. Enforced by
+  # tests/skills/permission/test_catalog_rule_shapes.py.
 
   # --- Plugin scripts (GH-471) ---
   # Per-script Bash rules are NO LONGER listed here. They previously used
@@ -173,75 +175,75 @@ base_permissions:
   # already covers all grep invocations.
 
   # --- Dev10x MCP tools: cli server (GH-878) ---
-  - "mcp__plugin_Dev10x_cli__detect_tracker"
-  - "mcp__plugin_Dev10x_cli__pr_detect"
-  - "mcp__plugin_Dev10x_cli__issue_get"
-  - "mcp__plugin_Dev10x_cli__issue_comments"
-  - "mcp__plugin_Dev10x_cli__issue_comment_edit"
-  - "mcp__plugin_Dev10x_cli__issue_comment_delete"
-  - "mcp__plugin_Dev10x_cli__issue_create"
-  - "mcp__plugin_Dev10x_cli__pr_comments"
-  - "mcp__plugin_Dev10x_cli__pr_comment_reply"
-  - "mcp__plugin_Dev10x_cli__pr_review_comment_edit"
-  - "mcp__plugin_Dev10x_cli__request_review"
-  - "mcp__plugin_Dev10x_cli__detect_base_branch"
-  - "mcp__plugin_Dev10x_cli__verify_pr_state"
-  - "mcp__plugin_Dev10x_cli__pre_pr_checks"
-  - "mcp__plugin_Dev10x_cli__create_pr"
-  - "mcp__plugin_Dev10x_cli__generate_commit_list"
-  - "mcp__plugin_Dev10x_cli__post_summary_comment"
-  - "mcp__plugin_Dev10x_cli__pr_notify"
-  - "mcp__plugin_Dev10x_cli__push_safe"
-  - "mcp__plugin_Dev10x_cli__rebase_groom"
-  - "mcp__plugin_Dev10x_cli__create_worktree"
-  - "mcp__plugin_Dev10x_cli__mass_rewrite"
-  - "mcp__plugin_Dev10x_cli__start_split_rebase"
-  - "mcp__plugin_Dev10x_cli__next_worktree_name"
-  - "mcp__plugin_Dev10x_cli__setup_aliases"
-  - "mcp__plugin_Dev10x_cli__mktmp"
-  - "mcp__plugin_Dev10x_cli__plan_sync_set_context"
-  - "mcp__plugin_Dev10x_cli__plan_sync_json_summary"
-  - "mcp__plugin_Dev10x_cli__plan_sync_archive"
-  - "mcp__plugin_Dev10x_cli__check_top_level_comments"
-  - "mcp__plugin_Dev10x_cli__unresolved_threads"
-  - "mcp__plugin_Dev10x_cli__ci_check_status"
+  - "mcp__plugin_dev10x_cli__detect_tracker"
+  - "mcp__plugin_dev10x_cli__pr_detect"
+  - "mcp__plugin_dev10x_cli__issue_get"
+  - "mcp__plugin_dev10x_cli__issue_comments"
+  - "mcp__plugin_dev10x_cli__issue_comment_edit"
+  - "mcp__plugin_dev10x_cli__issue_comment_delete"
+  - "mcp__plugin_dev10x_cli__issue_create"
+  - "mcp__plugin_dev10x_cli__pr_comments"
+  - "mcp__plugin_dev10x_cli__pr_comment_reply"
+  - "mcp__plugin_dev10x_cli__pr_review_comment_edit"
+  - "mcp__plugin_dev10x_cli__request_review"
+  - "mcp__plugin_dev10x_cli__detect_base_branch"
+  - "mcp__plugin_dev10x_cli__verify_pr_state"
+  - "mcp__plugin_dev10x_cli__pre_pr_checks"
+  - "mcp__plugin_dev10x_cli__create_pr"
+  - "mcp__plugin_dev10x_cli__generate_commit_list"
+  - "mcp__plugin_dev10x_cli__post_summary_comment"
+  - "mcp__plugin_dev10x_cli__pr_notify"
+  - "mcp__plugin_dev10x_cli__push_safe"
+  - "mcp__plugin_dev10x_cli__rebase_groom"
+  - "mcp__plugin_dev10x_cli__create_worktree"
+  - "mcp__plugin_dev10x_cli__mass_rewrite"
+  - "mcp__plugin_dev10x_cli__start_split_rebase"
+  - "mcp__plugin_dev10x_cli__next_worktree_name"
+  - "mcp__plugin_dev10x_cli__setup_aliases"
+  - "mcp__plugin_dev10x_cli__mktmp"
+  - "mcp__plugin_dev10x_cli__plan_sync_set_context"
+  - "mcp__plugin_dev10x_cli__plan_sync_json_summary"
+  - "mcp__plugin_dev10x_cli__plan_sync_archive"
+  - "mcp__plugin_dev10x_cli__check_top_level_comments"
+  - "mcp__plugin_dev10x_cli__unresolved_threads"
+  - "mcp__plugin_dev10x_cli__ci_check_status"
   # Test runners (GH-880, #877 E3 gap 1) — the diag-friction steer target
   # for scoped py/node tests. Without these, the steered one-liner
   # (run_node_tests(runner="npm", cwd=...)) just moves the prompt.
-  - "mcp__plugin_Dev10x_cli__run_tests"
-  - "mcp__plugin_Dev10x_cli__run_node_tests"
-  - "mcp__plugin_Dev10x_cli__update_paths"
-  - "mcp__plugin_Dev10x_cli__collect_prs"
-  - "mcp__plugin_Dev10x_cli__generate_skill_index"
-  - "mcp__plugin_Dev10x_cli__audit_extract_session"
-  - "mcp__plugin_Dev10x_cli__audit_analyze_actions"
-  - "mcp__plugin_Dev10x_cli__audit_analyze_permissions"
-  - "mcp__plugin_Dev10x_cli__usage_blocks"
-  # GH-1175: read-only catalog-coverage check behind Dev10x:diag-friction
+  - "mcp__plugin_dev10x_cli__run_tests"
+  - "mcp__plugin_dev10x_cli__run_node_tests"
+  - "mcp__plugin_dev10x_cli__update_paths"
+  - "mcp__plugin_dev10x_cli__collect_prs"
+  - "mcp__plugin_dev10x_cli__generate_skill_index"
+  - "mcp__plugin_dev10x_cli__audit_extract_session"
+  - "mcp__plugin_dev10x_cli__audit_analyze_actions"
+  - "mcp__plugin_dev10x_cli__audit_analyze_permissions"
+  - "mcp__plugin_dev10x_cli__usage_blocks"
+  # GH-1175: read-only catalog-coverage check behind dev10x:diag-friction
   # Step 3a. Catalogued in the same commit that registers the tool — the
   # friction-diagnosis skill's own first step must not be a prompt.
-  - "mcp__plugin_Dev10x_cli__permission_catalog_gap"
-  # GH-1153: read-only milestone/label roster behind Dev10x:ticket-create
+  - "mcp__plugin_dev10x_cli__permission_catalog_gap"
+  # GH-1153: read-only milestone/label roster behind dev10x:ticket-create
   # Step 4. It was registered, declared in SKILL.md `allowed-tools`, and
   # listed in .claude/rules/mcp-tools.md — none of which grants anything.
   # Absent from every catalog, ensure-base could never seed it, so every
   # caller prompted. test_catalog_covers_mcp_tools.py now fails on any
   # un-catalogued read tool so this cannot recur silently.
-  - "mcp__plugin_Dev10x_cli__triage_roster"
+  - "mcp__plugin_dev10x_cli__triage_roster"
   # GH-1319: read-only milestone listing, the general-purpose counterpart
   # to triage_roster's open-milestone read. Read-only, so it belongs here
   # rather than in WRITE_TOOLS_NOT_SEEDED.
-  - "mcp__plugin_Dev10x_cli__milestone_list"
+  - "mcp__plugin_dev10x_cli__milestone_list"
   # The same GH-1153 gap, found by that new test rather than by a user
   # hitting the prompt: five more registered read-only tools had never
   # been catalogued. `record_upgrade` is deliberately absent — it writes
   # the applied-version state, and writes keep prompting (it is named in
   # the test's WRITE_TOOLS_NOT_SEEDED list).
-  - "mcp__plugin_Dev10x_cli__audit_hook_log_path"
-  - "mcp__plugin_Dev10x_cli__audit_hook_recent"
-  - "mcp__plugin_Dev10x_cli__background_preamble"
-  - "mcp__plugin_Dev10x_cli__resolve_plugin_origin"
-  - "mcp__plugin_Dev10x_cli__slack_thread_is_forward"
+  - "mcp__plugin_dev10x_cli__audit_hook_log_path"
+  - "mcp__plugin_dev10x_cli__audit_hook_recent"
+  - "mcp__plugin_dev10x_cli__background_preamble"
+  - "mcp__plugin_dev10x_cli__resolve_plugin_origin"
+  - "mcp__plugin_dev10x_cli__slack_thread_is_forward"
 
   # GH-1215: the guard added by GH-1153 scanned 5 of 12 mcp modules and
   # could not see the @github_tool decorator, so it passed green while
@@ -253,30 +255,30 @@ base_permissions:
   # resolve_gate is the headline: every skill gate has called it since
   # GH-1168, and it appears accepted-via-option-2 in three separate
   # repos' settings.local.json — once per checkout, forever.
-  - "mcp__plugin_Dev10x_cli__resolve_gate"
-  - "mcp__plugin_Dev10x_cli__preset_pin_status"
-  - "mcp__plugin_Dev10x_cli__supervisor_review_status"
-  - "mcp__plugin_Dev10x_cli__human_review_status"
-  - "mcp__plugin_Dev10x_cli__tracker_status"
+  - "mcp__plugin_dev10x_cli__resolve_gate"
+  - "mcp__plugin_dev10x_cli__preset_pin_status"
+  - "mcp__plugin_dev10x_cli__supervisor_review_status"
+  - "mcp__plugin_dev10x_cli__human_review_status"
+  - "mcp__plugin_dev10x_cli__tracker_status"
   # GH-1261
-  - "mcp__plugin_Dev10x_cli__ide_status"
-  - "mcp__plugin_Dev10x_cli__task_index_get"
-  - "mcp__plugin_Dev10x_cli__list_client_roots"
-  - "mcp__plugin_Dev10x_cli__pr_get"
+  - "mcp__plugin_dev10x_cli__ide_status"
+  - "mcp__plugin_dev10x_cli__task_index_get"
+  - "mcp__plugin_dev10x_cli__list_client_roots"
+  - "mcp__plugin_dev10x_cli__pr_get"
   # GH-1359: read-only, mirrors issue_list — no gh api fallback needed.  # cli-friction: allow raw-gh-api — names the CLI it replaces
-  - "mcp__plugin_Dev10x_cli__pr_list"
+  - "mcp__plugin_dev10x_cli__pr_list"
   # pr_labels defaults to action="list"; its add/remove writes are the
   # sanctioned path for the review:cleared signal (GH-1008) and are
   # idempotent, so skills call them unconditionally rather than probing.
-  - "mcp__plugin_Dev10x_cli__pr_labels"
+  - "mcp__plugin_dev10x_cli__pr_labels"
   # Review-pattern analysis (GH-346..GH-350). All four report only —
   # author_reference_rules is a dry run that returns rendered docs for
   # human review and writes no file.
-  - "mcp__plugin_Dev10x_cli__cluster_review_comments"
-  - "mcp__plugin_Dev10x_cli__candidate_rules_report"
-  - "mcp__plugin_Dev10x_cli__validate_candidate_patterns"
-  - "mcp__plugin_Dev10x_cli__author_reference_rules"
-  - "mcp__plugin_Dev10x_cli__rule_confidence_report"
+  - "mcp__plugin_dev10x_cli__cluster_review_comments"
+  - "mcp__plugin_dev10x_cli__candidate_rules_report"
+  - "mcp__plugin_dev10x_cli__validate_candidate_patterns"
+  - "mcp__plugin_dev10x_cli__author_reference_rules"
+  - "mcp__plugin_dev10x_cli__rule_confidence_report"
 
   # --- Plugin-mandated workflow writes (GH-1215) ---
   # These write, and are catalogued anyway for the same reason
@@ -286,34 +288,34 @@ base_permissions:
   # only route left. Leaving them uncatalogued makes the sanctioned path
   # prompt while the unsanctioned one is denied — a dead end, not a
   # safety margin.
-  - "mcp__plugin_Dev10x_cli__update_pr"
-  - "mcp__plugin_Dev10x_cli__pr_ready"
-  - "mcp__plugin_Dev10x_cli__pr_close"
-  - "mcp__plugin_Dev10x_cli__pr_issue_comment"
-  - "mcp__plugin_Dev10x_cli__pr_review_edit"
-  - "mcp__plugin_Dev10x_cli__resolve_review_thread"
-  - "mcp__plugin_Dev10x_cli__minimize_comments"
-  - "mcp__plugin_Dev10x_cli__milestone_create"
-  - "mcp__plugin_Dev10x_cli__milestone_close"
-  - "mcp__plugin_Dev10x_cli__milestone_edit"
-  - "mcp__plugin_Dev10x_cli__milestone_reopen"
-  - "mcp__plugin_Dev10x_cli__milestones_bulk_create"
-  - "mcp__plugin_Dev10x_cli__issues_bulk_create"
-  - "mcp__plugin_Dev10x_cli__issues_bulk_edit"
+  - "mcp__plugin_dev10x_cli__update_pr"
+  - "mcp__plugin_dev10x_cli__pr_ready"
+  - "mcp__plugin_dev10x_cli__pr_close"
+  - "mcp__plugin_dev10x_cli__pr_issue_comment"
+  - "mcp__plugin_dev10x_cli__pr_review_edit"
+  - "mcp__plugin_dev10x_cli__resolve_review_thread"
+  - "mcp__plugin_dev10x_cli__minimize_comments"
+  - "mcp__plugin_dev10x_cli__milestone_create"
+  - "mcp__plugin_dev10x_cli__milestone_close"
+  - "mcp__plugin_dev10x_cli__milestone_edit"
+  - "mcp__plugin_dev10x_cli__milestone_reopen"
+  - "mcp__plugin_dev10x_cli__milestones_bulk_create"
+  - "mcp__plugin_dev10x_cli__issues_bulk_create"
+  - "mcp__plugin_dev10x_cli__issues_bulk_edit"
   # issue_labels (GH-1322): same GH-1215 reasoning as pr_labels above —
   # its raw-CLI equivalent (`gh issue edit --add-label`/`--remove-label`)  # cli-friction: allow raw-gh-issue — names the CLI it replaces
   # is routed/blocked, so this wrapper is the only sanctioned route.
-  - "mcp__plugin_Dev10x_cli__issue_labels"
+  - "mcp__plugin_dev10x_cli__issue_labels"
   # The park family's only sanctioned write path (GH-1009, ADR-0018 D5).
   # Reaching the store with Write/Edit trips the self-settings consent
   # gate AND bypasses the file lock, so two parallel worktrees parking at
   # once lose an entry — the prompt here has no safe alternative to steer
   # toward.
-  - "mcp__plugin_Dev10x_cli__task_index_append"
-  - "mcp__plugin_Dev10x_cli__task_index_set"
+  - "mcp__plugin_dev10x_cli__task_index_append"
+  - "mcp__plugin_dev10x_cli__task_index_set"
 
   # --- Dev10x MCP tools: db server (GH-878) ---
-  - "mcp__plugin_Dev10x_db__query"
+  - "mcp__plugin_dev10x_db__query"
 
   # --- Temp file tree (GH-878, GH-1095, GH-1325) ---
   # mktmp writes every skill's intermediate files under /tmp/Dev10x/.
@@ -359,10 +361,10 @@ base_permissions:
   # `Bash(find:*)` does not reliably match `find <path> ... | head`
   # due to how the engine tokenizes prefixes with pipelines. Scope
   # the rule to the plugin cache so common skills (work-on,
-  # skill-audit, skill-create) can scan without a prompt. Two forms
-  # — some sessions normalize `~`, others use the literal `/home/<user>`.
-  - "Bash(find ~/.claude/plugins/cache/Dev10x-Guru/Dev10x:*)"
-  - "Bash(find /home/*/.claude/plugins/cache/Dev10x-Guru/Dev10x:*)"
+  # skill-audit, skill-create) can scan without a prompt. Scoped to
+  # the publisher dir so both the kebab-case `dev10x` install and a
+  # legacy `Dev10x` one match (GH-1499).
+  - "Bash(find ~/.claude/plugins/cache/Dev10x-Guru:*)"
 
   # --- Common git operations ---
   - "Bash(git log:*)"
@@ -395,62 +397,13 @@ base_permissions:
   - "Bash(identify:*)"
 
   # --- Read-only cross-worktree git spellings (GH-1135, GH-1268) ---
-  # An agent in a worktree that needs ANOTHER checkout's state has two
-  # spellings available: the preferred `git -C <path> <verb>` and the
-  # plumbing `git --git-dir=<repo>/.git --work-tree=<repo> <verb>`.
-  #
-  # GH-1268: until this block seeded the `-C` form, only the plumbing
-  # form was covered — so `git-dir-worktree-pinning` steered agents to a
-  # shape with no rule behind it while the shape it deprecates was
-  # pre-approved. The catalog-gap report could not see the contradiction,
-  # because a rule that was never seeded cannot be reported missing. Both
-  # spellings are now covered, symmetrically, on the same nine verbs.
-  #
-  # Read-only verbs ONLY — mutating verbs stay routed to Dev10x:git /
-  # Dev10x:git-groom. This is why the `-C` rules below are verb-scoped
-  # rather than the harness's verb-blind `Bash(git -C:*)`, which would
-  # also grant `git -C <path> push --force`.
-  #
-  # These rules cover `-C` with a path ARGUMENT (cross-worktree reads).
-  # They do not sanction `git -C <cwd>` — a `-C` whose path already
-  # equals the CWD is redundant and shifts the command prefix for no
-  # gain (GH-97, GH-760 F5). `git-dir-worktree-pinning`'s two-mode
-  # compensation is what decides which spelling applies; these rules
-  # only ensure the cross-worktree branch of it can land.
-  #
-  # Both plumbing orderings are covered because agents emit both.
-  # Whether a mid-path `*` matches at all is the open question these
-  # rules depend on (ADR-0021, GH-925 F2); the permission-investigator
-  # matrix now carries a `mid_path_star` cell to settle it. If the cell
-  # reports PROMPTED, the shape is un-allow-listable and
-  # `git-dir-worktree-pinning` flips to `hook_block: true`.
-  - "Bash(git -C * status:*)"
-  - "Bash(git -C * log:*)"
-  - "Bash(git -C * rev-parse:*)"
-  - "Bash(git -C * diff:*)"
-  - "Bash(git -C * branch:*)"
-  - "Bash(git -C * worktree list:*)"
-  - "Bash(git -C * ls-files:*)"
-  - "Bash(git -C * show:*)"
-  - "Bash(git -C * merge-base:*)"
-  - "Bash(git --git-dir=* --work-tree=* status:*)"
-  - "Bash(git --git-dir=* --work-tree=* log:*)"
-  - "Bash(git --git-dir=* --work-tree=* rev-parse:*)"
-  - "Bash(git --git-dir=* --work-tree=* diff:*)"
-  - "Bash(git --git-dir=* --work-tree=* branch:*)"
-  - "Bash(git --git-dir=* --work-tree=* worktree list:*)"
-  - "Bash(git --git-dir=* --work-tree=* ls-files:*)"
-  - "Bash(git --git-dir=* --work-tree=* show:*)"
-  - "Bash(git --git-dir=* --work-tree=* merge-base:*)"
-  - "Bash(git --git-dir * --work-tree * status:*)"
-  - "Bash(git --git-dir * --work-tree * log:*)"
-  - "Bash(git --git-dir * --work-tree * rev-parse:*)"
-  - "Bash(git --git-dir * --work-tree * diff:*)"
-  - "Bash(git --git-dir * --work-tree * branch:*)"
-  - "Bash(git --git-dir * --work-tree * worktree list:*)"
-  - "Bash(git --git-dir * --work-tree * ls-files:*)"
-  - "Bash(git --git-dir * --work-tree * show:*)"
-  - "Bash(git --git-dir * --work-tree * merge-base:*)"
+  # GH-1472 settled the open question this block depended on (ADR-0021,
+  # GH-925 F2): a mid-path `*` before `:*` is a literal character, so
+  # all 27 rules that stood here (`git -C * <verb>:*` and both plumbing
+  # orderings) never matched. They were dropped rather than rewritten to
+  # the space form, where `*` would also match `-c core.fsmonitor=<cmd>`
+  # and turn a read into arbitrary execution. A cross-worktree read
+  # prompts, as it always did; prefer running from the target checkout.
 
   # --- Python project tooling (GH-20) ---
   # PEP 723 shebangs (#!/usr/bin/env -S uv run --script) execute
@@ -461,17 +414,10 @@ base_permissions:
   - "Bash(uv run --extra dev pytest:*)" # cli-friction: allow raw-pytest — base allow rule for plugin-maintenance, not a skill doc
   - "Bash(uv run ruff:*)"
   - "Bash(uv run dev10x:*)"
-  # GH-1248: the `--directory` forms of the same three commands. Allow-rule
-  # matching keys on the literal command string, so the plain forms above do
-  # not match a `uv run --directory <path> …` invocation — and that is the
-  # shape used in the multi-worktree setups Dev10x itself encourages via
-  # Dev10x:git-worktree. Same failure mode as GH-1189 (`uv add`) and GH-1149
-  # (bare `pre-commit run`): a family catalogued in one shape while users type
-  # another, with `catalog-gap` reporting 0 missing because it compares
-  # against the catalog rather than against what people run.
-  - "Bash(uv run --directory * pytest:*)" # cli-friction: allow raw-pytest — base allow rule for plugin-maintenance, not a skill doc
-  - "Bash(uv run --directory * mypy:*)"
-  - "Bash(uv run --directory * ruff:*)"
+  # GH-1248 added `uv run --directory * <tool>:*` forms here; GH-1472
+  # dropped them — the `*` before `:*` is literal, so they never matched.
+  # The DX007 prefix-friction validator already strips `--directory <p>`
+  # and re-matches the inner command against the plain rules above.
   # GH-1189: `uv lock`, `uv sync`, `uv build`, `uv tool`, `uv pip *` and
   # `uv run *` were all catalogued; `uv add` was not, so a crew worker
   # adding a dependency prompted on an unattended night run while
@@ -486,7 +432,7 @@ base_permissions:
   # says to call it directly, never via `uv run`. Only the discouraged
   # `uv run` shape was catalogued here, so the form users are told to use
   # prompted in every project. The rule exists in
-  # src/dev10x/skills/permission/baseline-permissions.yaml (build-tools
+  # src/dev10x/core/skills/permission/baseline-permissions.yaml (build-tools
   # tier), but that catalog is read by `permission resolve/audit/doctor`
   # and never by the ensure-base write path — a rule present only there
   # reaches no settings file. Global settings happened to carry it, which
@@ -498,7 +444,7 @@ base_permissions:
   # unattended foreman run while `catalog-gap` reported 0 missing. The
   # filed diagnosis blamed `prefix:*` matcher semantics; the verifiable
   # cause is narrower and is GH-1149 a second time — `Bash(cp /tmp:*)`
-  # exists ONLY in src/dev10x/skills/permission/baseline-permissions.yaml
+  # exists ONLY in src/dev10x/core/skills/permission/baseline-permissions.yaml
   # (file-ops tier), which `permission resolve/audit/doctor` read and the
   # `ensure-base` write path never does. A rule present only there reaches
   # no settings file, and under GH-47 the project file wins, so a global
@@ -524,7 +470,7 @@ base_permissions:
 
   # --- Structured-data + safe-lookup tools (GH-308) ---
   # Read-only data-format tools and binary-existence lookups.
-  # `Dev10x:diag-friction` steers agents toward these as structured
+  # `dev10x:diag-friction` steers agents toward these as structured
   # alternatives to `python -c` / `sh -c` — their inclusion here makes
   # the recommendation actionable (invoking jq/yamllint/etc. never
   # prompts). `yq` already covered above under "YAML config parsing".
@@ -553,7 +499,7 @@ base_permissions:
   - "Bash(ssh -T git@github.com)"
 
   # --- Git aliases (GH-852, GH-853) ---
-  # All base branch aliases from Dev10x:git-alias-setup.
+  # All base branch aliases from dev10x:git-alias-setup.
   # Preserved at project level as safety anchors — they enable
   # hook feedback and branch-specific allow rules.
   - "Bash(git develop-log:*)"
@@ -728,166 +674,20 @@ base_permissions:
   - "WebFetch(domain:resend.com)"
 
   # --- Dev10x skills ---
-  - "Skill(Dev10x:*)"
+  - "Skill(dev10x:*)"
 
   # NOTE (GH-768): issue-tracker MCP rules are NOT listed here. They live
-  # under `tracker_permissions:` / `tracker_denies:` at the bottom of this
-  # file, keyed by tracker, and only the project's chosen tracker's block
-  # is folded in at seeding time. Listing Linear unconditionally gave a
-  # Jira user ~35 inert allows while their own tracker still prompted.
+  # under `tracker_permissions:` (projects.d/scoping.yaml) and
+  # `tracker_denies:` (below), keyed by tracker, and only the project's
+  # chosen tracker's block is folded in at seeding time. Listing Linear
+  # unconditionally gave a Jira user ~35 inert allows while their own
+  # tracker still prompted.
 
 # --- Tracker-keyed permissions (GH-768) ---
-# `ensure-base` / `seed_worktree` fold in exactly ONE of these blocks —
-# the tracker resolved from the `tracker:` key in the matching
-# `projects[]` entry of ~/.config/Dev10x/friction.yaml, defaulting to
-# `linear` (the pre-GH-768 behaviour, so upgrades lose nothing).
-#
-# v1 covers linear / jira / github. GitLab and ClickUp are deliberately
-# absent: ClickUp has no native skill or MCP path, and the `glab` surface
-# has not been curated — an empty block would read as "supported".
-#
-# When PAP-2 lands the structured Policy catalog, these become a
-# `tracker:` key on catalog groups and this block goes away.
-tracker_permissions:
-
-  # --- Linear MCP tools (GH-204) ---
-  # Group A: read-only operations — always safe.
-  # Group B: write operations — frequently used by Dev10x skills
-  # (ticket-create, ticket-scope, ticket-jtbd, investigate, qa-scope).
-  # Group C delete tools are listed under `tracker_denies.linear` below.
-  # Both server name variants are covered:
-  #   - `mcp__claude_ai_Linear__*` (claude.ai-hosted Linear connector)
-  #   - `mcp__linear-server__*`    (self-installed linear-server MCP)
-  linear:
-  # Group A — read-only (claude.ai-hosted variant)
-  - "mcp__claude_ai_Linear__get_issue"
-  - "mcp__claude_ai_Linear__get_project"
-  - "mcp__claude_ai_Linear__get_initiative"
-  - "mcp__claude_ai_Linear__get_team"
-  - "mcp__claude_ai_Linear__get_user"
-  - "mcp__claude_ai_Linear__get_milestone"
-  - "mcp__claude_ai_Linear__get_document"
-  - "mcp__claude_ai_Linear__get_issue_status"
-  - "mcp__claude_ai_Linear__get_status_updates"
-  - "mcp__claude_ai_Linear__get_attachment"
-  - "mcp__claude_ai_Linear__list_issues"
-  - "mcp__claude_ai_Linear__list_projects"
-  - "mcp__claude_ai_Linear__list_initiatives"
-  - "mcp__claude_ai_Linear__list_milestones"
-  - "mcp__claude_ai_Linear__list_teams"
-  - "mcp__claude_ai_Linear__list_users"
-  - "mcp__claude_ai_Linear__list_cycles"
-  - "mcp__claude_ai_Linear__list_comments"
-  - "mcp__claude_ai_Linear__list_issue_labels"
-  - "mcp__claude_ai_Linear__list_issue_statuses"
-  - "mcp__claude_ai_Linear__list_project_labels"
-  - "mcp__claude_ai_Linear__list_documents"
-  - "mcp__claude_ai_Linear__list_customers"
-  - "mcp__claude_ai_Linear__search_documentation"
-  - "mcp__claude_ai_Linear__extract_images"
-  - "mcp__claude_ai_Linear__get_diff"
-  - "mcp__claude_ai_Linear__get_diff_threads"
-  - "mcp__claude_ai_Linear__list_diffs"
-
-  # Group A — read-only (linear-server variant, GH-1323).
-  # The claude.ai-hosted block above is NOT the namespace Dev10x
-  # sessions actually call — `mcp__linear-server__*` is. Every read op
-  # in the claude.ai-hosted list has a same-named counterpart here;
-  # this block mirrors it one-for-one so the two stay at parity (see
-  # tests/skills/permission/test_linear_namespace_parity.py). Before
-  # GH-1323 only 5 of these 28 were catalogued, so the other 23 had
-  # accumulated as ad-hoc per-call approvals in userspace settings.
-  - "mcp__linear-server__get_issue"
-  - "mcp__linear-server__get_project"
-  - "mcp__linear-server__get_initiative"
-  - "mcp__linear-server__get_team"
-  - "mcp__linear-server__get_user"
-  - "mcp__linear-server__get_milestone"
-  - "mcp__linear-server__get_document"
-  - "mcp__linear-server__get_issue_status"
-  - "mcp__linear-server__get_status_updates"
-  - "mcp__linear-server__get_attachment"
-  - "mcp__linear-server__list_issues"
-  - "mcp__linear-server__list_projects"
-  - "mcp__linear-server__list_initiatives"
-  - "mcp__linear-server__list_milestones"
-  - "mcp__linear-server__list_teams"
-  - "mcp__linear-server__list_users"
-  - "mcp__linear-server__list_cycles"
-  - "mcp__linear-server__list_comments"
-  - "mcp__linear-server__list_issue_labels"
-  - "mcp__linear-server__list_issue_statuses"
-  - "mcp__linear-server__list_project_labels"
-  - "mcp__linear-server__list_documents"
-  - "mcp__linear-server__list_customers"
-  - "mcp__linear-server__search_documentation"
-  - "mcp__linear-server__extract_images"
-  - "mcp__linear-server__get_diff"
-  - "mcp__linear-server__get_diff_threads"
-  - "mcp__linear-server__list_diffs"
-
-  # `get_release` has no `claude_ai_Linear` counterpart — it exists
-  # only in the linear-server namespace. Folded in here (not part of
-  # the parity mirror above) because it had already accumulated as a
-  # standalone ad-hoc allow in userspace settings; a genuine read-only
-  # op with demonstrated real usage, not a blanket namespace grant.
-  - "mcp__linear-server__get_release"
-
-  # Group B — write (claude.ai-hosted variant)
-  - "mcp__claude_ai_Linear__save_comment"
-  - "mcp__claude_ai_Linear__save_issue"
-  - "mcp__claude_ai_Linear__save_project"
-  - "mcp__claude_ai_Linear__save_milestone"
-  - "mcp__claude_ai_Linear__save_status_update"
-  - "mcp__claude_ai_Linear__save_initiative"
-  - "mcp__claude_ai_Linear__save_document"
-
-  # Group B — write (linear-server variant)
-  - "mcp__linear-server__save_issue"
-  - "mcp__linear-server__save_project"
-
-  # --- Jira / Atlassian MCP tools (GH-768) ---
-  # The claude.ai-hosted Atlassian Rovo connector. `baseline-permissions.yaml`
-  # already carries the same surface as the tier-2 `mcp-atlassian-readonly` /
-  # `mcp-atlassian-write` groups; this block is what the FLAT catalog
-  # (`ensure-base` / `seed_worktree`) actually deploys, which is where the
-  # Jira user's gap was.
-  jira:
-  # Read-only
-  - "mcp__claude_ai_Atlassian_Rovo__atlassianUserInfo"
-  - "mcp__claude_ai_Atlassian_Rovo__getAccessibleAtlassianResources"
-  - "mcp__claude_ai_Atlassian_Rovo__getVisibleJiraProjects"
-  - "mcp__claude_ai_Atlassian_Rovo__getJiraIssue"
-  - "mcp__claude_ai_Atlassian_Rovo__getJiraIssueRemoteIssueLinks"
-  - "mcp__claude_ai_Atlassian_Rovo__getJiraIssueTypeMetaWithFields"
-  - "mcp__claude_ai_Atlassian_Rovo__getJiraProjectIssueTypesMetadata"
-  - "mcp__claude_ai_Atlassian_Rovo__getTransitionsForJiraIssue"
-  - "mcp__claude_ai_Atlassian_Rovo__getIssueLinkTypes"
-  - "mcp__claude_ai_Atlassian_Rovo__lookupJiraAccountId"
-  - "mcp__claude_ai_Atlassian_Rovo__searchJiraIssuesUsingJql"
-  # Write — the counterparts of the Linear Group B tools the same
-  # Dev10x skills call (ticket-create, ticket-scope, investigate).
-  - "mcp__claude_ai_Atlassian_Rovo__createJiraIssue"
-  - "mcp__claude_ai_Atlassian_Rovo__editJiraIssue"
-  - "mcp__claude_ai_Atlassian_Rovo__addCommentToJiraIssue"
-  - "mcp__claude_ai_Atlassian_Rovo__addWorklogToJiraIssue"
-  - "mcp__claude_ai_Atlassian_Rovo__createIssueLink"
-  - "mcp__claude_ai_Atlassian_Rovo__transitionJiraIssue"
-
-  # --- GitHub Issues (GH-768) ---
-  # Mostly already covered by the unconditional `github-cli` group above;
-  # this block adds only what a GitHub-tracker user additionally needs and
-  # keeps the tracker map symmetrical (a `github` selection must not fall
-  # through to Linear's block).
-  github:
-  - "mcp__plugin_Dev10x_cli__issue_get"
-  - "mcp__plugin_Dev10x_cli__issue_list"
-  - "mcp__plugin_Dev10x_cli__issue_create"
-  - "mcp__plugin_Dev10x_cli__issue_edit"
-  - "mcp__plugin_Dev10x_cli__issue_close"
-  - "mcp__plugin_Dev10x_cli__issue_reopen"
-  - "mcp__plugin_Dev10x_cli__issue_comment"
-  - "mcp__plugin_Dev10x_cli__issue_comments"
+# `tracker_permissions` lives in projects.d/scoping.yaml (GH-1551,
+# ADR-0034 Stage A3): it is the tickets + scoping plugin's fragment and
+# is merged back into this catalog on every read, so every reader still
+# sees one catalog. The deny half stays here — a floor belongs to core.
 
 # --- Tracker-keyed deny rules (GH-768) ---
 # Destructive operations that must NEVER be auto-approved, even when a
@@ -939,11 +739,21 @@ ide_permissions:
   - "mcp__pycharm__rename_refactoring"
 
 # GH-1261
+#
+# GH-1403: the `jetbrains` -> `pycharm` server rename dropped two of the
+# five execution surfaces. A deny keys on a tool NAME, so a rename silently
+# narrows coverage while every remaining rule still looks correct.
+# `configure_python_interpreter` is deliberately absent: it mutates IDE
+# configuration and executes nothing itself, and every tool that would run
+# under that interpreter is already denied here.
 ide_denies:
   pycharm:
   - "mcp__pycharm__execute_terminal_command"
   - "mcp__pycharm__execute_code_on_kernel"
   - "mcp__pycharm__execute_tool"
+  - "mcp__pycharm__execute_run_configuration"
+  - "mcp__pycharm__run_notebook_cell"
+  - "mcp__pycharm__build_project"
 
 # --- Base ask rules (GH-1154) ---
 # The prompt tier. Until this key existed the catalog could express only
@@ -967,8 +777,9 @@ ide_denies:
 # These do NOT break the sanctioned MCP path. `milestone_create`,
 # `milestone_edit` and `milestone_reopen` do issue write-method calls  # cli-friction: allow raw-gh-api — explains why the MCP path is unaffected
 # via `_gh_api_raw` -> subprocess *inside the MCP server process*
-# (src/dev10x/github/__init__.py). Claude Code permission rules gate
-# tool calls, so no Bash-layer rule — ask or deny — can reach them.
+# (src/dev10x/coding/github/milestones.py, through core/github/_gateway.py).
+# Claude Code permission rules gate tool calls, so no Bash-layer rule —
+# ask or deny — can reach them.
 #
 # KNOWN LIMITATION (inherited from the shapes these replace, not
 # introduced here): rule matching is prefix-based, so these only match
@@ -989,10 +800,13 @@ base_asks:
 # --- Base deny rules (GH-204) ---
 # Tracker-independent denies. Tracker-specific ones live above.
 base_denies:
-  # GH-1261
+  # GH-1261, GH-1403 — unconditional, not keyed to the pinned IDE.
   - "mcp__pycharm__execute_terminal_command"
   - "mcp__pycharm__execute_code_on_kernel"
   - "mcp__pycharm__execute_tool"
+  - "mcp__pycharm__execute_run_configuration"
+  - "mcp__pycharm__run_notebook_cell"
+  - "mcp__pycharm__build_project"
 
   # --- Privilege-escalation tier (GH-326) ---
   # `sudo` and friends are denied for ANY shape, not just the option-2

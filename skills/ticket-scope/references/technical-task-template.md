@@ -51,7 +51,7 @@ Example:
 [Data shapes introduced or modified by this change. For pure
 refactors, the entities are usually class hierarchies / interfaces,
 not database tables. List them anyway — downstream tooling
-(`Dev10x:spec-sync`) uses this section to detect structural drift.]
+(`dev10x:spec-sync`) uses this section to detect structural drift.]
 
 **New / changed types:**
 
@@ -97,7 +97,7 @@ parameter `T` of `BaseRepository` is the only new generic.`
    - Pattern: No new tests needed if behavior unchanged
 
 5. **Run Full Test Suite**
-   - Command: `Skill(Dev10x:py-test src/payments/tests/)`
+   - Command: `Skill(dev10x:py-test src/payments/tests/)`
    - Verify: 100% passing
    - Check: Coverage maintained
 
@@ -201,7 +201,7 @@ by the Norms / Safeguards autopopulator from `.claude/rules/INDEX.md`
 at scope-render time. Do NOT hand-copy rules here — list manual
 additions only.]
 
-**Auto-populated rules** (filled by `Dev10x:ticket-scope` Phase 5):
+**Auto-populated rules** (filled by `dev10x:ticket-scope` Phase 5):
 - [Placeholder — renderer walks `.claude/rules/INDEX.md` and
   path-matches against affected files]
 
@@ -243,11 +243,15 @@ Safeguards describe what must always be true **post-change**.]
 
 ---
 
-## Story Points
-**5 points** (1-2 days)
+## Estimate
+**5 points** — base-class change plus one refactored repository
+(produced by `dev10x:estimate`, default ranges)
 
-**Rationale:**
-- Update BaseRepository (1 point)
-- Refactor PaymentRepository (2 points)
-- Test verification and fixes (1 point)
-- Code review and adjustments (1 point)
+| Line item            | Effort | Elapsed |
+|----------------------|--------|---------|
+| Agent implementation | 1 h    | 0.5 day |
+| Human review         | 3 h    | 3 h     |
+| Review wait          | 0      | 1 day   |
+| Testing              | 0.5 h  | 1 h     |
+| Documentation        | 0 (internal-only) | 0 |
+| **Total**            | **4.5 h** | **~2 days** |

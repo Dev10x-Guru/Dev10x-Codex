@@ -64,7 +64,7 @@ ExampleCorp repos share the same shipping pipeline).
 > `DEV10X_CONFIG_HOME`. Legacy paths under `~/.claude/memory/Dev10x/`
 > and `~/.claude/Dev10x/` are migrated lazily on first read and
 > explicitly by `dev10x config migrate` (wired into
-> `Dev10x:upgrade-cleanup` and `Dev10x:plugin-doctor`).
+> `dev10x:upgrade-cleanup` and `dev10x:plugin-doctor`).
 
 **Tier 3 — Plugin defaults** (`${CLAUDE_PLUGIN_ROOT}/skills/*/references/`):
 Shipped with the plugin. Used when no user override exists.
@@ -85,9 +85,12 @@ Both use standard Unix glob syntax (`fnmatch`): `*` matches any string
 any character in *seq*.
 
 > **Deprecated alias.** `match:` is still accepted in a repo-addressed
-> file for one release, so an existing playbook keeps working. Rename it
-> to `match_repo:`; `dev10x config doctor` and `dev10x playbook diff`
-> report every entry still on the alias.
+> file, per the deprecation register
+> (`src/dev10x/domain/deprecations.py`, GH-1375), so an existing
+> playbook keeps working until removal in `0.112.0`
+> ([ADR-0028](../docs/adr/0028-deprecations-carry-a-removal-version.md)).
+> Rename it to `match_repo:`; `dev10x config doctor` and
+> `dev10x playbook diff` report every entry still on the alias.
 
 ```yaml
 projects:
@@ -135,6 +138,13 @@ guarantee.
 | 1 | `.claude/Dev10x/playbooks/<key>.yaml` | Standard playbook YAML |
 | 2 | `~/.config/Dev10x/playbooks/<key>.yaml` | Playbook + `projects` mapping |
 | 3 | `${CLAUDE_PLUGIN_ROOT}/skills/<key>/references/playbook.yaml` | Default playbook |
+
+A key with no dedicated tier-3 file (`work-on`) uses the shared
+default: the core mechanism file
+`skills/playbook/references/playbook.yaml` merged with each plugin's
+`skills/*/references/playbook.d/<plugin>.yaml` fragment, core first and
+then in `plugins.yaml` order (GH-1555, ADR-0034 Stage A3). The work-on
+plays are in `skills/work-on/references/playbook.d/coding.yaml`.
 
 **Global playbook format** (Tier 2):
 
@@ -184,7 +194,7 @@ Session prefs are **not** project-local (ADR-0018 D1). `friction_level`,
 `active_modes`, `allowed_overlays`, and the `gate_*` keys live in one
 global file keyed by directory-path globs, so a repo's prefs cover
 every worktree by construction. Read them via
-`mcp__plugin_Dev10x_cli__resolve_gate`, which owns the precedence.
+`mcp__plugin_dev10x_cli__resolve_gate`, which owns the precedence.
 
 The retired `.claude/Dev10x/session.yaml` is not a tier: ADR-0018 D2
 removed it as a config source, and D5 moved its remaining task-index
@@ -220,10 +230,12 @@ projects:
 | 2 | `~/.config/Dev10x/dod-acceptance-criteria.yaml` |
 | 3 | Plugin defaults (hardcoded in skill) |
 
-`Dev10x:verify-acc-dod` falls back to the GH-941-retired
-`~/.claude/memory/Dev10x/dod-acceptance-criteria.yaml` for one release
-when tier 2 is absent, and says so in its output when the fallback
-fires. That fallback is **read-only** — overrides are always written to
+`dev10x:verify-acc-dod` falls back to the GH-941-retired
+`~/.claude/memory/Dev10x/dod-acceptance-criteria.yaml` when tier 2 is
+absent, and says so in its output when the fallback fires — until
+removal in `0.112.0` per the deprecation register (GH-1035,
+[ADR-0028](../docs/adr/0028-deprecations-carry-a-removal-version.md)).
+That fallback is **read-only** — overrides are always written to
 the tier-2 path above. Until GH-1035 the skill named the legacy path as
 its sole location while this table named the tier-2 one, so a
 maintainer's edits landed in a file nothing read.
@@ -267,13 +279,13 @@ maintainer's edits landed in a file nothing read.
 | 2 | `~/.config/Dev10x/plugin-maintenance-prefs.yaml` |
 
 Valid values for `update_preference`: `both | plugin | uv | skip | ask`.
-When absent or set to `ask`, `Dev10x:plugin-maintenance` prompts on
+When absent or set to `ask`, `dev10x:plugin-maintenance` prompts on
 every run. Legacy path `~/.claude/memory/Dev10x/plugin-maintenance-prefs.yaml`
 is migrated lazily on first read.
 
 ### Database Connections
 
-`databases.yaml` stores named database entries for `Dev10x:db-psql`.
+`databases.yaml` stores named database entries for `dev10x:db-psql`.
 The script resolves config from multiple locations so project plugins
 (e.g., `tt:db`) are discovered automatically without symlinks.
 
@@ -300,20 +312,20 @@ command prefix and breaks allow-rule matching (see GH-448).
 
 | Skill | Config type | Tiers used |
 |-------|------------|------------|
-| `Dev10x:work-on` | playbook, session | 1, 2, 3 |
-| `Dev10x:playbook` | playbook | 1, 2, 3 |
-| `Dev10x:gh-pr-respond` | playbook | 1, 2, 3 |
-| `Dev10x:release-notes` | playbook | 1, 2, 3 |
-| `Dev10x:investigate` | playbook | 1, 2, 3 |
-| `Dev10x:gh-pr-merge` | settings | 2 |
-| `Dev10x:verify-acc-dod` | acceptance criteria | 2, 3 |
-| `Dev10x:git-commit` | gitmoji | 2, 3 |
-| `Dev10x:gh-pr-request-review` | reviewers | 2 |
-| `Dev10x:db` | schema, databases | 2 |
-| `Dev10x:db-psql` | databases | 2 |
-| `Dev10x:slack` | slack-config | 2 |
-| `Dev10x:slack-setup` | slack-config | 2 |
-| `Dev10x:slack-review-request` | slack-config | 2 |
-| `Dev10x:request-review` | reviewers, slack-config | 2 |
-| `Dev10x:fanout` | session | 1 |
-| `Dev10x:plugin-maintenance` | preferences | 2 |
+| `dev10x:work-on` | playbook, session | 1, 2, 3 |
+| `dev10x:playbook` | playbook | 1, 2, 3 |
+| `dev10x:gh-pr-respond` | playbook | 1, 2, 3 |
+| `dev10x:release-notes` | playbook | 1, 2, 3 |
+| `dev10x:investigate` | playbook | 1, 2, 3 |
+| `dev10x:gh-pr-merge` | settings | 2 |
+| `dev10x:verify-acc-dod` | acceptance criteria | 2, 3 |
+| `dev10x:git-commit` | gitmoji | 2, 3 |
+| `dev10x:gh-pr-request-review` | reviewers | 2 |
+| `dev10x:db` | schema, databases | 2 |
+| `dev10x:db-psql` | databases | 2 |
+| `dev10x:slack` | slack-config | 2 |
+| `dev10x:slack-setup` | slack-config | 2 |
+| `dev10x:slack-review-request` | slack-config | 2 |
+| `dev10x:request-review` | reviewers, slack-config | 2 |
+| `dev10x:fanout` | session | 1 |
+| `dev10x:plugin-maintenance` | preferences | 2 |

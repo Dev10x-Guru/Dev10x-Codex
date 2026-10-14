@@ -107,7 +107,7 @@ class TestHasLeakedSecret:
         [
             "Bash(git log:*)",
             "Bash(GIT_SEQUENCE_EDITOR=: git rebase)",
-            "mcp__plugin_Dev10x_cli__detect_tracker",
+            "mcp__plugin_dev10x_cli__detect_tracker",
             # GH-1312: bare word matches on "token"/"secret" in an ordinary
             # identifier must stay silent — these are the exact false
             # positives reported in the issue.
@@ -179,7 +179,7 @@ class TestIsHookEnabled:
             "Bash(git log:*)",
             "Bash(gh pr view:*)",
             "Bash(docker compose up)",
-            "mcp__plugin_Dev10x_cli__detect_tracker",
+            "mcp__plugin_dev10x_cli__detect_tracker",
         ],
     )
     def test_rejects_non_hook_enabled_rules(self, rule: str) -> None:
@@ -216,7 +216,7 @@ class TestClassifyRules:
         "Bash(git log:*)",
         "Bash(gh pr view:*)",
         "mcp__claude_ai_Linear__*",
-        "mcp__plugin_Dev10x_*",
+        "mcp__plugin_dev10x_*",
     }
 
     def test_classifies_exact_duplicates(self) -> None:
@@ -232,7 +232,7 @@ class TestClassifyRules:
         assert result.kept == []
 
     def test_mcp_wildcards_no_longer_remove_individual_tools(self) -> None:
-        rules = ["mcp__claude_ai_Linear__get_issue", "mcp__plugin_Dev10x_cli__push"]
+        rules = ["mcp__claude_ai_Linear__get_issue", "mcp__plugin_dev10x_cli__push"]
 
         result = clean_mod.classify_rules(
             rules,
@@ -271,6 +271,44 @@ class TestClassifyRules:
         assert result.deprecated_globs == rules
         assert result.kept == []
         assert result.total_removed == 2
+
+    def test_removes_star_before_colon_star_even_when_catalogued(self) -> None:
+        rules = [
+            "Bash(/tmp/Dev10x/*.py:*)",
+            "Bash(git --git-dir=* --work-tree=* status:*)",
+            "Bash(git status:*)",
+        ]
+
+        result = clean_mod.classify_rules(
+            rules,
+            global_rules=set(),
+            current_version="0.33.0",
+            base_permissions=set(rules),
+        )
+
+        assert result.unmatchable_prefix == rules[:2]
+        assert result.kept == ["Bash(git status:*)"]
+        assert result.total_removed == 2
+
+    def test_keeps_space_form_and_path_globs(self) -> None:
+        rules = ["Bash(rg --files *)", "Read(~/.claude/memory/Dev10x/**)", "Bash(git log:*)"]
+
+        result = clean_mod.classify_rules(
+            rules,
+            global_rules=set(),
+            current_version="0.33.0",
+        )
+
+        assert result.unmatchable_prefix == []
+        assert result.kept == rules
+
+    def test_formats_unmatchable_prefix_message(self) -> None:
+        result = clean_mod.RemovalResult(unmatchable_prefix=["Bash(/tmp/Dev10x/*.py:*)"])
+
+        messages = clean_mod._format_messages(result, verbose=True)
+
+        assert "  - 1 rules with `*` before `:*` (literal prefix, never match)" in messages
+        assert "    Bash(/tmp/Dev10x/*.py:*)" in messages
 
     def test_classifies_env_noise(self) -> None:
         rules = [
@@ -703,8 +741,8 @@ class TestAskShadowedByAllow:
         assert len(result.ask_shadowed_by_allow) == 1
 
     def test_detects_wildcard_shadow(self) -> None:
-        allow = ["mcp__plugin_Dev10x_cli__*"]
-        ask = ["mcp__plugin_Dev10x_cli__push_safe"]
+        allow = ["mcp__plugin_dev10x_cli__*"]
+        ask = ["mcp__plugin_dev10x_cli__push_safe"]
 
         result = clean_mod.classify_rules(
             allow,
@@ -926,3 +964,110 @@ class TestSkipGlobalDedup:
         assert result.total_removed == 0
         data = json.loads(settings_file.read_text())
         assert "Bash(git log:*)" in data["permissions"]["allow"]
+
+
+class TestRunClean:
+    """GH-1442: the multi-file loop extracted out of commands/permission.py."""
+
+    GLOBAL_RULES = {"Bash(git log:*)"}
+
+    def _write(self, tmp_path: Path, name: str, rules: list[str]) -> Path:
+        path = tmp_path / name
+        path.write_text(json.dumps({"permissions": {"allow": rules}}) + "\n")
+        return path
+
+    def test_aggregates_totals_across_files(self, tmp_path: Path) -> None:
+        clean_file = self._write(tmp_path, "clean.json", ["Bash(docker compose up)"])
+        dirty_file = self._write(
+            tmp_path, "dirty.json", ["Bash(git log:*)", "Bash(docker compose up)"]
+        )
+
+        run = clean_mod.run_clean(
+            settings_files=[clean_file, dirty_file],
+            global_rules=self.GLOBAL_RULES,
+            current_version="0.76.0",
+            base_permissions=set(),
+            cache_root=None,
+            dry_run=False,
+            verbose=False,
+            skip_global_dedup=False,
+        )
+
+        assert run.total_removed == 1
+        assert run.files_changed == 1
+        # clean.json keeps its 1 rule; dirty.json keeps 1 of its 2 (the
+        # duplicate of the global rule is removed).
+        assert run.total_kept == 2
+        assert len(run.outcomes) == 2
+
+    def test_outcome_has_findings_reflects_removed_rules(self, tmp_path: Path) -> None:
+        dirty_file = self._write(tmp_path, "dirty.json", ["Bash(git log:*)"])
+        clean_file = self._write(tmp_path, "clean.json", ["Bash(docker up)"])
+
+        run = clean_mod.run_clean(
+            settings_files=[dirty_file, clean_file],
+            global_rules=self.GLOBAL_RULES,
+            current_version="0.76.0",
+            base_permissions=set(),
+            cache_root=None,
+            dry_run=False,
+            verbose=False,
+            skip_global_dedup=False,
+        )
+
+        by_path = {outcome.path: outcome for outcome in run.outcomes}
+        assert by_path[dirty_file].has_findings is True
+        assert by_path[clean_file].has_findings is False
+
+    def test_invalid_json_file_yields_none_result_outcome(self, tmp_path: Path) -> None:
+        bad_file = tmp_path / "bad.json"
+        bad_file.write_text("not json")
+
+        run = clean_mod.run_clean(
+            settings_files=[bad_file],
+            global_rules=self.GLOBAL_RULES,
+            current_version="0.76.0",
+            base_permissions=set(),
+            cache_root=None,
+            dry_run=False,
+            verbose=False,
+            skip_global_dedup=False,
+        )
+
+        assert run.outcomes[0].result is None
+        assert run.outcomes[0].has_findings is False
+        assert run.total_removed == 0
+
+    def test_dry_run_does_not_write_and_still_aggregates(self, tmp_path: Path) -> None:
+        dirty_file = self._write(tmp_path, "dirty.json", ["Bash(git log:*)"])
+        original = dirty_file.read_text()
+
+        run = clean_mod.run_clean(
+            settings_files=[dirty_file],
+            global_rules=self.GLOBAL_RULES,
+            current_version="0.76.0",
+            base_permissions=set(),
+            cache_root=None,
+            dry_run=True,
+            verbose=False,
+            skip_global_dedup=False,
+        )
+
+        assert run.total_removed == 1
+        assert dirty_file.read_text() == original
+
+    def test_empty_settings_files_yields_zeroed_result(self) -> None:
+        run = clean_mod.run_clean(
+            settings_files=[],
+            global_rules=self.GLOBAL_RULES,
+            current_version="0.76.0",
+            base_permissions=set(),
+            cache_root=None,
+            dry_run=False,
+            verbose=False,
+            skip_global_dedup=False,
+        )
+
+        assert run.outcomes == []
+        assert run.total_removed == 0
+        assert run.files_changed == 0

@@ -29,10 +29,10 @@ class TestParse:
         assert rule.pattern == "/tmp/Dev10x/**"
 
     def test_mcp_rule_has_no_pattern(self) -> None:
-        rule = AllowRule.parse("mcp__plugin_Dev10x_cli__*")
-        assert rule.tool == "mcp__plugin_Dev10x_cli__*"
+        rule = AllowRule.parse("mcp__plugin_dev10x_cli__*")
+        assert rule.tool == "mcp__plugin_dev10x_cli__*"
         assert rule.pattern == ""
-        assert rule.raw == "mcp__plugin_Dev10x_cli__*"
+        assert rule.raw == "mcp__plugin_dev10x_cli__*"
 
     def test_bare_token_without_parens(self) -> None:
         rule = AllowRule.parse("WebFetch")
@@ -71,6 +71,33 @@ class TestMatchesPrefix:
         assert not AllowRule.parse("Bash(ls)").matches_prefix("ls -la")
 
 
+class TestHasLiteralStarPrefix:
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            "Bash(/tmp/Dev10x/*.py:*)",
+            "Bash(git --git-dir=* --work-tree=* status:*)",
+            "Bash(curl -s*:*)",
+            "Bash(/home/*/.claude/tools/*:*)",
+        ],
+    )
+    def test_flags_a_star_before_the_colon_star(self, rule: str) -> None:
+        assert AllowRule.parse(rule).has_literal_star_prefix is True
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            "Bash(git status:*)",
+            "Bash(rg --files *)",
+            "Bash(git -C *)",
+            "Read(//tmp/Dev10x/**)",
+            "mcp__plugin_dev10x_cli__mktmp",
+        ],
+    )
+    def test_leaves_other_shapes_alone(self, rule: str) -> None:
+        assert AllowRule.parse(rule).has_literal_star_prefix is False
+
+
 class TestRepresentativeValue:
     """The inverse of matches_prefix — the narrowest thing a rule covers."""
 
@@ -98,7 +125,7 @@ class TestFactories:
             (AllowRule.read, "/x/**", "Read(/x/**)"),
             (AllowRule.write, "/x/**", "Write(/x/**)"),
             (AllowRule.edit, "/x/**", "Edit(/x/**)"),
-            (AllowRule.skill, "Dev10x:git-commit", "Skill(Dev10x:git-commit)"),
+            (AllowRule.skill, "dev10x:git-commit", "Skill(dev10x:git-commit)"),
         ],
     )
     def test_factory_builds_rule(self, factory, arg: str, expected: str) -> None:
@@ -152,11 +179,11 @@ class TestPathMatching:
 
 class TestMcpMatching:
     def test_wildcard_matches_server_tools(self) -> None:
-        rule = AllowRule.parse("mcp__plugin_Dev10x_cli__*")
-        assert rule.matches("mcp__plugin_Dev10x_cli__detect_tracker")
+        rule = AllowRule.parse("mcp__plugin_dev10x_cli__*")
+        assert rule.matches("mcp__plugin_dev10x_cli__detect_tracker")
 
     def test_wildcard_rejects_other_server(self) -> None:
-        rule = AllowRule.parse("mcp__plugin_Dev10x_cli__*")
+        rule = AllowRule.parse("mcp__plugin_dev10x_cli__*")
         assert not rule.matches("mcp__other_server__tool")
 
     def test_signature_without_parens_falls_back_to_fnmatch(self) -> None:

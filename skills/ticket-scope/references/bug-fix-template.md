@@ -137,7 +137,7 @@ Example:
    - Reference: Existing terminal checkout tests
 
 6. **Run Tests**
-   - Command: `Skill(Dev10x:py-test src/payments/square/tests/ src/payments/square/terminal/tests/)`
+   - Command: `Skill(dev10x:py-test src/payments/square/tests/ src/payments/square/terminal/tests/)`
    - Verify: All tests pass, new bug scenario covered
 
 ---
@@ -175,7 +175,7 @@ Include `# language: <code>` when writing feature-file-style blocks.
 
 [Data shapes touched by this fix. For bug fixes, the entities are
 usually the existing types whose contracts were silently violated.
-Listing them helps `Dev10x:spec-sync` detect future drift.]
+Listing them helps `dev10x:spec-sync` detect future drift.]
 
 **Affected entities:**
 
@@ -221,7 +221,7 @@ surface.
 ## Norms
 
 [Project rules and conventions this fix MUST follow. Populated by
-the Norms / Safeguards autopopulator (`Dev10x:ticket-scope`
+the Norms / Safeguards autopopulator (`dev10x:ticket-scope`
 Phase 5).]
 
 **Auto-populated rules**:
@@ -269,11 +269,15 @@ We've fixed a bug where tax-exempt customers were incorrectly charged sales tax 
 
 ---
 
-## Story Points
-**3 points** (~1 day)
+## Estimate
+**3 points** — well-understood fix plus a regression test
+(produced by `dev10x:estimate`, default ranges)
 
-**Rationale:**
-- Small code change (1 point)
-- Tests for bug scenario (1 point)
-- Testing and verification (1 point)
-- Well-understood fix, low complexity
+| Line item            | Effort | Elapsed |
+|----------------------|--------|---------|
+| Agent implementation | 0.5 h  | 2-4 h   |
+| Human review         | 1 h    | 1 h     |
+| Review wait          | 0      | 0.5-1 day |
+| Testing              | 1 h (terminal QA) | 2 h |
+| Documentation        | 0.5 h (release note) | 0.5 h |
+| **Total**            | **3 h** | **~1-2 days** |

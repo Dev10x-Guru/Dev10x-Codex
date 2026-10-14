@@ -21,7 +21,7 @@ After loading Step 1's checks, probe live state and **union** the
 richer check set in when a PR exists:
 
 1. Resolve the associated PR via
-   `mcp__plugin_Dev10x_cli__pr_detect(arg="")`. (This is the same
+   `mcp__plugin_dev10x_cli__pr_detect(arg="")`. (This is the same
    probe the PR-Merge-State section runs — resolve it once and reuse
    the result; an `error` / no-PR response means PR-less.)
 2. If an **open** PR exists **and** the caller's `work_type` is a
@@ -51,8 +51,9 @@ Read overrides from a single global file:
 ~/.config/Dev10x/dod-acceptance-criteria.yaml
 ```
 
-**Read-compat fallback (one release).** When that file is absent, fall
-back to the GH-941-retired
+**Read-compat fallback (until removal in `0.112.0` per the
+deprecation register, GH-1035, ADR-0028).** When that file is absent,
+fall back to the GH-941-retired
 `~/.claude/memory/Dev10x/dod-acceptance-criteria.yaml`. When the
 fallback fires, say so in the run's output — e.g.
 `legacy_read: ~/.claude/memory/Dev10x/dod-acceptance-criteria.yaml` —

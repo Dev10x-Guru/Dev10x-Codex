@@ -15,6 +15,7 @@ import urllib.request
 import pytest
 
 from dev10x.domain.common.result import ErrorResult, ok
+from dev10x.domain.common.singleton_holder import SingletonHolder
 from dev10x.skills.notifications import slack_notify as mod
 
 
@@ -27,9 +28,14 @@ def _slack_api_error(error: str, **extra: object) -> Exception:
 
 @pytest.fixture(autouse=True)
 def reset_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reset module-level state so tests are isolated."""
-    monkeypatch.setattr(mod, "_config", {})
-    monkeypatch.setattr(mod, "_active_workspace", None)
+    """Reset module-level state so tests are isolated.
+
+    GH-1423: sleeps are made free rather than the retry disabled, so the
+    tests below still exercise the real attempt count.
+    """
+    monkeypatch.setattr(mod, "_config_holder", SingletonHolder(default={}))
+    monkeypatch.setattr(mod, "_active_workspace_holder", SingletonHolder())
+    monkeypatch.setattr(mod.time, "sleep", lambda _seconds: None)
     monkeypatch.delenv("SLACK_TOKEN", raising=False)
     monkeypatch.delenv("SLACK_SELF_USER_ID", raising=False)
 
@@ -101,8 +107,10 @@ class TestGetToken:
     ) -> None:
         monkeypatch.setattr(
             mod,
-            "_config",
-            {"workspaces": {"aperture": {"keyring_service": "custom-aperture"}}},
+            "_config_holder",
+            SingletonHolder(
+                default={"workspaces": {"aperture": {"keyring_service": "custom-aperture"}}}
+            ),
         )
         looked_up: list[str] = []
 
@@ -164,7 +172,7 @@ class TestWorkspaceConfigResolution:
         monkeypatch: pytest.MonkeyPatch,
         config: dict,
     ) -> None:
-        monkeypatch.setattr(mod, "_config", config)
+        monkeypatch.setattr(mod, "_config_holder", SingletonHolder(default=config))
         assert mod._self_user_id() == "U_DEFAULT"
         assert mod._bot_username() == "Default Bot"
         assert mod._user_groups() == {"@default-team": "<!subteam^S_DEFAULT>"}
@@ -174,7 +182,7 @@ class TestWorkspaceConfigResolution:
         monkeypatch: pytest.MonkeyPatch,
         config: dict,
     ) -> None:
-        monkeypatch.setattr(mod, "_config", config)
+        monkeypatch.setattr(mod, "_config_holder", SingletonHolder(default=config))
         mod.set_workspace("aperture")
         assert mod._self_user_id() == "U_APERTURE"
         assert mod._bot_username() == "Aperture Bot"
@@ -185,7 +193,7 @@ class TestWorkspaceConfigResolution:
         monkeypatch: pytest.MonkeyPatch,
         config: dict,
     ) -> None:
-        monkeypatch.setattr(mod, "_config", config)
+        monkeypatch.setattr(mod, "_config_holder", SingletonHolder(default=config))
         mod.set_workspace("ghost")
         assert mod._bot_username() == "Default Bot"
         assert mod._self_user_id() == "U_DEFAULT"
@@ -195,7 +203,7 @@ class TestWorkspaceConfigResolution:
         monkeypatch: pytest.MonkeyPatch,
         config: dict,
     ) -> None:
-        monkeypatch.setattr(mod, "_config", config)
+        monkeypatch.setattr(mod, "_config_holder", SingletonHolder(default=config))
         monkeypatch.setenv("SLACK_SELF_USER_ID", "U_FROM_ENV")
         mod.set_workspace("aperture")
         assert mod._self_user_id() == "U_FROM_ENV"
@@ -208,13 +216,15 @@ class TestResolveMentions:
     ) -> None:
         monkeypatch.setattr(
             mod,
-            "_config",
-            {
-                "user_groups": {"@default": "<!subteam^S_DEF>"},
-                "workspaces": {
-                    "aperture": {"user_groups": {"@aperture": "<!subteam^S_APE>"}},
-                },
-            },
+            "_config_holder",
+            SingletonHolder(
+                default={
+                    "user_groups": {"@default": "<!subteam^S_DEF>"},
+                    "workspaces": {
+                        "aperture": {"user_groups": {"@aperture": "<!subteam^S_APE>"}},
+                    },
+                }
+            ),
         )
         mod.set_workspace("aperture")
         assert mod.resolve_mentions("ping @aperture") == "ping <!subteam^S_APE>"
@@ -399,6 +409,215 @@ class TestCallSlackApi:
         assert "non-JSON" in result.error
 
 
+class TestNotifySlackDeadLetters:
+    """GH-1421: under foreman there is nobody to surface the error to."""
+
+    def test_a_failed_send_is_recorded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        recorded: list[dict] = []
+        monkeypatch.setattr(mod, "record_undelivered", lambda **kwargs: recorded.append(kwargs))
+        monkeypatch.setattr(
+            mod, "send_slack_message", lambda **_: ErrorResult(error="channel_not_found")
+        )
+
+        result = mod.notify_slack(channel="#crew", message="crew stalled")
+
+        assert isinstance(result, ErrorResult)
+        assert len(recorded) == 1
+        assert recorded[0]["channel"] == "#crew"
+        assert recorded[0]["transport"] == "slack"
+        assert recorded[0]["error"] == "channel_not_found"
+        assert recorded[0]["body"] == "crew stalled"
+
+    def test_a_successful_send_records_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        recorded: list[dict] = []
+        monkeypatch.setattr(mod, "record_undelivered", lambda **kwargs: recorded.append(kwargs))
+        monkeypatch.setattr(mod, "send_slack_message", lambda **_: ok("1.0"))
+
+        result = mod.notify_slack(channel="#crew", message="all good")
+
+        assert result == ok("1.0")
+        assert recorded == []
+
+    def test_the_result_contract_is_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The sink is additive — callers still branch on the same Result."""
+        monkeypatch.setattr(mod, "record_undelivered", lambda **_: None)
+        monkeypatch.setattr(mod, "send_slack_message", lambda **_: ErrorResult(error="boom"))
+
+        assert mod.notify_slack(channel="#c", message="m") == ErrorResult(error="boom")
+
+
+class TestCallSlackApiRetries:
+    """GH-1423: routine throttling must not surface as a hard failure."""
+
+    @staticmethod
+    def _http_error(*, code: int, retry_after: str | None = None) -> Exception:
+        headers = {"Retry-After": retry_after} if retry_after else {}
+        return urllib.error.HTTPError(
+            url="https://slack.com/api/chat.postMessage",
+            code=code,
+            msg="boom",
+            hdrs=headers,
+            fp=io.BytesIO(b"detail"),
+        )
+
+    def test_a_429_is_retried_then_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The point of the retry: a throttled call still delivers."""
+        attempts: list = []
+
+        class FakeResponse:
+            def __enter__(self_inner) -> FakeResponse:
+                return self_inner
+
+            def __exit__(self_inner, *exc: object) -> bool:
+                return False
+
+            def read(self_inner) -> bytes:
+                return b'{"ok": true, "ts": "9.9"}'
+
+        def fake_urlopen(request: object, timeout: int) -> object:
+            attempts.append(request)
+            if len(attempts) == 1:
+                raise self._http_error(code=429)
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        result = mod.call_slack_api(method="chat.postMessage", payload={}, token="t")
+
+        assert len(attempts) == 2
+        assert result == ok({"ok": True, "ts": "9.9"})
+
+    @pytest.mark.parametrize("code", [429, 500, 503])
+    def test_transient_statuses_exhaust_the_budget(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        code: int,
+    ) -> None:
+        attempts: list = []
+
+        def fake_urlopen(request: object, timeout: int) -> object:
+            attempts.append(request)
+            raise self._http_error(code=code)
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        result = mod.call_slack_api(method="chat.postMessage", payload={}, token="t")
+
+        assert len(attempts) == 3
+        assert isinstance(result, ErrorResult)
+
+    @pytest.mark.parametrize("code", [400, 401, 403, 404])
+    def test_caller_fault_statuses_are_not_retried(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        code: int,
+    ) -> None:
+        attempts: list = []
+
+        def fake_urlopen(request: object, timeout: int) -> object:
+            attempts.append(request)
+            raise self._http_error(code=code)
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        result = mod.call_slack_api(method="chat.postMessage", payload={}, token="t")
+
+        assert len(attempts) == 1
+        assert isinstance(result, ErrorResult)
+
+    def test_a_slack_level_rejection_is_not_retried(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`invalid_auth` is an answer, not a transport fault."""
+        attempts: list = []
+
+        class FakeResponse:
+            def __enter__(self_inner) -> FakeResponse:
+                return self_inner
+
+            def __exit__(self_inner, *exc: object) -> bool:
+                return False
+
+            def read(self_inner) -> bytes:
+                return b'{"ok": false, "error": "invalid_auth"}'
+
+        def fake_urlopen(request: object, timeout: int) -> object:
+            attempts.append(request)
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        result = mod.call_slack_api(method="chat.postMessage", payload={}, token="t")
+
+        assert len(attempts) == 1
+        assert isinstance(result, ErrorResult)
+
+    def test_a_non_json_body_is_not_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Retrying cannot make a malformed body parse."""
+        attempts: list = []
+
+        class FakeResponse:
+            def __enter__(self_inner) -> FakeResponse:
+                return self_inner
+
+            def __exit__(self_inner, *exc: object) -> bool:
+                return False
+
+            def read(self_inner) -> bytes:
+                return b"<html>gateway</html>"
+
+        def fake_urlopen(request: object, timeout: int) -> object:
+            attempts.append(request)
+            return FakeResponse()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        mod.call_slack_api(method="chat.postMessage", payload={}, token="t")
+
+        assert len(attempts) == 1
+
+    def test_the_server_retry_after_hint_is_honoured(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        slept: list[float] = []
+
+        def fake_urlopen(request: object, timeout: int) -> object:
+            raise self._http_error(code=429, retry_after="4")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(mod.time, "sleep", slept.append)
+        mod.call_slack_api(method="chat.postMessage", payload={}, token="t")
+
+        assert slept == [4.0, 4.0]
+
+    def test_a_malformed_retry_after_falls_back_to_backoff(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        slept: list[float] = []
+
+        def fake_urlopen(request: object, timeout: int) -> object:
+            raise self._http_error(code=429, retry_after="soon-ish")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(mod.time, "sleep", slept.append)
+        mod.call_slack_api(method="chat.postMessage", payload={}, token="t")
+
+        assert len(slept) == 2
+        assert all(delay <= mod._SLACK_RETRY_POLICY.max_delay for delay in slept)
+
+    def test_an_unreachable_host_is_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No status at all — the call never reached Slack to be answered."""
+        attempts: list = []
+
+        def fake_urlopen(request: object, timeout: int) -> object:
+            attempts.append(request)
+            raise urllib.error.URLError("connection refused")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        result = mod.call_slack_api(method="chat.postMessage", payload={}, token="t")
+
+        assert len(attempts) == 3
+        assert isinstance(result, ErrorResult)
+
+
 class TestHttpFallbackTransport:
     """GH-917: every message path works with slack_sdk absent."""
 
@@ -433,7 +652,11 @@ class TestHttpFallbackTransport:
         monkeypatch: pytest.MonkeyPatch,
         api_calls: list[dict],
     ) -> None:
-        monkeypatch.setattr(mod, "_config", {"user_groups": {"@team": "<!subteam^S1>"}})
+        monkeypatch.setattr(
+            mod,
+            "_config_holder",
+            SingletonHolder(default={"user_groups": {"@team": "<!subteam^S1>"}}),
+        )
         mod.send_slack_message(channel="C1", message="ping @team")
         assert api_calls[0]["payload"]["text"] == "ping <!subteam^S1>"
 
@@ -580,7 +803,7 @@ class TestNotifySlack:
         monkeypatch.setattr(mod, "send_slack_message", fake_send)
         result = mod.notify_slack(channel="C1", message="hi", workspace="aperture")
         assert result == ok("9.9")
-        assert mod._active_workspace == "aperture"
+        assert mod._active_workspace_holder.get() == "aperture"
         assert captured["channel"] == "C1"
         assert captured["message"] == "hi"
 
@@ -591,7 +814,7 @@ class TestNotifySlack:
         monkeypatch.setattr(mod, "send_slack_message", lambda **_: ok("1.0"))
         result = mod.notify_slack(channel="C1", message="hi")
         assert result == ok("1.0")
-        assert mod._active_workspace is None
+        assert mod._active_workspace_holder.get() is None
 
 
 class TestUvxEnvImportSmoke:

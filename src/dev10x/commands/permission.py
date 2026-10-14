@@ -8,7 +8,7 @@ import click
 
 from dev10x.domain.claude_paths import ClaudeDir
 from dev10x.domain.common.result import ErrorResult
-from dev10x.permission.service import PermissionContext, load_permission_context
+from dev10x.core.permission.service import PermissionContext, load_permission_context
 
 
 @click.group()
@@ -275,6 +275,57 @@ def catalog_gap(*, quiet: bool, verbose: bool) -> None:
     )
 
 
+def _report_predicted() -> None:
+    from dev10x.skills.permission.friction_report import (
+        format_predicted_surface,
+        predict_surfaces,
+    )
+
+    ctx = _require_settings()
+    if ctx is None:
+        return
+    surfaces = predict_surfaces(config=ctx.config, settings_files=ctx.settings_files)
+    for line in format_predicted_surface(surfaces):
+        click.echo(line)
+    sys.exit(0)
+
+
+@permission.command(name="report")
+@click.option("--days", type=int, default=0, help="Only count denials from the last N days")
+@click.option("--top", type=int, default=10, help="How many tool signatures to list")
+@click.option(
+    "--predicted",
+    is_flag=True,
+    help="Predict what WOULD prompt in each checkout instead of counting denials",
+)
+def report(*, days: int, top: int, predicted: bool) -> None:
+    """Rank recorded permission denials by rule family (GH-1406).
+
+    Read-only. Turns the PermissionDenied records already in the audit
+    log into a ranked friction list, so which rules actually bite is a
+    query rather than a hand-transcribed tracker.
+
+    Denials only: an ask-rule hit or a no-match prompt reaches no hook,
+    so this is a floor on observed friction, not a census of it.
+    `--predicted` covers those two paths from settings instead (GH-1408):
+    what would prompt if run, never what did.
+    """
+    if predicted:
+        _report_predicted()
+        return
+
+    from datetime import UTC, datetime, timedelta
+
+    from dev10x.teach.audit.log_reader import iter_records
+    from dev10x.skills.permission.friction_report import build_report, format_report
+
+    since = datetime.now(UTC) - timedelta(days=days) if days > 0 else None
+    result = build_report(records=iter_records(since=since), top=top)
+    for line in format_report(result):
+        click.echo(line)
+    sys.exit(0)
+
+
 @permission.command(name="catalog-diff")
 @click.option(
     "--strict",
@@ -483,7 +534,7 @@ def ensure_reads(*, dry_run: bool, quiet: bool, allow_tracked: bool) -> None:
 @permission.command()
 def init() -> None:
     """Create userspace config from plugin default."""
-    from dev10x.skills.permission.update_paths import init_userspace_config
+    from dev10x.skills.permission.catalog_load import init_userspace_config
 
     sys.exit(_emit_result(init_userspace_config()))
 
@@ -556,82 +607,73 @@ def clean(
 
     base_permissions = set(config.get("base_permissions", []))
     settings_files = mod.find_settings_files(roots=config.get("roots", []))
+    migration_layers = mod.namespace_migration_layers(settings_files=settings_files)
 
-    if not settings_files:
+    if not settings_files and not migration_layers:
         click.echo("No project settings files found.")
         return
 
-    click.echo(f"Scanning {len(settings_files)} files")
+    click.echo(f"Scanning {len(settings_files) + len(migration_layers)} files")
     if dry_run:
         click.echo("(dry run — no files will be modified)\n")
     else:
         click.echo()
 
-    total_removed = 0
-    total_kept = 0
-    files_changed = 0
-    total_secrets = 0
-    total_global_dedup = 0
+    run = mod.run_clean(
+        settings_files=settings_files,
+        global_rules=global_rules,
+        current_version=current_version,
+        base_permissions=base_permissions,
+        cache_root=cache_root,
+        dry_run=dry_run,
+        verbose=verbose,
+        skip_global_dedup=skip_global_dedup,
+        migration_layers=migration_layers,
+    )
 
-    for path in sorted(settings_files):
-        result, messages = mod.clean_file(
-            path,
-            global_rules=global_rules,
-            current_version=current_version,
-            base_permissions=base_permissions,
-            cache_root=cache_root,
-            dry_run=dry_run,
-            verbose=verbose,
-            skip_global_dedup=skip_global_dedup,
-        )
-        if result is None:
-            click.echo(f"\n{path}")
-            for msg in messages:
+    for outcome in run.outcomes:
+        if outcome.result is None:
+            click.echo(f"\n{outcome.path}")
+            for msg in outcome.messages:
                 click.echo(msg)
             continue
-
-        has_findings = (
-            result.total_removed > 0
-            or result.leaked_secrets
-            or result.wildcard_bypasses
-            or result.allow_deny_contradictions
-            or result.ask_shadowed_by_allow
-        )
-        if has_findings:
-            if summary and result.total_removed > 0 and not result.leaked_secrets:
-                click.echo(f"{path}: {result.total_removed} removed")
-            else:
-                click.echo(f"\n{path}")
-                for msg in messages:
-                    click.echo(msg)
-            total_removed += result.total_removed
-            total_kept += len(result.kept)
-            total_secrets += len(result.leaked_secrets)
-            total_global_dedup += len(result.exact_duplicates)
-            if result.total_removed > 0:
-                files_changed += 1
+        if not outcome.has_findings:
+            continue
+        if summary and outcome.result.total_removed > 0 and not outcome.result.leaked_secrets:
+            click.echo(f"{outcome.path}: {outcome.result.total_removed} removed")
         else:
-            total_kept += len(result.kept)
+            click.echo(f"\n{outcome.path}")
+            for msg in outcome.messages:
+                click.echo(msg)
 
     click.echo()
-    if total_removed == 0:
+    if run.total_migrated > 0:
+        verb = "Would move" if dry_run else "Moved"
+        click.echo(f"{verb} {run.total_migrated} rules to the dev10x namespace (GH-1501).")
+    if run.total_star_repaired > 0:
+        verb = "Would repair" if dry_run else "Repaired"
+        click.echo(
+            f"{verb} {run.total_star_repaired} rules with `*` before `:*` (GH-1503):"
+            " allows dropped, denies and asks rewritten to the space form."
+        )
+    if run.total_removed == 0:
         click.echo("All project files are clean.")
     else:
         verb = "Would remove" if dry_run else "Removed"
-        click.echo(f"{verb} {total_removed} rules across {files_changed} files.")
-        click.echo(f"Kept {total_kept} rules total.")
+        click.echo(f"{verb} {run.total_removed} rules across {run.files_changed} files.")
+        click.echo(f"Kept {run.total_kept} rules total.")
 
-    if total_global_dedup > 0 and not skip_global_dedup:
+    if run.total_global_dedup > 0 and not skip_global_dedup:
         click.echo(
-            f"\n⚠  WARNING: {total_global_dedup} rules removed as exact duplicates of global"
+            f"\n⚠  WARNING: {run.total_global_dedup} rules removed as exact duplicates of global"
             " rules (--aggressive). Global→project rule inheritance is NOT guaranteed when a"
             " project has its own settings.local.json (finding #47). If new permission prompts"
             " appear, recover with `dev10x permission clean --restore`."
         )
 
-    if total_secrets > 0:
+    if run.total_secrets > 0:
         click.echo(
-            f"\n⚠ Found {total_secrets} rules containing leaked secrets."
+            f"\n⚠ Found {run.total_secrets} rules containing leaked secrets."
             " Review and rotate affected credentials."
         )
 
@@ -647,7 +689,7 @@ def clean(
     help="Override the auto-detected plugin root (checkout or installed cache).",
 )
 def enumerate_mcp(*, dry_run: bool, quiet: bool, plugin_root: str | None) -> None:
-    """Expand `mcp__plugin_Dev10x_*` wildcards into enumerated tool names.
+    """Expand `mcp__plugin_dev10x_*` wildcards into enumerated tool names.
 
     Exits non-zero when the tool catalog could not be built, so a
     discovery failure is never mistaken for "no wildcards to expand"
@@ -757,7 +799,7 @@ def promote_plan(
     # that file since GH-1136; this command did not, so a promotion
     # dirtied the tracked file. Same shared helper, so the two commands
     # cannot drift apart again.
-    from dev10x.skills.permission.update_paths import partition_writable
+    from dev10x.skills.permission.catalog_write import partition_writable
 
     write_targets, skip_messages = partition_writable(
         [global_settings],
@@ -1006,7 +1048,7 @@ def investigate() -> None:
     Materialize fixtures, mutate settings with candidate rule shapes,
     and aggregate per-shape outcomes into a markdown report. The
     subagent dispatch loop that exercises each cell is orchestrated
-    from the ``Dev10x:permission-investigator`` skill.
+    from the ``dev10x:permission-investigator`` skill.
     """
 
 
@@ -1418,7 +1460,7 @@ def doctor_migrate_config(*, cwd: str | None, dry_run: bool) -> None:
 def record_upgrade(*, explicit_version: str | None) -> None:
     """Record the currently-installed plugin version as applied.
 
-    Invoked by Dev10x:upgrade-cleanup after a successful run so the
+    Invoked by dev10x:upgrade-cleanup after a successful run so the
     SessionStart install-check stays silent until the next upgrade.
     """
     from dev10x.domain.install_version import read_plugin_version, write_applied_version

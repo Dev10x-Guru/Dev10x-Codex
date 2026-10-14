@@ -79,7 +79,7 @@ role-boundary crossing that `tool-surface.md` § Why the lifecycle is
 cut at PR-open and `architecture.md` already assign elsewhere:
 
 - **Never merge a PR.** The merge gate belongs to the watchdog, the
-  only role that can invoke `Dev10x:gh-pr-merge`. An overseer that
+  only role that can invoke `dev10x:gh-pr-merge`. An overseer that
   loads `merge_pr` has the crew's gap one tier up — full autonomy,
   zero checks.
 - **Never close an issue or a milestone.** Closure is the watchdog's
@@ -116,11 +116,14 @@ negotiable:
    record: it is what `dev10x foreman probe` surfaces, what the
    watchdog reads, and what survives a session death.
 2. **Append one summary line to `escalations-<your-role>.md`**, opening
-   with `MERGE REQUEST` or `ESCALATION` — e.g.
-   `- MERGE REQUEST chunk-7: PR #2342, CI green, 0 unresolved`. The
+   with `MERGE REQUEST` or `ESCALATION`, via
+   `dev10x foreman escalate --scratchpad <run-dir> --role <your-role>
+   "MERGE REQUEST chunk-7: PR #2342, CI green, 0 unresolved"`. The
    watcher tails that file and re-emits any such line as an event, so
    this is what actually wakes the watchdog, within one poll interval
-   (GH-1060).
+   (GH-1060). Never add the line with Edit: it inserts next to the text
+   it matched, so newer requests landed above older ones and the
+   watcher replayed an already-merged `MERGE REQUEST` (GH-1582).
 3. **Then** send the message, as a nudge that the disk record exists.
 4. **Never block on the reply.** Continue with anything the
    escalation does not gate, and re-check the decision log rather
