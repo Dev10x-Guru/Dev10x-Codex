@@ -140,7 +140,7 @@ class TestAliasHint:
 
     def test_claude_hint_is_unchanged(self) -> None:
         assert ALIAS_SETUP_HINT == (
-            "Run the git-alias-setup skill (/Dev10x:git-alias-setup) to configure them."
+            "Run the git-alias-setup skill (/dev10x:git-alias-setup) to configure them."
         )
 
     def test_codex_alias_check_prints_codex_hint_when_aliases_missing(

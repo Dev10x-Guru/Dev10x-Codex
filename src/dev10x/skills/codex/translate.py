@@ -7,7 +7,12 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
-from dev10x.skills.codex.catalog import DEFERRED_SKILLS, SKILL_CAVEATS, VERIFIED_SKILLS
+from dev10x.skills.codex.catalog import (
+    DEFERRED_SKILLS,
+    SKILL_CAVEATS,
+    VERIFIED_SKILLS,
+    to_codex_casing,
+)
 from dev10x.skills.codex.tree import GeneratedTree, is_hidden
 
 UPSTREAM_SKILLS_RELPATH = PurePosixPath("skills")
@@ -112,7 +117,7 @@ def _replace_skill_call(match: re.Match[str]) -> str:
 
 
 def rewrite_text(text: str) -> str:
-    text = _MCP_PREFIX_RE.sub(r"mcp__\1__", text)
+    text = _MCP_PREFIX_RE.sub(r"mcp__\1__", to_codex_casing(text))
     text = _PLUGIN_ROOT_RE.sub(PLUGIN_ROOT_PLACEHOLDER, text)
     text = _SKILL_CALL_RE.sub(_replace_skill_call, text)
     return _SLASH_SKILL_RE.sub(lambda m: f"{m.group(1)}{codex_skill_reference(m.group(2))}", text)
@@ -120,7 +125,8 @@ def rewrite_text(text: str) -> str:
 
 def unknown_skill_mentions(text: str, known: Iterable[str]) -> list[str]:
     known_names = set(known)
-    return sorted({name for name in _SKILL_MENTION_RE.findall(text) if name not in known_names})
+    mentions = _SKILL_MENTION_RE.findall(to_codex_casing(text))
+    return sorted({name for name in mentions if name not in known_names})
 
 
 def codex_path_for(upstream: PurePosixPath) -> PurePosixPath:

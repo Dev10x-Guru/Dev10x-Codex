@@ -21,7 +21,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from dev10x.domain.events.hook_input import HookAllow, HookAsk, HookInput, HookResult
+from dev10x.core.domain.events.hook_input import HookAllow, HookAsk, HookInput, HookResult
 from dev10x.hooks.apply_patch_payload import (
     APPLY_PATCH_TOOL_NAME,
     MalformedPatchError,

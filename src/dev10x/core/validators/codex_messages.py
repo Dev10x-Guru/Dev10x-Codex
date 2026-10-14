@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from dev10x.domain.rules.validation_rule import Compensation
-from dev10x.skills.codex.catalog import codex_skill_for
+from dev10x.skills.codex.catalog import codex_skill_for, to_codex_casing
 
 CODEX_ISSUE_REPO = "https://github.com/Dev10x-Guru/Dev10x-Codex"
 CLAUDE_ISSUE_REPO = "https://github.com/Dev10x-Guru/dev10x-claude"
@@ -106,7 +106,7 @@ def codex_tool_name(tool: str) -> str:
 
 
 def codex_tool_for_skill(skill: str) -> str | None:
-    short_name = SKILL_TOOL_EQUIVALENTS.get(skill)
+    short_name = SKILL_TOOL_EQUIVALENTS.get(to_codex_casing(skill))
     return f"mcp__cli__{short_name}" if short_name else None
 
 
@@ -161,7 +161,7 @@ def adapt_message_for_codex(message: str) -> str:
     for claude_text, codex_text in (*_claude_footers(), *_CODEX_PHRASES):
         message = message.replace(claude_text, codex_text)
     message = message.replace(CLAUDE_ISSUE_REPO, CODEX_ISSUE_REPO)
-    message = codex_tool_name(message)
+    message = codex_tool_name(to_codex_casing(message))
     message = _INVOKE_SKILL_RE.sub(_replace_invoke_skill, message)
     message = _IF_SKILL_FAILS_RE.sub(_replace_if_skill_fails, message)
     message = _BACKTICK_SKILL_RE.sub(_replace_backtick_skill, message)

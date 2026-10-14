@@ -26,6 +26,7 @@ namespaces:
   dev10x.github._gateway: core
   dev10x.github.app_api: core
   dev10x.github.app_auth: core
+  dev10x.harness: core
   dev10x.hooks: core
   dev10x.hooks.task_plan_sync: tasks
   dev10x.infra: infra

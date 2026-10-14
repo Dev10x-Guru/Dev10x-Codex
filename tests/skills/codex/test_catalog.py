@@ -7,11 +7,42 @@ from dev10x.skills.codex.catalog import (
     SKILL_CAVEATS,
     VERIFIED_SKILLS,
     codex_skill_for,
+    to_codex_casing,
 )
 
 
+class TestToCodexCasing:
+    @pytest.mark.parametrize(
+        ("upstream", "expected"),
+        [
+            ("Skill(dev10x:git-commit)", "Skill(Dev10x:git-commit)"),
+            ("run /dev10x:git-groom now", "run /Dev10x:git-groom now"),
+            ("use dev10x:gh-pr-create", "use Dev10x:gh-pr-create"),
+            ("mcp__plugin_dev10x_cli__push_safe", "mcp__plugin_Dev10x_cli__push_safe"),
+            ("Skill(Dev10x:git-commit)", "Skill(Dev10x:git-commit)"),
+        ],
+    )
+    def test_upstream_lowercase_names_take_the_codex_plugin_casing(
+        self, upstream: str, expected: str
+    ) -> None:
+        assert to_codex_casing(upstream) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '"Skill(dev10x:*)"',
+            "uvx dev10x session pin",
+            "cache/dev10x.tool:x",
+            "my-dev10x:thing",
+            "/tmp/Dev10x/bin/mktmp.sh",
+        ],
+    )
+    def test_leaves_non_skill_text_alone(self, text: str) -> None:
+        assert to_codex_casing(text) == text
+
+
 class TestCodexSkillFor:
-    @pytest.mark.parametrize("skill", ["Dev10x:git-commit", "git-commit"])
+    @pytest.mark.parametrize("skill", ["Dev10x:git-commit", "dev10x:git-commit", "git-commit"])
     def test_verified_skill_maps_to_its_codex_reference(self, skill: str) -> None:
         assert codex_skill_for(skill) == "$Dev10x:git-commit"
 
