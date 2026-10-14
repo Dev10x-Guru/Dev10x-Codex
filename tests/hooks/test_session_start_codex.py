@@ -10,14 +10,14 @@ from types import ModuleType
 
 import pytest
 
-from dev10x.hooks import session as session_module
+from dev10x.core.hooks import session as session_module
+from dev10x.core.hooks.session_place import ALIAS_SETUP_HINT
 from dev10x.hooks.session_codex import (
     CODEX_ALIAS_SETUP_HINT,
     CODEX_SUPPRESSED_FEATURES,
     build_codex_guidance_context,
     session_git_aliases_codex,
 )
-from dev10x.hooks.session_place import ALIAS_SETUP_HINT
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "hooks" / "scripts"
 SESSION_START = SCRIPTS / "session-start.py"

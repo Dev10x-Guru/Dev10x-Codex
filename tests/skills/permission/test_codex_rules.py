@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from dev10x.skills.permission.codex_rules import (
+from dev10x.core.skills.permission.codex_rules import (
     ALLOW,
     FORBIDDEN,
     NEVER_ALLOWED_PROGRAMS,
@@ -16,7 +16,7 @@ from dev10x.skills.permission.codex_rules import (
     translate_catalog,
     translate_rule,
 )
-from dev10x.skills.permission.config import parse_config
+from dev10x.core.skills.permission.config import parse_config
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PROJECTS_YAML = REPO_ROOT / "skills" / "upgrade-cleanup" / "projects.yaml"

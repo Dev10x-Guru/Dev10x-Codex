@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from dev10x.domain.rules.validation_rule import Compensation
-from dev10x.hooks.hook_transport import emit
-from dev10x.validators.codex_messages import (
+from dev10x.core.domain.rules.validation_rule import Compensation
+from dev10x.core.hooks.hook_transport import emit
+from dev10x.core.validators.codex_messages import (
     CODEX_ISSUE_REPO,
     CODEX_OVERRIDE_HINT,
     adapt_message_for_codex,
@@ -12,7 +12,7 @@ from dev10x.validators.codex_messages import (
     codex_tool_name,
     format_codex_skill_block,
 )
-from dev10x.validators.skill_redirect import (
+from dev10x.core.validators.skill_redirect import (
     MCP_UNAVAILABLE_HINT,
     OVERRIDE_HINT,
     UNRATIONALIZED_SKIP_MSG,
