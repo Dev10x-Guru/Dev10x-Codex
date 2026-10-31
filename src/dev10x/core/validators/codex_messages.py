@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import re
 
 from dev10x.domain.rules.validation_rule import Compensation
@@ -45,6 +46,37 @@ _CODEX_PHRASES: tuple[tuple[str, str], ...] = (
         "restart the Codex session so the Dev10x MCP servers reconnect (`/mcp` lists them)",
     ),
     ("must not be edited by Claude.", "must not be edited by the agent."),
+)
+
+_TEMPLATE_FIELD_RE = re.compile(r"\{(\w+)\}")
+
+CODEX_CHAIN_TEMPLATE = (
+    "⚠️  {shape} blocked — permission friction risk.\n\n"
+    "Dev10x runs one simple command per shell call, so Codex's approval\n"
+    "rules and the Dev10x guardrails see each command on its own. A chain\n"
+    "hides `{tail_cmd}` behind `{head_cmd}`.\n\n"
+    "Split into separate shell calls instead.\n"
+)
+
+CODEX_REDIRECT_THEN_POSITIONAL_TEMPLATE = (
+    "⚠️  Redirect before positional args blocked — permission friction risk.\n\n"
+    "`{cmd} ... {redirect} {after}` puts the redirect in the middle of the\n"
+    "command. Dev10x keeps redirects last so the command reads as one\n"
+    "simple command for Codex's approval rules and the Dev10x guardrails.\n\n"
+    "Move the redirect to the end of the command:\n"
+    "    {cmd} {before} {after} {redirect}\n"
+)
+
+CODEX_SHELL_LOOP_WRAP_TEMPLATE = (
+    "⚠️  Shell {wrapper} wraps an allowed command (`{inner}`) — permission friction risk.\n\n"
+    "The call starts with `{wrapper}`, not `{inner}`, so a rule that approves\n"
+    "`{inner}` does not cover it, and the Dev10x guardrails cannot see each\n"
+    "iteration on its own.\n\n"
+    "Use one shell call per iteration instead.\n"
+    "Send them together in one turn so they run side by side and each\n"
+    "matches its own approval rule.\n\n"
+    "Example: send N separate shell calls in one turn, each running\n"
+    "`{inner} ...` with the iteration value substituted in.\n"
 )
 
 CODEX_OVERRIDE_HINT = (
@@ -157,7 +189,54 @@ def _claude_footers() -> tuple[tuple[str, str], ...]:
     )
 
 
+def template_pattern(template: str) -> re.Pattern[str]:
+    seen: set[str] = set()
+    parts: list[str] = []
+    position = 0
+    for match in _TEMPLATE_FIELD_RE.finditer(template):
+        name = match.group(1)
+        parts.append(re.escape(template[position : match.start()]))
+        parts.append(f"(?P={name})" if name in seen else f"(?P<{name}>.+?)")
+        seen.add(name)
+        position = match.end()
+    parts.append(re.escape(template[position:]))
+    return re.compile("".join(parts), re.DOTALL)
+
+
+def _chain_template(shape: str) -> str:
+    return CODEX_CHAIN_TEMPLATE.replace("{shape}", shape)
+
+
+@functools.cache
+def _claude_templates() -> tuple[tuple[re.Pattern[str], str], ...]:
+    from dev10x.validators.prefix_friction import (
+        NEWLINE_CHAIN_MSG,
+        OR_CHAIN_MSG,
+        REDIRECT_THEN_POSITIONAL_MSG,
+        SEMICOLON_CHAIN_MSG,
+        SHELL_LOOP_WRAP_MSG,
+    )
+
+    return tuple(
+        (template_pattern(claude_template), codex_template)
+        for claude_template, codex_template in (
+            (SEMICOLON_CHAIN_MSG, _chain_template("`;` chain")),
+            (OR_CHAIN_MSG, _chain_template("`||` chain")),
+            (NEWLINE_CHAIN_MSG, _chain_template("Bare-newline chain")),
+            (REDIRECT_THEN_POSITIONAL_MSG, CODEX_REDIRECT_THEN_POSITIONAL_TEMPLATE),
+            (SHELL_LOOP_WRAP_MSG, CODEX_SHELL_LOOP_WRAP_TEMPLATE),
+        )
+    )
+
+
+def _rewrite_claude_templates(message: str) -> str:
+    for pattern, codex_template in _claude_templates():
+        message = pattern.sub(lambda match: codex_template.format(**match.groupdict()), message)
+    return message
+
+
 def adapt_message_for_codex(message: str) -> str:
+    message = _rewrite_claude_templates(message)
     for claude_text, codex_text in (*_claude_footers(), *_CODEX_PHRASES):
         message = message.replace(claude_text, codex_text)
     message = message.replace(CLAUDE_ISSUE_REPO, CODEX_ISSUE_REPO)
