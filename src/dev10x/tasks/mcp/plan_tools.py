@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
-from dev10x.domain.common.result import Result
+from dev10x.domain.common.result import Result, ok
+from dev10x.harness import is_codex
 from dev10x.mcp._app import mcp_tool
+
+CODEX_SKIP_REASON = "plan-sync is not supported in Codex yet (see #13)"
+
+
+def _codex_skipped() -> Result[dict]:
+    return ok({"skipped": True, "reason": CODEX_SKIP_REASON})
 
 
 @mcp_tool
@@ -21,6 +28,9 @@ async def plan_sync_set_context(
     Returns:
         Dictionary with keys: success (bool), updated_keys (list[str])
     """
+    if is_codex():
+        return _codex_skipped()
+
     from dev10x.tasks import plan as plan_tools
 
     return await plan_tools.set_context(args=args)
@@ -53,6 +63,9 @@ async def plan_sync_archive(cwd: str | None = None) -> Result[dict]:
     Returns:
         Dictionary with keys: success (bool), archive_name (str)
     """
+    if is_codex():
+        return _codex_skipped()
+
     from dev10x.tasks import plan as plan_tools
 
     return await plan_tools.archive()

@@ -81,6 +81,9 @@ Upstream files the fork patched (as of `v0.108.0+codex.1`; refresh with
 - `src/dev10x/mcp/server_cli.py`, `src/dev10x/db/mcp/server_db.py` — MCP
   tool annotations, applied once every namespace has registered
 - `src/dev10x/core/validators/skill_redirect.py` — Codex block messages
+- `src/dev10x/tasks/mcp/plan_tools.py` — `plan_sync_set_context` and
+  `plan_sync_archive` return `{"skipped": true, ...}` under Codex instead
+  of writing `.claude/session/` into the user's repo (#36)
 - `src/dev10x/commands/skill.py`, `src/dev10x/commands/permission.py` — the
   `codex-skills`, `codex-agents` and `codex-rules` commands
 - `src/dev10x/core/skills/permission/baseline-permissions.yaml`,
@@ -148,7 +151,8 @@ Codex behavior is covered by the fork's own tests: `tests/skills/codex/`,
 `tests/hooks/test_session_start_codex.py`,
 `tests/hooks/test_edit_validator_apply_patch.py`,
 `tests/hooks/test_apply_patch_payload.py`,
-`tests/validators/test_codex_messages.py`, `tests/test_harness.py` and
+`tests/validators/test_codex_messages.py`, `tests/test_harness.py`,
+`tests/mcp/test_plan_tools_codex.py` and
 `tests/mcp/test_tool_annotations.py`.
 On macOS the daemon tests fail with `AF_UNIX path too long`; they fail
 identically upstream.
