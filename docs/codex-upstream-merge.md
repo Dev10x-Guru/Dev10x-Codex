@@ -35,7 +35,8 @@ shipped and tested.
 | Everything else | Take upstream |
 
 Fork-only files: `.codex-plugin/`, `.agents/plugins/`, `.gitattributes`,
-`AGENTS.md`, `codex/references/`, `docs/codex*.md`,
+`.github/workflows/codex-ci.yml`, `AGENTS.md`, `codex/references/`,
+`docs/codex*.md`,
 `hooks/codex-hooks.json`, `hooks/scripts/session-guidance-codex.md`,
 `src/dev10x/harness.py`, `src/dev10x/hooks/apply_patch_payload.py`,
 `src/dev10x/hooks/session_codex.py`, `src/dev10x/mcp/tool_annotations.py`,
@@ -130,8 +131,11 @@ uv run --extra dev pytest
 uv run --extra dev pre-commit run --all-files
 ```
 
-Upstream's CI runs on `develop` only, so this fork's PRs to `main` get no
-test CI (#33): the local run is the evidence.
+Upstream's CI runs on `develop` only, so the fork-only
+`.github/workflows/codex-ci.yml` runs the same two commands on every PR
+to `main` (#33).
+Run them locally first anyway: CI confirms the result, it does not
+replace the check.
 The suite fails when a generated tree is stale, when a new MCP tool has no
 Codex annotation (`tests/mcp/test_tool_annotations.py`), or when a
 cataloged skill or role is missing.
