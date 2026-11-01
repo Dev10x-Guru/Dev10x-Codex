@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -45,10 +46,12 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 @pytest.fixture(autouse=True)
 def _run_upstream_claude_output_tests_as_claude(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> None:
+    request: pytest.FixtureRequest,
+) -> Generator[None, None, None]:
     test_file = Path(request.node.path).resolve()
-    if test_file.is_relative_to(REPO_ROOT):
-        relative = test_file.relative_to(REPO_ROOT).as_posix()
-        if relative in UPSTREAM_TESTS_ASSERTING_CLAUDE_OUTPUT:
-            monkeypatch.setenv(HARNESS_ENV_VAR, Harness.CLAUDE.value)
+    with pytest.MonkeyPatch.context() as harness_env:
+        if test_file.is_relative_to(REPO_ROOT):
+            relative = test_file.relative_to(REPO_ROOT).as_posix()
+            if relative in UPSTREAM_TESTS_ASSERTING_CLAUDE_OUTPUT:
+                harness_env.setenv(HARNESS_ENV_VAR, Harness.CLAUDE.value)
+        yield
