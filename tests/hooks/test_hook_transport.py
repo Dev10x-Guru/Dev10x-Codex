@@ -193,15 +193,6 @@ class TestCodexEmitAdaptsClaudeWording:
         output = json.loads(capsys.readouterr().out)
         assert output["hookSpecificOutput"]["permissionDecisionReason"] == "see mcp__db__query"
 
-    def test_claude_deny_message_is_emitted_verbatim(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        monkeypatch.delenv("DEV10X_HARNESS", raising=False)
-        with pytest.raises(SystemExit):
-            emit(HookResult(message=CLAUDE_WORDED_DENY))
-        payload = json.loads(capsys.readouterr().err)
-        assert payload["systemMessage"] == CLAUDE_WORDED_DENY
-
 
 class TestReadHookInput:
     def test_parses_tool_name_and_command(self, monkeypatch: pytest.MonkeyPatch) -> None:

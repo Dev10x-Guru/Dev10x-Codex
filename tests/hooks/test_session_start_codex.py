@@ -11,7 +11,6 @@ from types import ModuleType
 import pytest
 
 from dev10x.core.hooks import session as session_module
-from dev10x.core.hooks.session_place import ALIAS_SETUP_HINT
 from dev10x.hooks.session_codex import (
     CODEX_ALIAS_SETUP_HINT,
     CODEX_SUPPRESSED_FEATURES,
@@ -22,7 +21,7 @@ from dev10x.hooks.session_codex import (
 SCRIPTS = Path(__file__).resolve().parents[2] / "hooks" / "scripts"
 SESSION_START = SCRIPTS / "session-start.py"
 
-CLAUDE_FEATURE_NAMES = [
+UPSTREAM_FEATURE_NAMES = [
     "session-load-marker",
     "session-git-aliases",
     "session-tmpdir",
@@ -60,17 +59,6 @@ def session_start() -> ModuleType:
 
 
 class TestFeatureSelection:
-    def test_claude_feature_list_is_unchanged(
-        self, session_start: ModuleType, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("DEV10X_HARNESS", raising=False)
-        features = session_start.select_harness_features(
-            features=session_start.build_features(session_module)
-        )
-        assert [feature.name for feature in features] == CLAUDE_FEATURE_NAMES
-        guidance = next(f for f in features if f.name == "session-guidance")
-        assert guidance.fn is session_module.build_guidance_context
-
     def test_codex_keeps_only_harness_neutral_features(
         self, session_start: ModuleType, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -94,7 +82,7 @@ class TestFeatureSelection:
         assert features["session-git-aliases"].fn is session_git_aliases_codex
 
     def test_every_suppressed_name_is_a_real_feature(self) -> None:
-        assert CODEX_SUPPRESSED_FEATURES <= set(CLAUDE_FEATURE_NAMES)
+        assert CODEX_SUPPRESSED_FEATURES <= set(UPSTREAM_FEATURE_NAMES)
 
 
 class TestCodexGuidance:
@@ -137,11 +125,6 @@ class TestCodexGuidance:
 class TestAliasHint:
     def test_codex_hint_names_the_setup_aliases_tool(self) -> None:
         assert "mcp__cli__setup_aliases" in CODEX_ALIAS_SETUP_HINT
-
-    def test_claude_hint_is_unchanged(self) -> None:
-        assert ALIAS_SETUP_HINT == (
-            "Run the git-alias-setup skill (/dev10x:git-alias-setup) to configure them."
-        )
 
     def test_codex_alias_check_prints_codex_hint_when_aliases_missing(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

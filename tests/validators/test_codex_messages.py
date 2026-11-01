@@ -5,8 +5,9 @@ import pytest
 from dev10x.core.domain.rules.validation_rule import Compensation
 from dev10x.core.hooks.hook_transport import emit
 from dev10x.core.validators.codex_messages import (
-    CODEX_ISSUE_REPO,
-    CODEX_OVERRIDE_HINT,
+    ISSUE_REPO,
+    OVERRIDE_HINT,
+    UPSTREAM_ISSUE_REPO,
     adapt_message_for_codex,
     codex_tool_for_skill,
     codex_tool_name,
@@ -17,16 +18,14 @@ from dev10x.core.validators.prefix_friction import (
     SEMICOLON_CHAIN_MSG,
     PrefixFrictionValidator,
 )
+from dev10x.core.validators.skill_redirect import MCP_UNAVAILABLE_HINT as UPSTREAM_MCP_HINT
+from dev10x.core.validators.skill_redirect import OVERRIDE_HINT as UPSTREAM_OVERRIDE_HINT
 from dev10x.core.validators.skill_redirect import (
-    MCP_UNAVAILABLE_HINT,
-    OVERRIDE_HINT,
-    UNRATIONALIZED_SKIP_MSG,
-    SkillRedirectValidator,
+    UNRATIONALIZED_SKIP_MSG as UPSTREAM_UNRATIONALIZED_SKIP_MSG,
 )
+from dev10x.core.validators.skill_redirect import SkillRedirectValidator
 from tests.fakers import BashHookInputFaker
 from tests.validators.loop_shapes import BARE_POLL_LOOP
-
-CLAUDE_ISSUE_REPO = "https://github.com/Dev10x-Guru/dev10x-claude"
 
 
 def _make_input(*, command: str) -> BashHookInputFaker:
@@ -61,16 +60,11 @@ def codex_harness(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DEV10X_HARNESS", "codex")
 
 
-@pytest.fixture
-def claude_harness(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("DEV10X_HARNESS", raising=False)
-
-
 def _assert_no_claude_vocabulary(message: str) -> None:
     assert "Skill(" not in message
     assert "mcp__plugin_Dev10x" not in message
     assert "mcp__plugin_dev10x" not in message
-    assert CLAUDE_ISSUE_REPO not in message
+    assert UPSTREAM_ISSUE_REPO not in message
     assert "/Dev10x:" not in message
     assert "/dev10x:" not in message
 
@@ -111,9 +105,9 @@ class TestAdaptMessageForCodex:
         assert "must not be edited by the agent." in adapted
 
     def test_points_issues_at_the_codex_repo(self) -> None:
-        adapted = adapt_message_for_codex(f"file an issue at {CLAUDE_ISSUE_REPO} — thanks")
-        assert CODEX_ISSUE_REPO in adapted
-        assert CLAUDE_ISSUE_REPO not in adapted
+        adapted = adapt_message_for_codex(f"file an issue at {UPSTREAM_ISSUE_REPO} — thanks")
+        assert ISSUE_REPO in adapted
+        assert UPSTREAM_ISSUE_REPO not in adapted
 
     @pytest.mark.parametrize("prefix", ["Dev10x", "dev10x"])
     def test_skill_call_with_codex_skill_names_the_skill(self, prefix: str) -> None:
@@ -165,22 +159,23 @@ class TestAdaptMessageForCodex:
         assert adapted == "Run: the `mcp__cli__setup_aliases` MCP tool"
 
     def test_generic_footers_are_replaced_with_codex_wording(self) -> None:
-        adapted = adapt_message_for_codex(f"head{MCP_UNAVAILABLE_HINT}{OVERRIDE_HINT}")
+        adapted = adapt_message_for_codex(f"head{UPSTREAM_MCP_HINT}{UPSTREAM_OVERRIDE_HINT}")
         assert adapted.startswith("head")
-        assert adapted.endswith(CODEX_OVERRIDE_HINT)
+        assert adapted.endswith(OVERRIDE_HINT)
         assert "invoke the skill" not in adapted
         assert "DEV10X_SKIP_CMD_VALIDATION" in adapted
         assert "gh api repos/<owner>/<repo>/pulls/<n>" in adapted
 
     def test_unrationalized_skip_message_keeps_rationale_form(self) -> None:
-        adapted = adapt_message_for_codex(UNRATIONALIZED_SKIP_MSG)
+        adapted = adapt_message_for_codex(UPSTREAM_UNRATIONALIZED_SKIP_MSG)
         assert "Invoke the skill" not in adapted
         assert 'DEV10X_SKIP_CMD_VALIDATION="<reason' in adapted
         assert "mcp__cli__mktmp" in adapted
 
     def test_is_idempotent(self) -> None:
         once = adapt_message_for_codex(
-            f"Invoke `Skill(Dev10x:git)`.{MCP_UNAVAILABLE_HINT}{OVERRIDE_HINT} {CLAUDE_ISSUE_REPO}"
+            f"Invoke `Skill(Dev10x:git)`.{UPSTREAM_MCP_HINT}{UPSTREAM_OVERRIDE_HINT}"
+            f" {UPSTREAM_ISSUE_REPO}"
         )
         assert adapt_message_for_codex(once) == once
 
@@ -199,7 +194,7 @@ class TestFormatCodexSkillBlock:
         assert "Skill: `$Dev10x:git`" in message
         assert "Or call the MCP tool `mcp__cli__push_safe` directly." in message
         assert "use --force-with-lease" in message
-        assert CODEX_ISSUE_REPO in message
+        assert ISSUE_REPO in message
         _assert_no_claude_vocabulary(message)
 
     def test_codex_skill_without_a_tool_steers_to_the_skill(self) -> None:
@@ -259,7 +254,7 @@ class TestSkillRedirectUnderCodex:
         message = _block("git push --force origin main")
         assert "mcp__cli__push_safe" in message
         assert "--force-with-lease" in message
-        assert CODEX_ISSUE_REPO in message
+        assert ISSUE_REPO in message
         _assert_no_claude_vocabulary(message)
 
     def test_commit_steers_to_the_codex_skill_and_keeps_guardrails(
@@ -367,30 +362,3 @@ class TestPrefixFrictionUnderCodex:
         once = adapt_message_for_codex(claude)
         assert once != claude
         assert adapt_message_for_codex(once) == once
-
-
-@pytest.mark.usefixtures("claude_harness")
-class TestPrefixFrictionUnderClaudeIsUnchanged:
-    def test_chain_block_keeps_claude_wording(self) -> None:
-        result = PrefixFrictionValidator().validate(
-            inp=_make_input(command="git status; git fetch")
-        )
-        assert result is not None
-        assert result.message == SEMICOLON_CHAIN_MSG.format(head_cmd="git", tail_cmd="git")
-
-
-@pytest.mark.usefixtures("claude_harness")
-class TestSkillRedirectUnderClaudeIsUnchanged:
-    def test_push_block_keeps_claude_skill_wording(self) -> None:
-        message = _block("git push --force origin main")
-        assert message.startswith(
-            "⛔  `git push` blocked — use the skill instead.\n\n  Skill: `Skill(dev10x:git)`\n\n"
-        )
-        assert "mcp__plugin_dev10x_cli__push_safe" in message
-        assert CLAUDE_ISSUE_REPO in message
-        assert message.endswith(OVERRIDE_HINT)
-
-    def test_tool_block_keeps_claude_tool_name(self) -> None:
-        message = _block("gh pr view 12")
-        assert "Tool: `mcp__plugin_dev10x_cli__pr_get`" in message
-        assert MCP_UNAVAILABLE_HINT in message

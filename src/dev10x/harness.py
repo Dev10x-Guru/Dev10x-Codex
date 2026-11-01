@@ -13,7 +13,7 @@ class Harness(StrEnum):
 
 def current_harness() -> Harness:
     value = os.environ.get(HARNESS_ENV_VAR, "").strip().lower()
-    return Harness.CODEX if value == Harness.CODEX else Harness.CLAUDE
+    return Harness.CLAUDE if value == Harness.CLAUDE else Harness.CODEX
 
 
 def is_codex() -> bool:
