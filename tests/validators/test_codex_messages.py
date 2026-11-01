@@ -11,6 +11,11 @@ from dev10x.core.validators.codex_messages import (
     codex_tool_for_skill,
     codex_tool_name,
     format_codex_skill_block,
+    template_pattern,
+)
+from dev10x.core.validators.prefix_friction import (
+    SEMICOLON_CHAIN_MSG,
+    PrefixFrictionValidator,
 )
 from dev10x.core.validators.skill_redirect import (
     MCP_UNAVAILABLE_HINT,
@@ -38,8 +43,12 @@ def _block(command: str) -> str:
     return result.message
 
 
-def _emitted_block(command: str, capsys: pytest.CaptureFixture[str]) -> str:
-    result = SkillRedirectValidator().validate(inp=_make_input(command=command))
+def _emitted_block(
+    command: str,
+    capsys: pytest.CaptureFixture[str],
+    validator: SkillRedirectValidator | PrefixFrictionValidator | None = None,
+) -> str:
+    result = (validator or SkillRedirectValidator()).validate(inp=_make_input(command=command))
     assert result is not None
     with pytest.raises(SystemExit) as exc_info:
         emit(result)
@@ -290,6 +299,84 @@ class TestSkillRedirectUnderCodex:
         assert "Un-rationalized" in message
         assert "Invoke the skill" not in message
         _assert_no_claude_vocabulary(message)
+
+
+class TestTemplatePattern:
+    def test_captures_each_field_of_a_formatted_template(self) -> None:
+        match = template_pattern("run `{cmd}` then {tail}.").fullmatch("run `git log` then ls.")
+        assert match is not None
+        assert match.groupdict() == {"cmd": "git log", "tail": "ls"}
+
+    def test_repeated_field_must_carry_the_same_value(self) -> None:
+        pattern = template_pattern("{head} or {head}")
+        assert pattern.fullmatch("git or git") is not None
+        assert pattern.fullmatch("git or gh") is None
+
+    def test_literal_regex_characters_are_escaped(self) -> None:
+        assert template_pattern("`Bash({cmd}:*)` (x)").fullmatch("`Bash(git:*)` (x)") is not None
+
+
+@pytest.mark.usefixtures("codex_harness")
+class TestPrefixFrictionUnderCodex:
+    @pytest.mark.parametrize(
+        ("command", "shape"),
+        [
+            ("git status; git fetch", "`;` chain"),
+            ("git fetch || git pull", "`||` chain"),
+            ("git status\ngit fetch", "Bare-newline chain"),
+        ],
+    )
+    def test_chain_block_names_codex_and_keeps_both_commands(
+        self, command: str, shape: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        message = _emitted_block(command, capsys, PrefixFrictionValidator())
+        assert message.startswith(f"⚠️  {shape} blocked")
+        assert "hides `git` behind `git`" in message
+        assert "Split into separate shell calls instead." in message
+        assert "Claude Code" not in message
+        assert "Bash(" not in message
+
+    def test_redirect_block_keeps_the_rewritten_command(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        message = _emitted_block(
+            'find /home/user/notes 2>/dev/null -name "*.md"', capsys, PrefixFrictionValidator()
+        )
+        assert "Move the redirect to the end of the command:" in message
+        assert "2>/dev/null" in message
+        assert "Claude Code" not in message
+
+    @pytest.mark.parametrize(
+        ("command", "wrapper"),
+        [
+            ("for n in 1 2; do gh api repos/x/y/issues/$n; done", "for"),
+            ("echo a b | xargs -I{} gh api {}", "xargs"),
+        ],
+    )
+    def test_loop_wrap_block_steers_to_shell_calls(
+        self, command: str, wrapper: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        message = _emitted_block(command, capsys, PrefixFrictionValidator())
+        assert f"Shell {wrapper} wraps an allowed command (`gh`)" in message
+        assert "one shell call per iteration" in message
+        assert "Claude Code" not in message
+        assert "Bash tool calls" not in message
+
+    def test_rewrite_is_idempotent(self) -> None:
+        claude = SEMICOLON_CHAIN_MSG.format(head_cmd="git", tail_cmd="ls")
+        once = adapt_message_for_codex(claude)
+        assert once != claude
+        assert adapt_message_for_codex(once) == once
+
+
+@pytest.mark.usefixtures("claude_harness")
+class TestPrefixFrictionUnderClaudeIsUnchanged:
+    def test_chain_block_keeps_claude_wording(self) -> None:
+        result = PrefixFrictionValidator().validate(
+            inp=_make_input(command="git status; git fetch")
+        )
+        assert result is not None
+        assert result.message == SEMICOLON_CHAIN_MSG.format(head_cmd="git", tail_cmd="git")
 
 
 @pytest.mark.usefixtures("claude_harness")
