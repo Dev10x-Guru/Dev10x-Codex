@@ -278,6 +278,54 @@ to add your project roots. (The userspace config path keeps the
 `upgrade-cleanup` directory name for backward compatibility — the
 on-disk location does not change with the rename.)
 
+**How settings files are found (GH-1626).** `ensure-base`,
+`catalog-gap` and `clean` walk each root for
+`.claude/settings.local.json`, skipping `node_modules`, `.venv`,
+`venv`, `vendor`, `.tox`, `.git`, `dist`, `build` and `site-packages`,
+plus any directory names listed under `exclude_dirs` in the userspace
+`projects.yaml` (GH-1600). `ensure-ignored` prunes the same set when it
+looks for repos under a container root. For every
+git repo the walk meets, they also add each worktree from
+`git worktree list`, wherever it lives on disk, so a worktree outside
+every root (for example under `~/.herdr/worktrees/`) is still checked
+and seeded. `catalog-gap` lists those worktrees under
+"Out-of-roots worktrees".
+
+**Worktrees without a settings file, and the global file (GH-1664).**
+`ensure-base` creates `.claude/settings.local.json` in a worktree that
+has none when a sibling checkout of the same repo has one (a herdr or
+raw `git worktree add` checkout), then seeds it; `--no-create` opts out.
+A dotfiles repo that tracks `~/.claude/settings.json` keeps it skipped
+unless `--global` is passed. `seed-worktree --dry-run` now reports the
+real number of rules it would add, and `clean` prunes `*`-before-`:*`
+rules from the userspace `projects.yaml` copy line by line, keeping
+comments and a backup.
+
+**Remembered grants (GH-1677).** `~/.config/Dev10x/granted-permissions.yaml`
+holds allow rules remembered from a grant. It is Dev10x-owned (written
+only by `granted_catalog.remember_granted_rule`, under a file lock) and
+merged into the userspace catalog, so `ensure-base` and `seed-worktree`
+carry those rules into every checkout, including ones created after the
+grant, and `catalog-diff` lists them as user-only.
+
+**Grants made in a main checkout (GH-1673).** `permission
+sync-worktrees [--dry-run]` copies allow rules from each main checkout
+under the configured roots into its existing worktrees, wherever they
+live. Rules pinned to a checkout path and session noise stay put, and
+a git-tracked worktree file is skipped. Browser observation tools ship
+as the opt-in `browser-readonly` group (`permission doctor
+--enable-group=browser-readonly`); tools that act or run JavaScript
+stay prompting.
+
+**Worktree roots outside the repo (GH-1666).** Set
+`derive_worktree_roots: true` in the userspace `projects.yaml` and
+`ensure-workspace` registers the parent of every linked worktree that
+lives outside its main checkout (a herdr root such as
+`/work/.herdr/worktrees/<repo>`) under `additionalDirectories`. It is
+opt-in because each entry widens the Read/Edit scope of every session.
+`merge-worktree` re-anchors rules pinned inside any worktree, whatever
+its layout, to the main checkout.
+
 ## Workflow
 
 The numbered headings below (1–13) match the **full** mode task
@@ -749,7 +797,21 @@ Agent(subagent_type="Dev10x:permission-auditor",
 ```
 
 The agent produces a severity-categorized report with specific
-fix proposals. Review and apply selectively.
+fix proposals, ending in a machine-readable findings block. Hand
+that block to the apply skill rather than editing settings by hand
+(GH-1631) — it asks once per finding, so nothing outside the
+approved scope is applied:
+
+```
+$Dev10x:permission-audit-apply (args: "")
+```
+
+Only when the user has already approved applying every CRITICAL and
+HIGH finding unattended:
+
+```
+$Dev10x:permission-audit-apply (args: "--severity-max=HIGH")
+```
 
 ### 11. Clean project files *(full only)*
 
@@ -937,6 +999,13 @@ The script looks for `projects.yaml` in two locations (first wins):
 
 The userspace location is preserved across the rename so existing
 users do not need to migrate config files.
+
+`projects.yaml` is not the whole catalog. Each plugin owns a fragment
+at `projects.d/<plugin>.yaml` beside the resolved `projects.yaml`
+(GH-1589). The loader reads `projects.yaml` first (core), then merges
+the fragments in `src/dev10x/core/plugins.yaml` order, so list-valued
+keys such as `base_permissions` accumulate across files rather than
+the last file winning.
 
 ## Options
 

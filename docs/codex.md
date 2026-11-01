@@ -2,7 +2,7 @@
 
 Dev10x for Codex packages the Dev10x MCP tools and command-safety hooks
 as a Codex plugin.
-It tracks upstream Dev10x (Claude) and currently corresponds to v0.108.
+It tracks upstream Dev10x (Claude) and currently corresponds to v0.110.
 
 ## What is included
 
@@ -12,7 +12,7 @@ It tracks upstream Dev10x (Claude) and currently corresponds to v0.108.
 | PreToolUse guardrails | Every shell command runs through the DX001–DX017 validators; file edits (`apply_patch`) run through the sensitive-file and edit rules |
 | SessionStart briefing | Git alias status, scratch directory setup, and a short guide to the Dev10x MCP tools and skills |
 | Approval baseline | `codex/rules/dev10x.rules` — routine read-only commands pre-approved, privilege escalation forbidden |
-| Dev10x skills | 77 Dev10x skills in Codex's skill list (`$Dev10x:git-commit`, `$Dev10x:work-on`, …) |
+| Dev10x skills | 79 Dev10x skills in Codex's skill list (`$Dev10x:git-commit`, `$Dev10x:work-on`, …) |
 | Dev10x agents | 21 reviewer, architect and investigator agents as Codex agent roles (`Dev10x:code-reviewer`, …) — installed with one symlink |
 
 ## Using the Dev10x skills
@@ -36,25 +36,27 @@ end to end in Codex:
 Type the name (for example `$Dev10x:git-commit`) or describe the
 outcome and let Codex pick the skill.
 
-Sixty-two more — `$Dev10x:work-on`, `$Dev10x:review`, `$Dev10x:park`,
+Sixty-four more — `$Dev10x:work-on`, `$Dev10x:review`, `$Dev10x:park`,
 `$Dev10x:ticket-create`, … — are in the skill list too.
 Each was reviewed against Codex but not yet run end to end in it, and
 says so at the top; eight also carry a one-line **In Codex** note, for
 example that `$Dev10x:linear` needs a Linear MCP server configured in
 Codex.
 
-Seventeen skills are not supported in Codex yet, because they depend on
-Claude Code features Codex lacks.
+Twenty-three skills are not supported in Codex yet, because they depend
+on Claude Code features Codex lacks.
 They stay installed but run only when invoked by name:
 
 | Skills | Tracked in |
 |--------|------------|
 | `foreman` | [#11](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/11) |
-| `afk`, `diag-friction`, `friction-setup`, `permission-investigator`, `plugin-doctor`, `plugin-maintenance`, `session-config-seed`, `upgrade-cleanup` | [#10](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/10) |
+| `afk`, `diag-approval`, `diag-friction`, `friction-setup`, `permission-audit-apply`, `permission-grant`, `permission-investigator`, `plugin-doctor`, `plugin-maintenance`, `session-config-seed`, `upgrade-cleanup` | [#10](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/10) |
 | `plan-sync` | [#13](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/13) |
 | `audit-file`, `context-audit`, `project-audit`, `skill-audit`, `skill-audit-queue` | [#17](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/17) |
 | `ide-normalize` | [#18](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/18) |
-| `bus` | [#43](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/43) |
+| `ci-review` | [#19](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/19) |
+| `bus`, `supervisor`, `voice-supervisor` | [#43](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/43) |
+| `skill-prune` | [#50](https://github.com/Dev10x-Guru/Dev10x-Codex/issues/50) |
 
 The skills are written for Claude Code.
 Each one opens with a short Codex note linking
@@ -146,7 +148,7 @@ Dev10x 0.105.0; `N` restarts at 1 when a new upstream release is
 merged.
 The same version appears in `.codex-plugin/plugin.json`.
 To stay on one release instead of following `main`, add the
-marketplace with `--ref v0.108.0+codex.1`; move to a newer release by
+marketplace with `--ref v0.110.0+codex.1`; move to a newer release by
 removing the marketplace and adding it again with the new tag.
 
 Check the MCP servers are registered:
@@ -244,7 +246,8 @@ uv run dev10x permission codex-rules
 Add `--check` to any of them to fail on a stale file without writing;
 the test suite runs the same check.
 On every PR to `main`, `.github/workflows/codex-ci.yml` runs the test
-suite with its coverage gate and pre-commit on the files the PR changes.
+suite with its coverage gate, upstream's whole-tree import-order and
+mypy checks, and pre-commit on the files the PR changes.
 Skill status (run end to end, deferred, caveats) lives in
 `src/dev10x/skills/codex/catalog.py`.
 [`codex-upstream-merge.md`](codex-upstream-merge.md) walks through a
@@ -252,11 +255,11 @@ full upstream merge, from `git merge` to a tagged Codex build.
 
 ## Known limitations
 
-- Fifteen skills have been run end to end in Codex; sixty-two more were
+- Fifteen skills have been run end to end in Codex; sixty-four more were
   reviewed but not run, so confirm before a step that writes to GitHub
   or rewrites history.
 - Codex shortens each skill's description in its skill list (to about
-  250 characters with 77 skills listed), so a skill is easiest to pick
+  250 characters with 79 skills listed), so a skill is easiest to pick
   by name.
 - Skills that rely on Claude Code's Stop, SessionEnd or PreCompact
   hooks lose that step in Codex

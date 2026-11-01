@@ -40,6 +40,7 @@ class LazyGroup(click.Group):
 @click.group(
     cls=LazyGroup,
     lazy_subcommands={
+        "ci-review": "dev10x.commands.ci_review.ci_review",
         "config": "dev10x.commands.config.config",
         "deps": "dev10x.commands.deps.deps",
         "doctor": "dev10x.commands.doctor.doctor",
@@ -56,6 +57,7 @@ class LazyGroup(click.Group):
         "validate": "dev10x.commands.validate.validate",
         "skill": "dev10x.commands.skill.skill",
         "spec": "dev10x.commands.spec.spec",
+        "supervisor": "dev10x.commands.supervisor.supervisor",
         "usage": "dev10x.commands.usage.usage",
         "watchdog": "dev10x.commands.watchdog.watchdog",
     },

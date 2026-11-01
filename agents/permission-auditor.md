@@ -34,7 +34,7 @@ Extract and inventory:
 For each hook script file in `~/.claude/hooks/`:
 
 1. Check if it's registered in `settings.json` under the correct matcher
-2. Cross-reference against plugin `hooks.json` files (in `~/.claude/plugins/cache/`) to detect **duplicate execution** — the same hook running both from user settings and a plugin
+2. Cross-reference against each plugin's hook files — `hooks/hooks.json` plus any files its `plugin.json` lists under `"hooks"` (e.g. `hooks/hooks.d/*.json`), in `~/.claude/plugins/cache/` — to detect **duplicate execution** — the same hook running both from user settings and a plugin
 3. For duplicates, `diff` the user copy vs plugin copy to detect **version drift**
 4. Flag unregistered hook files as CRITICAL (protection is inert)
 
@@ -77,13 +77,10 @@ that must NOT be flagged.
 
 ### Phase 4b: MCP Horizontal-Duplicate Detection (GH-371)
 
-Run the `mcp-horizontal-duplicates` doctor strategy to find one logical
-capability served by several MCP installations under different prefixes
-— a catalog rule targeting one prefix does NOT cover the others.
-Severity: **LOW** (informational); offer consolidation, never force it.
-
-See [`references/agents/permission-auditor/mcp-duplicates.md`](../references/agents/permission-auditor/mcp-duplicates.md)
-for the source-type table and the per-finding report steps.
+Run the `mcp-horizontal-duplicates` doctor strategy: one capability
+served under several MCP prefixes is not covered by a rule on one.
+Severity **LOW**; offer consolidation, never force it. Details:
+[`mcp-duplicates.md`](../references/agents/permission-auditor/mcp-duplicates.md).
 
 ### Phase 4c: Worktree-Root Anchoring Audit (GH-376)
 
@@ -176,6 +173,10 @@ Present findings in a structured report:
 5. Hooks to register
 6. Paths to stabilize
 7. No action needed (hook-protected or skill-required — explain why)
+
+**End with one fenced `json` block of findings** per
+[`finding-schema.md`](../references/agents/permission-auditor/finding-schema.md)
+— `dev10x:permission-audit-apply` applies it one finding at a time.
 
 **IMPORTANT**: Do NOT modify any files. Present all proposals to the user and wait for explicit confirmation before making changes.
 

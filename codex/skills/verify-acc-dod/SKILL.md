@@ -185,6 +185,13 @@ If no PR exists (e.g., `local-only`), skip checks that reference
 
 For each check in the merged list:
 
+0. **If `skip_when_merged: true` and the PR is merged** — read the
+   state once via `mcp__cli__pr_get(number=…)`; when
+   `state` is `MERGED`, do not run the check.
+   Report it as "skipped (PR merged)" — out of scope, NOT passed, and
+   not counted toward the pass total.
+   A merged PR clears its review requests and may never re-run CI, so
+   these checks could otherwise never settle (GH-1665 F2/F4).
 1. **If `check: manual`** — treat it as a `prompt` check and evaluate
    its `prompt` contextually (see Manual Checks below)
 2. **If `check: prompt`** — evaluate the `prompt` contextually
@@ -334,6 +341,10 @@ visible:
   #<N> for review / merge"** — do NOT auto-complete.
 - **Go back** (any check fails/pending) → report failures to the
   parent orchestrator for resolution
+- **Go back on "No fixup commits"** → invoke `$Dev10x:git-groom`
+  directly, then re-run this skill. Squashing fixups is the known next
+  action, not a decision, so a hand-off that leaves `fixup!` commits
+  on the branch is never an option here (GH-1656)
 
 ### `effect: skip`
 

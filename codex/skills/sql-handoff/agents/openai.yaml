@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sql Handoff"
+policy:
+  allow_implicit_invocation: true

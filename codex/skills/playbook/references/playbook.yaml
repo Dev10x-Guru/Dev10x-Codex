@@ -1,4 +1,4 @@
-version: "0.108.0"
+version: "0.110.0"
 
 # playbook.yaml — Reusable play templates for orchestration skills
 # Default location: <plugin-root>/skills/playbook/references/playbook.yaml

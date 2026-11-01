@@ -196,6 +196,18 @@ class Dev10xConfigDir:
         return cls._resolve("sensitivity-exceptions.yaml")
 
     @classmethod
+    def granted_permissions_yaml(cls) -> Path:
+        """User-owned rules remembered from a grant, for checkouts made later (GH-1677).
+
+        Written only by ``remember_granted_rule`` and read as one more
+        layer of the userspace catalog. It lives beside ``projects.yaml``
+        rather than in ``projects.d/``, whose fragments must be named after
+        a plugin. Introduced after the ``~/.config/Dev10x`` move, so there
+        is no legacy path.
+        """
+        return cls._resolve("granted-permissions.yaml")
+
+    @classmethod
     def accepted_findings_yaml(cls) -> Path:
         """User-owned accepted-by-design auditor findings (GH-1053).
 
@@ -206,6 +218,16 @@ class Dev10xConfigDir:
         after the ``~/.config/Dev10x`` move, so there is no legacy path.
         """
         return cls._resolve("accepted-findings.yaml")
+
+    @classmethod
+    def skill_prune_yaml(cls) -> Path:
+        """User-owned skill-prune allowlist (GH-1627).
+
+        ``keep:`` lists skill names ``dev10x:skill-prune`` must never
+        propose hiding, in any project. Introduced after the
+        ``~/.config/Dev10x`` move, so there is no legacy path.
+        """
+        return cls._resolve("skill-prune.yaml")
 
     @classmethod
     def doctor_accepted_findings_yaml(cls) -> Path:
@@ -262,6 +284,11 @@ class Dev10xConfigDir:
     def gchat_review_config_yaml(cls) -> Path:
         """Per-repo Google Chat review-request config (space + mentions)."""
         return cls._resolve("gchat-config-code-review-requests.yaml")
+
+    @classmethod
+    def gchat_watch_json(cls) -> Path:
+        """Armed Google Chat watches and their cursors (GH-1682)."""
+        return cls._resolve("gchat-watch.json")
 
 
 def _with_lazy_migration(current: Path, legacy_provider: Callable[[], Path]) -> Path:

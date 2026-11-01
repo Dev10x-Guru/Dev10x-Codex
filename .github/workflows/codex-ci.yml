@@ -51,6 +51,12 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
+      - name: Import order (ruff isort)
+        run: uv run --extra dev ruff check --select I src tests hooks skills bin servers
+
+      - name: Type check (mypy)
+        run: uv run --extra dev mypy --config-file=mypy.ini src/
+
       - name: Run pre-commit on the changed files
         env:
           FROM_REF: ${{ github.event.pull_request.base.sha || github.event.before }}

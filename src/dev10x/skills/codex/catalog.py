@@ -34,13 +34,18 @@ PERMISSION_FRICTION_ISSUE = 10
 PLAN_MIRROR_ISSUE = 13
 AUDIT_ISSUE = 17
 IDE_ISSUE = 18
+CODEX_CI_REVIEW_ISSUE = 19
 MESSAGE_BUS_ISSUE = 43
+SKILL_PRUNE_ISSUE = 50
 
 DEFERRED_SKILLS: dict[str, int] = {
     "foreman": FOREMAN_ISSUE,
     "afk": PERMISSION_FRICTION_ISSUE,
+    "diag-approval": PERMISSION_FRICTION_ISSUE,
     "diag-friction": PERMISSION_FRICTION_ISSUE,
     "friction-setup": PERMISSION_FRICTION_ISSUE,
+    "permission-audit-apply": PERMISSION_FRICTION_ISSUE,
+    "permission-grant": PERMISSION_FRICTION_ISSUE,
     "permission-investigator": PERMISSION_FRICTION_ISSUE,
     "plugin-doctor": PERMISSION_FRICTION_ISSUE,
     "plugin-maintenance": PERMISSION_FRICTION_ISSUE,
@@ -53,7 +58,11 @@ DEFERRED_SKILLS: dict[str, int] = {
     "skill-audit": AUDIT_ISSUE,
     "skill-audit-queue": AUDIT_ISSUE,
     "ide-normalize": IDE_ISSUE,
+    "ci-review": CODEX_CI_REVIEW_ISSUE,
     "bus": MESSAGE_BUS_ISSUE,
+    "supervisor": MESSAGE_BUS_ISSUE,
+    "voice-supervisor": MESSAGE_BUS_ISSUE,
+    "skill-prune": SKILL_PRUNE_ISSUE,
 }
 
 DEFERRED_AGENTS: dict[str, int] = {"permission-auditor": PERMISSION_FRICTION_ISSUE}

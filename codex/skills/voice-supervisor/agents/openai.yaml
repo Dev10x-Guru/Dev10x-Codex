@@ -1,0 +1,4 @@
+interface:
+  display_name: "Voice Supervisor"
+policy:
+  allow_implicit_invocation: false

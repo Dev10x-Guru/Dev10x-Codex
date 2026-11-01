@@ -11,9 +11,9 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from dev10x.domain.common.result import err, ok
 from dev10x.domain.transport_budget import MAX_TOOL_CALL_SECONDS
+
 from dev10x.mcp import server_cli as cli_server
 
 
@@ -361,7 +361,7 @@ class TestRunNodeTests:
 
         assert result["returncode"] == 0
         assert result["passed"] == 7
-        assert mock_fn.call_args.kwargs["runner"] == "jest"
+        assert mock_fn.call_args.kwargs["runner"] is None
         assert mock_fn.call_args.kwargs["coverage"] is True
 
     @pytest.mark.asyncio

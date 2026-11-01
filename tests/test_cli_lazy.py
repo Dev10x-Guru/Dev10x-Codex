@@ -15,6 +15,7 @@ import pytest
 from dev10x.cli import cli
 
 EXPECTED_SUBCOMMANDS = {
+    "ci-review",
     "config",
     "deps",
     "doctor",
@@ -31,6 +32,7 @@ EXPECTED_SUBCOMMANDS = {
     "validate",
     "skill",
     "spec",
+    "supervisor",
     "usage",
     "watchdog",
 }

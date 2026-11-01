@@ -225,10 +225,10 @@ review comment) is concise enough to evaluate in seconds.
 | **Scoping** | [`scope`](skills/scope/SKILL.md), [`estimate`](skills/estimate/SKILL.md), [`jtbd`](skills/jtbd/SKILL.md), [`adr`](skills/adr/SKILL.md), [`adr-evaluate`](skills/adr-evaluate/SKILL.md), [`ddd`](skills/ddd/SKILL.md) | Architecture decisions, Job Story format, DDD workshops |
 | **QA** | [`qa-scope`](skills/qa-scope/SKILL.md), [`qa-self`](skills/qa-self/SKILL.md), [`playwright`](skills/playwright/SKILL.md), [`py-test`](skills/py-test/SKILL.md) | Test planning, self-review, browser testing, pytest runner |
 | **Session** | [`session-tasks`](skills/session-tasks/SKILL.md), [`session-wrap-up`](skills/session-wrap-up/SKILL.md), [`plan-sync`](skills/plan-sync/SKILL.md), [`fanout`](skills/fanout/SKILL.md), [`verify-acc-dod`](skills/verify-acc-dod/SKILL.md) | In-session work tracking, parallel execution, acceptance verification |
-| **DB** | [`db`](skills/db/SKILL.md), [`db-psql`](skills/db-psql/SKILL.md) | Safe database query planning and execution |
+| **DB** | [`db`](skills/db/SKILL.md), [`db-psql`](skills/db-psql/SKILL.md), [`sql-handoff`](skills/sql-handoff/SKILL.md) | Safe database query planning, execution, and hand-run write handoff |
 | **Tooling** | [`py-uv`](skills/py-uv/SKILL.md), [`slack`](skills/slack/SKILL.md), [`slack-review-request`](skills/slack-review-request/SKILL.md), [`slack-setup`](skills/slack-setup/SKILL.md), [`ask`](skills/ask/SKILL.md) | Python packaging, Slack notifications, interactive prompts |
 | **Meta** | [`skill-create`](skills/skill-create/SKILL.md), [`skill-audit`](skills/skill-audit/SKILL.md), [`skill-index`](skills/skill-index/SKILL.md), [`audit-file`](skills/audit-file/SKILL.md), [`playbook`](skills/playbook/SKILL.md), [`diag-friction`](skills/diag-friction/SKILL.md), [`onboarding`](skills/onboarding/SKILL.md) | Create, audit, discover, and learn skills |
-| **Maintenance** | [`memory-maintenance`](skills/memory-maintenance/SKILL.md), [`plugin-maintenance`](skills/plugin-maintenance/SKILL.md), [`upgrade-cleanup`](skills/upgrade-cleanup/SKILL.md), [`playbook-maintenance`](skills/playbook-maintenance/SKILL.md), [`context-audit`](skills/context-audit/SKILL.md) | Memory, permission, playbook, and context hygiene |
+| **Maintenance** | [`memory-maintenance`](skills/memory-maintenance/SKILL.md), [`plugin-maintenance`](skills/plugin-maintenance/SKILL.md), [`upgrade-cleanup`](skills/upgrade-cleanup/SKILL.md), [`playbook-maintenance`](skills/playbook-maintenance/SKILL.md), [`context-audit`](skills/context-audit/SKILL.md), [`permission-audit-apply`](skills/permission-audit-apply/SKILL.md), [`skill-prune`](skills/skill-prune/SKILL.md) | Memory, permission, playbook, and context hygiene; applying audit fixes and hiding irrelevant skills |
 
 All skills use the `dev10x:` prefix — type `/dev10x:git-commit` in the Claude
 Code CLI to run it. Run `/dev10x:skill-index` for the full reference.
@@ -245,6 +245,22 @@ in-session `/plugin` slash commands are unreliable for install.
 
 [Full installation guide →](docs/installation.md) — prerequisites,
 dependencies, manual clone, develop branch, and verification.
+
+### MCP tools only — Claude Desktop and other MCPB hosts
+
+Starting with v0.109.0, every
+[release](https://github.com/Dev10x-Guru/dev10x-claude/releases)
+attaches `dev10x-<version>.mcpb`, an [MCP Bundle](https://github.com/modelcontextprotocol/mcpb)
+of the `cli` MCP server (PR lifecycle, issues, git history, CI
+monitoring, gate policy). Download it and open it in Claude Desktop —
+or any MCPB-aware host — to install the tools in one click, without
+the Claude Code plugin.
+
+The bundle needs [`uv`](https://docs.astral.sh/uv/) on `PATH`, plus
+`git` and an authenticated `gh` for the GitHub tools. Skills, hooks
+and the `db` server are not in it: skills and hooks are Claude Code
+plugin features, and `db` reads local `databases.yaml` and keyring
+credentials that a bundle cannot carry.
 
 ## Why Dev10x?
 

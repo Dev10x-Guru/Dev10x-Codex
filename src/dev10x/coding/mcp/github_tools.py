@@ -343,6 +343,47 @@ async def pr_labels(
 
 
 @github_tool
+async def ci_rerun(
+    pr_number: int | None = None,
+    head_sha: str | None = None,
+    checks: list[str] | None = None,
+    failed_only: bool = True,
+    repo: str | None = None,
+    cwd: str | None = None,
+) -> Result[dict]:
+    """Re-run failed CI for a PR head without a raw `gh api` POST (GH-1674).
+
+    Actions runs are re-run via `rerun-failed-jobs` (or a full `rerun`
+    when `failed_only=false`); third-party GitHub App check suites are
+    re-requested via `check-suites/{id}/rerequest`. Actions runs are
+    capped at 3 attempts (counted on GitHub); third-party suites expose
+    no attempt counter, so they are bounded per call only (at most 10
+    re-runs per call). Reach for this instead of `gh api --method POST
+    .../rerequest`, which sits on an ask rule.
+
+    Args:
+        pr_number: PR whose head SHA is targeted (give this or head_sha).
+        head_sha: Commit SHA to target directly.
+        checks: Case-insensitive workflow/app names to restrict to.
+        failed_only: Only re-run failed suites. Defaults to true.
+        repo: Repository (owner/repo). Auto-detected if omitted.
+        cwd: Effective working directory (GH-979).
+
+    Returns:
+        Dictionary with keys: repo, head_sha, failed_only,
+        max_attempts, retried (each retry recorded), skipped (with
+        reason), failed.
+    """
+    return await gh.ci_rerun(
+        pr_number=pr_number,
+        head_sha=head_sha,
+        checks=checks,
+        failed_only=failed_only,
+        repo=repo,
+    )
+
+
+@github_tool
 async def issue_labels(
     number: int,
     action: str = "list",
@@ -811,6 +852,8 @@ async def merge_pr(
             (GH-1267). Pass the ``headRefOid`` the pre-merge checks
             verified: without it the merge takes whatever the head is
             *now*, so a push landing mid-gate ships unreviewed code.
+            Must be the full 40-character SHA; an abbreviated one is
+            refused before any network call (GH-1681).
         use_bot: Execute the merge under the GitHub App identity so
             ``merged_by`` names the bot and an out-of-gate merge
             becomes visible (GH-1272). Omit to read the durable
@@ -1423,14 +1466,14 @@ async def resolve_review_thread(
 @github_tool
 async def check_top_level_comments(
     pr_number: int,
-    repo: str,
+    repo: str | None = None,
     cwd: str | None = None,
 ) -> Result[dict]:
     """Check for unaddressed automated review comments on a PR.
 
     Args:
         pr_number: PR number to scan
-        repo: Repository in owner/repo format
+        repo: Repository in owner/repo format. Auto-detected from cwd if omitted.
         cwd: Effective working directory (GH-979).
 
     Returns:
@@ -1441,7 +1484,7 @@ async def check_top_level_comments(
 
 @github_tool
 async def unresolved_threads(
-    repo: str,
+    repo: str | None = None,
     pr_number: int | None = None,
     limit: int = 200,
     cwd: str | None = None,
@@ -1449,7 +1492,7 @@ async def unresolved_threads(
     """Fetch unresolved review comment threads.
 
     Args:
-        repo: Repository in owner/repo format
+        repo: Repository in owner/repo format. Auto-detected from cwd if omitted.
         pr_number: When set, check only this PR via a single fast
             GraphQL query — returns {"unresolved_threads": [...],
             "count": N}. When omitted, sweep up to `limit` merged
@@ -1486,7 +1529,7 @@ async def cluster_review_comments(
     Returns:
         Dictionary with keys: patterns (list), summary (dict); or error.
     """
-    from dev10x.github import review_patterns
+    from dev10x.coding.github import review_patterns
 
     return await review_patterns.cluster_review_comments(
         repos=repos,
@@ -1520,7 +1563,7 @@ async def candidate_rules_report(
         Dictionary with keys: report (str), patterns (list), summary
         (dict); or error.
     """
-    from dev10x.github import candidate_rules
+    from dev10x.coding.github import candidate_rules
 
     return await candidate_rules.candidate_rules_report(
         repos=repos,
@@ -1563,7 +1606,7 @@ async def validate_candidate_patterns(
     Returns:
         Dictionary with keys: validated (list), summary (dict); or error.
     """
-    from dev10x.github import pattern_validation
+    from dev10x.coding.github import pattern_validation
 
     return await pattern_validation.validate_candidate_patterns(
         repos=repos,
@@ -1609,7 +1652,7 @@ async def author_reference_rules(
         Dictionary with keys: rules (list), routing_fragment (str),
         summary (dict); or error.
     """
-    from dev10x.github import rule_authoring
+    from dev10x.coding.github import rule_authoring
 
     return await rule_authoring.author_reference_rules(
         repos=repos,
@@ -1640,7 +1683,7 @@ async def rule_confidence_report(
     Returns:
         Dictionary with keys: ranked (list), summary (dict).
     """
-    from dev10x.github import rule_confidence
+    from dev10x.coding.github import rule_confidence
 
     return await rule_confidence.rule_confidence_report(store_path=store_path)
 
@@ -1664,7 +1707,7 @@ async def record_rule_feedback(
     Returns:
         Dictionary with key: feedback (dict); or error on bad outcome.
     """
-    from dev10x.github import rule_confidence
+    from dev10x.coding.github import rule_confidence
 
     return await rule_confidence.record_rule_feedback(
         rule_id=rule_id,

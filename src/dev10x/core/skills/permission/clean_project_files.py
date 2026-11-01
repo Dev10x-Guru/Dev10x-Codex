@@ -6,7 +6,8 @@ and strips rules that are:
   - Old plugin version paths (any version older than current)
   - Env-prefixed session noise (GIT_SEQUENCE_EDITOR=*, DATABASE_URL=*, etc.)
   - Shell control flow fragments (do, done, fi, for, while, etc.)
-  - Double-slash path typos (Read(//...), Write(//...))
+  - Double-slash path typos mid-token (``.../<ver>//skills/...``); a
+    leading ``//`` is the absolute-path anchor and is kept (GH-1601)
   - Bash rules with a `*` before a trailing `:*` — a literal prefix that
     can never match (GH-1472)
 
@@ -50,9 +51,15 @@ from dev10x.domain.dev10x_paths import Dev10xConfigDir
 from dev10x.domain.plugin_identity import PLUGIN_NAMES
 from dev10x.skills.permission.catalog_paths import shipped_projects_catalog
 from dev10x.skills.permission.config import parse_config, resolve_config
+from dev10x.skills.permission.doctor import has_double_slash_typo
 from dev10x.skills.permission.legacy_namespace import (
     NamespaceMigration,
     migrate_legacy_namespace,
+)
+from dev10x.skills.permission.settings_discovery import (
+    VENDORED_DIRS,
+    discover_settings,
+    vendored_dirs,
 )
 from dev10x.skills.permission.star_prefix import StarPrefixRepair, repair_star_prefix
 
@@ -85,8 +92,6 @@ SHELL_FRAGMENTS = frozenset(
         "until",
     }
 )
-
-DOUBLE_SLASH_PATTERN = re.compile(r"\(//")
 
 # Patterns superseded by ensure-reads per-skill enumeration (GH-48).
 # The `Read(...Dev10x/*/**)` glob does not reliably match in Claude
@@ -433,7 +438,7 @@ def classify_rules(
             result.shell_fragments.append(rule)
             continue
 
-        if DOUBLE_SLASH_PATTERN.search(rule):
+        if has_double_slash_typo(rule):
             result.double_slash.append(rule)
             continue
 
@@ -697,29 +702,12 @@ def _format_messages(
     return messages
 
 
-def find_settings_files(roots: list[str]) -> list[Path]:
-    files: list[Path] = []
-
-    project_settings_dir = ClaudeDir.projects_dir()
-    if project_settings_dir.is_dir():
-        for settings_file in project_settings_dir.rglob("settings.local.json"):
-            files.append(settings_file)
-
-    for root in roots:
-        root_path = Path(root).expanduser()
-        if not root_path.is_dir():
-            continue
-        for settings_file in root_path.rglob(".claude/settings.local.json"):
-            files.append(settings_file)
-
-    seen: set[Path] = set()
-    unique: list[Path] = []
-    for f in files:
-        resolved = f.resolve()
-        if resolved not in seen:
-            seen.add(resolved)
-            unique.append(resolved)
-    return unique
+def find_settings_files(
+    roots: list[str],
+    *,
+    excluded: frozenset[str] = VENDORED_DIRS,
+) -> list[Path]:
+    return discover_settings(roots=roots, include_user=False, excluded=excluded).files
 
 
 @dataclass(frozen=True)
@@ -825,7 +813,10 @@ def _restore(*, config_path: Path) -> int:
     from dev10x.skills.permission.backup import restore_report
 
     config = load_config(config_path)
-    settings_files = find_settings_files(roots=config.get("roots", []))
+    settings_files = find_settings_files(
+        roots=config.get("roots", []),
+        excluded=vendored_dirs(config),
+    )
     code, report = restore_report(paths=settings_files)
     print(report)
     return code

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import secrets
 import socket
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 
 BUS_ROOT = Path("/tmp/claude-bus")
@@ -13,6 +14,17 @@ SEEN_FLAG = ":2,S"
 SLUG_LIMIT = 40
 THREAD_SEPARATOR = "--"
 INVALID_MESSAGE_EXIT = 2
+MAX_BODY_CHARS = 100_000
+FRONTMATTER = "---\n"
+STATUS_DIR = "status"
+STATES = ("needs-input", "working", "done")
+DUPLICATE_WINDOW = timedelta(minutes=2)
+NEW = "NEW"
+HELD = "HELD"
+DUP = "DUP"
+EXPIRED = "EXPIRED"
+REFUSED = "REFUSED"
+SET_ASIDE = frozenset({REFUSED, EXPIRED, DUP})
 MAILBOX_NAME = re.compile(r"[A-Za-z0-9]+([._-][A-Za-z0-9]+)*")
 HEADER_KEY = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
 BUS_HEADERS = frozenset(
@@ -26,6 +38,7 @@ BUS_HEADERS = frozenset(
         "references",
         "reply-to",
         "voice",
+        "expires",
     }
 )
 
@@ -69,6 +82,7 @@ class Envelope:
     in_reply_to: str | None = None
     references: str | None = None
     voice: bool = False
+    expires: datetime | None = None
     extra_headers: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
@@ -121,13 +135,35 @@ def headers_for(
         "References": envelope.references or envelope.in_reply_to or "",
         "Reply-To": envelope.reply_to or envelope.sender,
         "Voice": "yes" if envelope.voice else "",
+        "Expires": envelope.expires.isoformat(timespec="seconds") if envelope.expires else "",
         **dict(envelope.extra_headers),
     }
 
 
 def render(headers: dict[str, str], body: str) -> str:
     lines = [f"{key}: {value}" for key, value in headers.items() if value]
-    return "---\n" + "\n".join(lines) + "\n---\n\n" + body.rstrip() + "\n"
+    return FRONTMATTER + "\n".join(lines) + "\n" + FRONTMATTER + "\n" + body.rstrip() + "\n"
+
+
+def parse(text: str) -> tuple[dict[str, str], str]:
+    if not text.startswith(FRONTMATTER):
+        return {}, text
+    head, separator, body = text[len(FRONTMATTER) :].partition("\n" + FRONTMATTER)
+    if not separator:
+        return {}, text
+    headers = {}
+    for line in head.splitlines():
+        key, colon, value = line.partition(":")
+        if colon:
+            headers[key.strip().lower()] = value.strip()
+    return headers, body.lstrip("\n")
+
+
+def read_message(message: Path) -> tuple[dict[str, str], str]:
+    try:
+        return parse(text=message.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return {}, ""
 
 
 def slugify(subject: str) -> str:
@@ -149,6 +185,11 @@ def send(
     thread: bool = False,
     sent_at: datetime | None = None,
 ) -> Delivery:
+    if len(body) > MAX_BODY_CHARS:
+        raise InvalidMessageError(
+            f"body is {len(body)} characters and the bus caps a message at "
+            f"{MAX_BODY_CHARS}: write the content to a file and send its path"
+        )
     now = sent_at or datetime.now().astimezone()
     stamp = now.strftime("%Y%m%dT%H%M%S")
     message_id = f"<{stamp}.{secrets.token_hex(3)}.{envelope.sender}@{socket.gethostname()}>"
@@ -195,6 +236,24 @@ def unread(maildirs: list[Path]) -> set[Path]:
     }
 
 
+def sender_of(message: Path) -> str | None:
+    try:
+        text = message.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    frontmatter = text.split("\n---\n", maxsplit=1)[0]
+    for line in frontmatter.splitlines():
+        key, _, value = line.partition(": ")
+        if key == "From":
+            return value
+    return None
+
+
+def is_own_thread_message(message: Path, name: str) -> bool:
+    in_thread = message.parent.parent.parent.name == "threads"
+    return in_thread and sender_of(message=message) == name
+
+
 def mark_read(message: Path) -> Path:
     cur = message.parent.parent / "cur"
     cur.mkdir(parents=True, exist_ok=True)
@@ -223,3 +282,150 @@ def mailbox_unread(root: Path, name: str) -> list[Path]:
     if not new.is_dir():
         raise InvalidMessageError(f"mailbox {name!r} has no new/ under {root}")
     return sorted(new.glob("*"))
+
+
+def is_expired(headers: dict[str, str], now: datetime) -> bool:
+    raw = headers.get("expires")
+    if not raw:
+        return False
+    try:
+        expires = datetime.fromisoformat(raw)
+    except ValueError:
+        return False
+    return expires.astimezone() <= now
+
+
+def fingerprint(headers: dict[str, str], body: str) -> str:
+    parts = (headers.get("from", ""), headers.get("subject", ""), body.strip())
+    return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+
+@dataclass
+class DuplicateFilter:
+    window: timedelta = DUPLICATE_WINDOW
+    last_seen: dict[str, datetime] = field(default_factory=dict)
+
+    def repeats(self, key: str, now: datetime) -> bool:
+        self.last_seen = {
+            seen: at for seen, at in self.last_seen.items() if now - at < self.window
+        }
+        repeated = key in self.last_seen
+        self.last_seen[key] = now
+        return repeated
+
+
+@dataclass(frozen=True)
+class InboundPolicy:
+    refuse: frozenset[str] = frozenset()
+    hold: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        for sender in self.refuse | self.hold:
+            validate_mailbox_name(field="sender", value=sender)
+
+
+def classify(
+    headers: dict[str, str],
+    body: str,
+    policy: InboundPolicy,
+    duplicates: DuplicateFilter,
+    now: datetime,
+) -> str:
+    sender = headers.get("from", "")
+    if sender in policy.refuse:
+        return REFUSED
+    if is_expired(headers=headers, now=now):
+        return EXPIRED
+    if sender and duplicates.repeats(key=fingerprint(headers=headers, body=body), now=now):
+        return DUP
+    if sender in policy.hold:
+        return HELD
+    return NEW
+
+
+def screen_message(
+    message: Path,
+    policy: InboundPolicy,
+    duplicates: DuplicateFilter,
+    now: datetime,
+) -> tuple[str, Path]:
+    headers, body = read_message(message=message)
+    verdict = classify(
+        headers=headers,
+        body=body,
+        policy=policy,
+        duplicates=duplicates,
+        now=now,
+    )
+    if verdict in SET_ASIDE:
+        return verdict, mark_read(message=message)
+    return verdict, message
+
+
+@dataclass(frozen=True)
+class SessionStatus:
+    mailbox: str
+    state: str
+    summary: str
+    updated: datetime
+    callsign: str = ""
+
+    def __post_init__(self) -> None:
+        validate_mailbox_name(field="mailbox", value=self.mailbox)
+        if self.state not in STATES:
+            raise InvalidMessageError(f"state {self.state!r} is not one of {', '.join(STATES)}")
+        validate_single_line(field="Summary", value=self.summary)
+        validate_single_line(field="Callsign", value=self.callsign)
+
+    @property
+    def label(self) -> str:
+        return f"{self.callsign} [{self.mailbox}]" if self.callsign else self.mailbox
+
+    @property
+    def headers(self) -> dict[str, str]:
+        return {
+            "Mailbox": self.mailbox,
+            "Callsign": self.callsign,
+            "State": self.state,
+            "Updated": self.updated.isoformat(timespec="seconds"),
+        }
+
+    def notice(self, recipient: str) -> Envelope:
+        return Envelope(
+            sender=self.mailbox,
+            recipient=recipient,
+            subject=f"{self.callsign or self.mailbox}: {self.state}",
+            extra_headers=(("State", self.state), ("Callsign", self.callsign)),
+        )
+
+
+def write_status(root: Path, status: SessionStatus) -> Path:
+    directory = root / STATUS_DIR
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    directory.mkdir(exist_ok=True)
+    draft = directory / f".{status.mailbox}.{os.getpid()}.tmp"
+    draft.write_text(render(headers=status.headers, body=status.summary), encoding="utf-8")
+    return draft.replace(directory / status.mailbox)
+
+
+def parse_status(path: Path) -> SessionStatus | None:
+    headers, body = read_message(message=path)
+    try:
+        return SessionStatus(
+            mailbox=headers["mailbox"],
+            state=headers["state"],
+            summary=body.strip(),
+            updated=datetime.fromisoformat(headers["updated"]),
+            callsign=headers.get("callsign", ""),
+        )
+    except (KeyError, ValueError):
+        return None
+
+
+def status_files(root: Path) -> list[Path]:
+    directory = root / STATUS_DIR
+    if not directory.is_dir():
+        return []
+    return sorted(
+        path for path in directory.iterdir() if path.is_file() and not path.name.startswith(".")
+    )

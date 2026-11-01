@@ -4,13 +4,15 @@ discovery, and userspace-config bootstrap (GH-1432, GH-1449)."""
 from pathlib import Path
 
 import pytest
-
-from dev10x.skills.permission import catalog_load
+import yaml
 from dev10x.skills.permission.catalog_load import (
+    extract_cache_plugin_dir,
     extract_cache_publisher,
     find_settings_files,
     init_userspace_config,
 )
+
+from dev10x.skills.permission import catalog_load
 
 
 class TestExtractCachePublisher:
@@ -25,6 +27,23 @@ class TestExtractCachePublisher:
     )
     def test_extracts_publisher(self, plugin_cache: str, expected: str) -> None:
         assert extract_cache_publisher(plugin_cache) == expected
+
+
+class TestExtractCachePluginDir:
+    """GH-1602: update-paths needs the installed cache's plugin dir spelling."""
+
+    @pytest.mark.parametrize(
+        ("plugin_cache", "expected"),
+        [
+            ("~/.claude/plugins/cache/Dev10x-Guru/dev10x", "dev10x"),
+            ("~/.claude/plugins/cache/Dev10x-Guru/Dev10x", "Dev10x"),
+            ("/home/u/.claude/plugins/cache/WooYek/dev10x-claude", "dev10x-claude"),
+            ("~/.claude/plugins/cache/Dev10x-Guru", None),
+            ("/no/cache/here", None),
+        ],
+    )
+    def test_extracts_plugin_dir(self, plugin_cache: str, expected: str | None) -> None:
+        assert extract_cache_plugin_dir(plugin_cache) == expected
 
 
 class TestDetectPluginCache:
@@ -188,6 +207,26 @@ class TestInitUserspaceConfig:
         assert result["exit_code"] == 0
         assert "plugin_cache: /detected/cache" in memory.read_text()
         assert any("Created" in m for m in result["messages"])
+
+    def test_fragmented_plugin_default_keeps_every_rule(
+        self,
+        config_paths: tuple[Path, Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """GH-1589: a fragment repeating `base_permissions` must not shadow core's."""
+        memory, _userspace, plugin = config_paths
+        plugin.write_text("base_permissions:\n  - core-rule\n")
+        fragments = plugin.parent / "projects.d"
+        fragments.mkdir()
+        (fragments / "coding.yaml").write_text("base_permissions:\n  - coding-rule\n")
+        monkeypatch.setattr(catalog_load, "_detect_plugin_cache", lambda: "/detected/cache")
+
+        init_userspace_config()
+
+        assert yaml.safe_load(memory.read_text())["base_permissions"] == [
+            "core-rule",
+            "coding-rule",
+        ]
 
     def test_errors_when_plugin_default_missing(
         self, config_paths: tuple[Path, Path, Path]

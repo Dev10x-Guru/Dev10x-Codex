@@ -1388,7 +1388,9 @@ early to measure meaningfully).
 
 | Action | MUST delegate to | Never use directly |
 |--------|-----------------|-------------------|
-| Run tests — EVERY run, incl. narrow ones | `$Dev10x:py-test` | `pytest`, `uv run pytest`, `python -m pytest` |
+| Run tests (Python) — EVERY run, incl. narrow ones | `$Dev10x:py-test` | `pytest`, `uv run pytest`, `python -m pytest` |
+| Run tests (JS/TS) — EVERY run | `mcp__cli__run_node_tests` (`runner` omitted (auto-detect) or explicit; `script=` for a package script) | `jest`, `vitest`, `yarn test`, `npm test`, `pnpm test` |
+| Lint | `pre-commit run` (Python projects with pre-commit) or `run_node_tests(script="lint")` (JS/TS) | inline `ruff`, `black`, `eslint`, `tsc` |
 | Create a commit | `$Dev10x:git-commit` | `git commit` |
 | Create a PR | `$Dev10x:gh-pr-create` | `gh pr create` |
 | Monitor CI | `$Dev10x:gh-pr-monitor` | `gh pr checks --watch` |
@@ -1446,18 +1448,22 @@ event, verify the routing table is still present by scanning
 for "$Dev10x:git-commit" in the current context. If
 missing, re-read this section before proceeding.
 
-1. run tests → `$Dev10x:py-test`
-2. commit → `$Dev10x:git-commit`
-3. create PR → `$Dev10x:gh-pr-create`
-4. monitor CI → `$Dev10x:gh-pr-monitor`
-5. push → `$Dev10x:git`
-6. groom → `$Dev10x:git-groom`
-7. branch → `$Dev10x:ticket-branch`
-8. create skill → `$Dev10x:skill-create`
-9. check PR state → `mcp__cli__pr_detect`
-10. verify PR readiness → `mcp__cli__verify_pr_state`
-11. verify acceptance → `$Dev10x:verify-acc-dod`
-12. merge PR → `$Dev10x:gh-pr-merge`
+1. run tests (Python) → `$Dev10x:py-test`
+2. run tests (JS/TS) → `mcp__cli__run_node_tests`
+   (`script=` for a package script)
+3. lint → `pre-commit run` (Python) or `run_node_tests(script="lint")`
+   (JS/TS) — never inline `ruff`/`black`/`eslint`
+4. commit → `$Dev10x:git-commit`
+5. create PR → `$Dev10x:gh-pr-create`
+6. monitor CI → `$Dev10x:gh-pr-monitor`
+7. push → `$Dev10x:git`
+8. groom → `$Dev10x:git-groom`
+9. branch → `$Dev10x:ticket-branch`
+10. create skill → `$Dev10x:skill-create`
+11. check PR state → `mcp__cli__pr_detect`
+12. verify PR readiness → `mcp__cli__verify_pr_state`
+13. verify acceptance → `$Dev10x:verify-acc-dod`
+14. merge PR → `$Dev10x:gh-pr-merge`
 
 ### Groom Step: Always Delegate, Never Self-Assess
 
@@ -2402,6 +2408,7 @@ safest fallback for permission-sensitive operations.
 | State | Action |
 |-------|--------|
 | Main repo, user wants worktree | Invoke `Dev10x:git-worktree` (creates branch internally — do NOT call `Dev10x:ticket-branch` first) |
+| Any, worktree wanted, `HERDR_ENV=1` | Invoke `Dev10x:git-worktree` — it takes Path C on its own (GH-1617): Herdr creates the worktree, a Claude agent named after the ticket starts there and is briefed through a file. That agent owns the ticket from then on; this session does not continue the ticket's plan |
 | Main repo, work here | Invoke `Dev10x:ticket-branch` to create feature branch |
 | Worktree, generic WT branch | Invoke `Dev10x:ticket-branch` to create work-specific branch from within the worktree |
 | Worktree, matching feature branch | No action needed — branch already exists |

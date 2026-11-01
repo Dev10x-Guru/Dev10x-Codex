@@ -1,0 +1,12 @@
+# Skill-index fragment for the teach plugin (ADR-0034 Stage A3,
+# GH-1589). Merged into ../families.yaml by scripts/lib-families.sh.
+
+families:
+  - label: Meta
+    description: "Create skills, audit usage and context"
+    skills:
+      - Dev10x:skill-create
+      - Dev10x:skill-audit
+      - Dev10x:skill-index
+      - Dev10x:memory-maintenance
+      - Dev10x:context-audit

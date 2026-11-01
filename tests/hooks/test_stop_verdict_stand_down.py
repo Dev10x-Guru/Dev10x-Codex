@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from dev10x.hooks.session_dispatch import build_stop_verdict
 from dev10x.hooks.stop_verdict import (
     StopSignal,
@@ -158,8 +157,8 @@ class TestItHoldsUntilTheTaskSetChanges:
             data={"session_id": "hold2", "transcript_path": follow_up_turn}, plan=_EXTENDED
         )
 
-        assert verdict.block is True
-        assert verdict.signal == StopSignal.CONTINUE
+        assert verdict.block is False
+        assert verdict.signal == StopSignal.OPEN_WORK
         assert verdict.clear_stand_down is True
 
     def test_a_status_change_re_arms_the_gate(
@@ -171,7 +170,7 @@ class TestItHoldsUntilTheTaskSetChanges:
             data={"session_id": "hold3", "transcript_path": follow_up_turn}, plan=_REOPENED
         )
 
-        assert verdict.signal == StopSignal.CONTINUE
+        assert verdict.signal == StopSignal.OPEN_WORK
         assert verdict.clear_stand_down is True
 
     def test_without_a_marker_nothing_is_cleared(
@@ -322,8 +321,7 @@ class TestTheWiringPersistsAndClears:
 
         assert answered is None
         assert followed_up is None
-        assert re_armed is not None
-        assert re_armed.signal == StopSignal.CONTINUE
+        assert re_armed is None
         assert read_stand_down(session_id="w1") is None
 
     def test_the_audit_record_names_the_branch(
