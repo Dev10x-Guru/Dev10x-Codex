@@ -72,7 +72,7 @@ After regenerating, `rg 'Skill\(.?dev10x:|mcp__plugin_dev10x_' codex/`
 must list only literal Claude permission patterns such as
 `Skill(dev10x:*)`.
 
-Upstream files the fork patched (as of `v0.108.0+codex.1`; refresh with
+Upstream files the fork patched (as of `v0.110.0+codex.1`; refresh with
 `git diff --name-only --diff-filter=M v<previous> HEAD`):
 
 - `hooks/scripts/session-start.py`, `src/dev10x/core/hooks/session_place.py`,
@@ -89,6 +89,9 @@ Upstream files the fork patched (as of `v0.108.0+codex.1`; refresh with
   `codex-skills`, `codex-agents` and `codex-rules` commands
 - `src/dev10x/core/skills/permission/baseline-permissions.yaml`,
   `skills/upgrade-cleanup/projects.yaml` — catalog entries for those commands
+- `tests/fixtures/permission_catalog/catalog_lists_pre_split.json` — the
+  same three command spellings in upstream's catalog snapshot; copy the
+  string `tests/skills/permission/test_catalog_fragments.py` reports
 - `src/dev10x/core/namespaces.yaml` — the `dev10x.harness: core` entry
 - `tests/fixtures/skill_reference_inventory.json` — upstream's counts plus
   the `$Dev10x:<skill>` references in `docs/codex*.md`; take upstream's file,
@@ -137,11 +140,14 @@ uv run --extra dev pre-commit run --all-files
 Upstream's CI runs on `develop` only, so the fork-only
 `.github/workflows/codex-ci.yml` runs the test suite on every PR to
 `main` (#33), and pre-commit on the files the PR changes.
-The v0.108.0 tree still fails `pre-commit run --all-files` (trailing
-whitespace in `references/`, ruff, and mypy `attr-defined` errors from
-the ADR-0034 alias packages); upstream cleared that drift after the
-release (GH-1657). Once a merge brings that cleanup, switch the lint step
-back to `--all-files`.
+Upstream's `ci-gate.yml` runs on `develop` only, so `codex-ci.yml`
+repeats its whole-tree lint leg (GH-1657): `ruff check --select I` and
+mypy over `src/`.
+Whole-tree pre-commit still fails on upstream's own files as of v0.110.0
+(trailing whitespace in three `references/` docs, and ruff F401 on
+`TYPE_CHECKING` re-exports in ADR-0034 alias modules), and its autofixes
+would delete imports the aliases need — so CI keeps pre-commit on the
+diff, and a merge never commits the fixes it makes to upstream files.
 Run them locally first anyway: CI confirms the result, it does not
 replace the check.
 The suite fails when a generated tree is stale, when a new MCP tool has no
