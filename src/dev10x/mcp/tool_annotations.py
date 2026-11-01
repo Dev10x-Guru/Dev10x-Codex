@@ -21,11 +21,12 @@ _READ_LOCAL_TOOLS = (
     "audit_hook_recent",
     "background_preamble",
     "detect_tracker",
-    "human_review_status",
+    "gchat_watch_list",
     "ide_status",
     "list_client_roots",
     "next_worktree_name",
     "permission_catalog_gap",
+    "permission_triage",
     "plan_sync_json_summary",
     "preset_pin_status",
     "resolve_plugin_origin",
@@ -65,6 +66,8 @@ _LOCAL_WRITE_TOOLS = (
     "audit_analyze_permissions",
     "audit_extract_session",
     "create_worktree",
+    "gchat_watch_arm",
+    "gchat_watch_disarm",
     "generate_skill_index",
     "mktmp",
     "plan_sync_archive",
@@ -79,6 +82,7 @@ _LOCAL_WRITE_TOOLS = (
 
 _LOCAL_DESTRUCTIVE_TOOLS = (
     "mass_rewrite",
+    "permission_grant",
     "pin_gate_preset",
     "pin_ide",
     "pin_supervisor_review",
@@ -92,6 +96,7 @@ _LOCAL_DESTRUCTIVE_TOOLS = (
 )
 
 _REMOTE_WRITE_TOOLS = (
+    "ci_rerun",
     "create_pr",
     "issue_comment",
     "issue_create",
