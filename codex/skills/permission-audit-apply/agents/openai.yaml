@@ -1,0 +1,4 @@
+interface:
+  display_name: "Permission Audit Apply"
+policy:
+  allow_implicit_invocation: false

@@ -162,6 +162,10 @@ production. The comment format is:
 
 Never attempt to bypass the safety checks.
 
+For the full handoff — one statement per block, never SQL inside an
+`AskUserQuestion` prompt, and a SELECT read-back after the user runs
+it — follow **`Dev10x:sql-handoff`**.
+
 ## Integration
 
 - Uses **`Dev10x:db`** for query planning and schema discovery

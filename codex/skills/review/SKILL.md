@@ -31,6 +31,10 @@ can consume to create fixup commits.
 **Not for remote PR review** — use `Dev10x:gh-pr-review` to post
 findings to GitHub.
 
+**Not a CI replica** — its model, diff base, rules and routing differ
+from the Claude CI review; to see what CI would post on a PR, use
+`Dev10x:ci-review` (GH-1621).
+
 ## No-Reviewer Auto-Skip Threshold (GH-161)
 
 Audit GH-161 caught a session where `Dev10x:review` and

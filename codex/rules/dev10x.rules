@@ -9,6 +9,300 @@ prefix_rule(
 )
 
 prefix_rule(
+    pattern = ["uv", "run", "dev10x"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uv run dev10x:*)",
+)
+
+prefix_rule(
+    pattern = ["yq"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(yq:*)",
+)
+
+prefix_rule(
+    pattern = ["jq"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(jq:*)",
+)
+
+prefix_rule(
+    pattern = ["yamllint"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(yamllint:*)",
+)
+
+prefix_rule(
+    pattern = ["actionlint"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(actionlint:*)",
+)
+
+prefix_rule(
+    pattern = ["tomlq"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(tomlq:*)",
+)
+
+prefix_rule(
+    pattern = ["xq"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(xq:*)",
+)
+
+prefix_rule(
+    pattern = ["pup"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(pup:*)",
+)
+
+prefix_rule(
+    pattern = ["bash", "-n"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(bash -n:*)",
+)
+
+prefix_rule(
+    pattern = ["shellcheck"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(shellcheck:*)",
+)
+
+prefix_rule(
+    pattern = ["shfmt"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(shfmt:*)",
+)
+
+prefix_rule(
+    pattern = ["zsh", "-n"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(zsh -n:*)",
+)
+
+prefix_rule(
+    pattern = ["command", "-v"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(command -v:*)",
+)
+
+prefix_rule(
+    pattern = ["command", "-V"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(command -V:*)",
+)
+
+prefix_rule(
+    pattern = ["which"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(which:*)",
+)
+
+prefix_rule(
+    pattern = ["type"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(type:*)",
+)
+
+prefix_rule(
+    pattern = ["hash"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(hash:*)",
+)
+
+prefix_rule(
+    pattern = ["ls"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(ls:*)",
+)
+
+prefix_rule(
+    pattern = ["cat"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(cat:*)",
+)
+
+prefix_rule(
+    pattern = ["head"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(head:*)",
+)
+
+prefix_rule(
+    pattern = ["tail"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(tail:*)",
+)
+
+prefix_rule(
+    pattern = ["wc"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(wc:*)",
+)
+
+prefix_rule(
+    pattern = ["tree"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(tree:*)",
+)
+
+prefix_rule(
+    pattern = ["file"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(file:*)",
+)
+
+prefix_rule(
+    pattern = ["stat"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(stat:*)",
+)
+
+prefix_rule(
+    pattern = ["du"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(du:*)",
+)
+
+prefix_rule(
+    pattern = ["df"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(df:*)",
+)
+
+prefix_rule(
+    pattern = ["realpath"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(realpath:*)",
+)
+
+prefix_rule(
+    pattern = ["readlink"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(readlink:*)",
+)
+
+prefix_rule(
+    pattern = ["basename"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(basename:*)",
+)
+
+prefix_rule(
+    pattern = ["dirname"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(dirname:*)",
+)
+
+prefix_rule(
+    pattern = ["nl"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(nl:*)",
+)
+
+prefix_rule(
+    pattern = ["grep"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(grep:*)",
+)
+
+prefix_rule(
+    pattern = ["egrep"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(egrep:*)",
+)
+
+prefix_rule(
+    pattern = ["fgrep"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(fgrep:*)",
+)
+
+prefix_rule(
+    pattern = ["rg"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(rg:*)",
+)
+
+prefix_rule(
+    pattern = ["sort"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(sort:*)",
+)
+
+prefix_rule(
+    pattern = ["uniq"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uniq:*)",
+)
+
+prefix_rule(
+    pattern = ["cut"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(cut:*)",
+)
+
+prefix_rule(
+    pattern = ["column"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(column:*)",
+)
+
+prefix_rule(
+    pattern = ["comm"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(comm:*)",
+)
+
+prefix_rule(
+    pattern = ["diff"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(diff:*)",
+)
+
+prefix_rule(
+    pattern = ["echo"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(echo:*)",
+)
+
+prefix_rule(
+    pattern = ["printf"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(printf:*)",
+)
+
+prefix_rule(
+    pattern = ["date"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(date:*)",
+)
+
+prefix_rule(
+    pattern = ["uptime"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uptime:*)",
+)
+
+prefix_rule(
+    pattern = ["uv", "pip", "list"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uv pip list:*)",
+)
+
+prefix_rule(
+    pattern = ["uv", "tree"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uv tree:*)",
+)
+
+prefix_rule(
+    pattern = ["identify"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(identify:*)",
+)
+
+prefix_rule(
     pattern = ["gh", "pr", "view"],
     decision = "allow",
     justification = "Dev10x catalog: Bash(gh pr view:*)",
@@ -261,12 +555,6 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["identify"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(identify:*)",
-)
-
-prefix_rule(
     pattern = ["uv", "run", "pytest"],
     decision = "allow",
     justification = "Dev10x catalog: Bash(uv run pytest:*)",
@@ -285,12 +573,6 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["uv", "run", "dev10x"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(uv run dev10x:*)",
-)
-
-prefix_rule(
     pattern = ["uv", "add"],
     decision = "allow",
     justification = "Dev10x catalog: Bash(uv add:*)",
@@ -303,105 +585,15 @@ prefix_rule(
 )
 
 prefix_rule(
+    pattern = ["npm", "ci"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(npm ci:*)",
+)
+
+prefix_rule(
     pattern = ["pre-commit", "run"],
     decision = "allow",
     justification = "Dev10x catalog: Bash(pre-commit run:*)",
-)
-
-prefix_rule(
-    pattern = ["yq"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(yq:*)",
-)
-
-prefix_rule(
-    pattern = ["jq"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(jq:*)",
-)
-
-prefix_rule(
-    pattern = ["yamllint"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(yamllint:*)",
-)
-
-prefix_rule(
-    pattern = ["actionlint"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(actionlint:*)",
-)
-
-prefix_rule(
-    pattern = ["tomlq"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(tomlq:*)",
-)
-
-prefix_rule(
-    pattern = ["xq"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(xq:*)",
-)
-
-prefix_rule(
-    pattern = ["pup"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(pup:*)",
-)
-
-prefix_rule(
-    pattern = ["bash", "-n"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(bash -n:*)",
-)
-
-prefix_rule(
-    pattern = ["shellcheck"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(shellcheck:*)",
-)
-
-prefix_rule(
-    pattern = ["shfmt"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(shfmt:*)",
-)
-
-prefix_rule(
-    pattern = ["zsh", "-n"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(zsh -n:*)",
-)
-
-prefix_rule(
-    pattern = ["command", "-v"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(command -v:*)",
-)
-
-prefix_rule(
-    pattern = ["command", "-V"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(command -V:*)",
-)
-
-prefix_rule(
-    pattern = ["which"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(which:*)",
-)
-
-prefix_rule(
-    pattern = ["type"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(type:*)",
-)
-
-prefix_rule(
-    pattern = ["hash"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(hash:*)",
 )
 
 prefix_rule(
@@ -522,174 +714,6 @@ prefix_rule(
     pattern = ["git", "autosquash-master"],
     decision = "allow",
     justification = "Dev10x catalog: Bash(git autosquash-master:*)",
-)
-
-prefix_rule(
-    pattern = ["ls"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(ls:*)",
-)
-
-prefix_rule(
-    pattern = ["cat"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(cat:*)",
-)
-
-prefix_rule(
-    pattern = ["head"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(head:*)",
-)
-
-prefix_rule(
-    pattern = ["tail"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(tail:*)",
-)
-
-prefix_rule(
-    pattern = ["wc"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(wc:*)",
-)
-
-prefix_rule(
-    pattern = ["tree"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(tree:*)",
-)
-
-prefix_rule(
-    pattern = ["file"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(file:*)",
-)
-
-prefix_rule(
-    pattern = ["stat"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(stat:*)",
-)
-
-prefix_rule(
-    pattern = ["du"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(du:*)",
-)
-
-prefix_rule(
-    pattern = ["df"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(df:*)",
-)
-
-prefix_rule(
-    pattern = ["realpath"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(realpath:*)",
-)
-
-prefix_rule(
-    pattern = ["readlink"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(readlink:*)",
-)
-
-prefix_rule(
-    pattern = ["basename"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(basename:*)",
-)
-
-prefix_rule(
-    pattern = ["dirname"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(dirname:*)",
-)
-
-prefix_rule(
-    pattern = ["nl"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(nl:*)",
-)
-
-prefix_rule(
-    pattern = ["grep"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(grep:*)",
-)
-
-prefix_rule(
-    pattern = ["egrep"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(egrep:*)",
-)
-
-prefix_rule(
-    pattern = ["fgrep"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(fgrep:*)",
-)
-
-prefix_rule(
-    pattern = ["rg"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(rg:*)",
-)
-
-prefix_rule(
-    pattern = ["sort"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(sort:*)",
-)
-
-prefix_rule(
-    pattern = ["uniq"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(uniq:*)",
-)
-
-prefix_rule(
-    pattern = ["cut"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(cut:*)",
-)
-
-prefix_rule(
-    pattern = ["column"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(column:*)",
-)
-
-prefix_rule(
-    pattern = ["comm"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(comm:*)",
-)
-
-prefix_rule(
-    pattern = ["diff"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(diff:*)",
-)
-
-prefix_rule(
-    pattern = ["echo"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(echo:*)",
-)
-
-prefix_rule(
-    pattern = ["printf"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(printf:*)",
-)
-
-prefix_rule(
-    pattern = ["date"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(date:*)",
 )
 
 prefix_rule(
@@ -834,18 +858,6 @@ prefix_rule(
     pattern = ["gh", "pr", "status"],
     decision = "allow",
     justification = "Dev10x catalog: Bash(gh pr status:*)",
-)
-
-prefix_rule(
-    pattern = ["uv", "pip", "list"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(uv pip list:*)",
-)
-
-prefix_rule(
-    pattern = ["uv", "tree"],
-    decision = "allow",
-    justification = "Dev10x catalog: Bash(uv tree:*)",
 )
 
 prefix_rule(
@@ -1065,6 +1077,24 @@ prefix_rule(
 )
 
 prefix_rule(
+    pattern = ["dev10x", "permission", "sync-worktrees"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(dev10x permission sync-worktrees:*)",
+)
+
+prefix_rule(
+    pattern = ["uvx", "dev10x", "permission", "sync-worktrees"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uvx dev10x permission sync-worktrees:*)",
+)
+
+prefix_rule(
+    pattern = ["uv", "run", "dev10x", "permission", "sync-worktrees"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uv run dev10x permission sync-worktrees:*)",
+)
+
+prefix_rule(
     pattern = ["dev10x", "permission", "ensure-ignored"],
     decision = "allow",
     justification = "Dev10x catalog: Bash(dev10x permission ensure-ignored:*)",
@@ -1119,6 +1149,24 @@ prefix_rule(
 )
 
 prefix_rule(
+    pattern = ["dev10x", "permission", "triage"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(dev10x permission triage:*)",
+)
+
+prefix_rule(
+    pattern = ["uvx", "dev10x", "permission", "triage"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uvx dev10x permission triage:*)",
+)
+
+prefix_rule(
+    pattern = ["uv", "run", "dev10x", "permission", "triage"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uv run dev10x permission triage:*)",
+)
+
+prefix_rule(
     pattern = ["dev10x", "permission", "update-paths"],
     decision = "allow",
     justification = "Dev10x catalog: Bash(dev10x permission update-paths:*)",
@@ -1134,6 +1182,24 @@ prefix_rule(
     pattern = ["uv", "run", "dev10x", "permission", "update-paths"],
     decision = "allow",
     justification = "Dev10x catalog: Bash(uv run dev10x permission update-paths:*)",
+)
+
+prefix_rule(
+    pattern = ["dev10x", "permission", "findings"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(dev10x permission findings:*)",
+)
+
+prefix_rule(
+    pattern = ["uvx", "dev10x", "permission", "findings"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uvx dev10x permission findings:*)",
+)
+
+prefix_rule(
+    pattern = ["uv", "run", "dev10x", "permission", "findings"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uv run dev10x permission findings:*)",
 )
 
 prefix_rule(
@@ -1224,6 +1290,60 @@ prefix_rule(
     pattern = ["uv", "run", "dev10x", "skill", "codex-agents"],
     decision = "allow",
     justification = "Dev10x catalog: Bash(uv run dev10x skill codex-agents:*)",
+)
+
+prefix_rule(
+    pattern = ["dev10x", "skill", "prune-overrides"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(dev10x skill prune-overrides:*)",
+)
+
+prefix_rule(
+    pattern = ["uvx", "dev10x", "skill", "prune-overrides"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uvx dev10x skill prune-overrides:*)",
+)
+
+prefix_rule(
+    pattern = ["uv", "run", "dev10x", "skill", "prune-overrides"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uv run dev10x skill prune-overrides:*)",
+)
+
+prefix_rule(
+    pattern = ["dev10x", "supervisor", "serve"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(dev10x supervisor serve:*)",
+)
+
+prefix_rule(
+    pattern = ["uvx", "dev10x", "supervisor", "serve"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uvx dev10x supervisor serve:*)",
+)
+
+prefix_rule(
+    pattern = ["uv", "run", "dev10x", "supervisor", "serve"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uv run dev10x supervisor serve:*)",
+)
+
+prefix_rule(
+    pattern = ["dev10x", "supervisor", "unit"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(dev10x supervisor unit:*)",
+)
+
+prefix_rule(
+    pattern = ["uvx", "dev10x", "supervisor", "unit"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uvx dev10x supervisor unit:*)",
+)
+
+prefix_rule(
+    pattern = ["uv", "run", "dev10x", "supervisor", "unit"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uv run dev10x supervisor unit:*)",
 )
 
 prefix_rule(
@@ -1404,6 +1524,24 @@ prefix_rule(
     pattern = ["uv", "run", "dev10x", "watchdog", "sessions"],
     decision = "allow",
     justification = "Dev10x catalog: Bash(uv run dev10x watchdog sessions:*)",
+)
+
+prefix_rule(
+    pattern = ["dev10x", "ci-review"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(dev10x ci-review:*)",
+)
+
+prefix_rule(
+    pattern = ["uvx", "dev10x", "ci-review"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uvx dev10x ci-review:*)",
+)
+
+prefix_rule(
+    pattern = ["uv", "run", "dev10x", "ci-review"],
+    decision = "allow",
+    justification = "Dev10x catalog: Bash(uv run dev10x ci-review:*)",
 )
 
 prefix_rule(
