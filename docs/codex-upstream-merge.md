@@ -132,8 +132,13 @@ uv run --extra dev pre-commit run --all-files
 ```
 
 Upstream's CI runs on `develop` only, so the fork-only
-`.github/workflows/codex-ci.yml` runs the same two commands on every PR
-to `main` (#33).
+`.github/workflows/codex-ci.yml` runs the test suite on every PR to
+`main` (#33), and pre-commit on the files the PR changes.
+The v0.108.0 tree still fails `pre-commit run --all-files` (trailing
+whitespace in `references/`, ruff, and mypy `attr-defined` errors from
+the ADR-0034 alias packages); upstream cleared that drift after the
+release (GH-1657). Once a merge brings that cleanup, switch the lint step
+back to `--all-files`.
 Run them locally first anyway: CI confirms the result, it does not
 replace the check.
 The suite fails when a generated tree is stale, when a new MCP tool has no

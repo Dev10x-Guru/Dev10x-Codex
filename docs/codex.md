@@ -244,7 +244,7 @@ uv run dev10x permission codex-rules
 Add `--check` to any of them to fail on a stale file without writing;
 the test suite runs the same check.
 On every PR to `main`, `.github/workflows/codex-ci.yml` runs the test
-suite with its coverage gate and `pre-commit run --all-files`.
+suite with its coverage gate and pre-commit on the files the PR changes.
 Skill status (run end to end, deferred, caveats) lives in
 `src/dev10x/skills/codex/catalog.py`.
 [`codex-upstream-merge.md`](codex-upstream-merge.md) walks through a
