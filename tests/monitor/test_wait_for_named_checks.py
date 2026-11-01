@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
-
 from dev10x.skills.monitor.ci_check_status import (
     compute_verdict,
     is_terminal,
     unsettled_named_checks,
 )
 
+from dev10x.core.config.hook_fragments import merged_hook_entries
+from dev10x.core.config.loader import load_document
+from dev10x.skills.monitor import ci_check_status as ci_check_status_module
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_HOOKS = _REPO_ROOT / "hooks" / "hooks.json"
 _MAP = _REPO_ROOT / "src" / "dev10x" / "core" / "validators" / "command-skill-map.yaml"
 
 _BOT_LEGS = ["claude-review", "hygiene-review"]
@@ -90,18 +90,65 @@ def test_green_run_with_wait_for_still_waits_for_an_unregistered_leg():
     assert is_terminal(result=result, wait_for=_BOT_LEGS) is False
 
 
+@pytest.fixture
+def fast_path_probes(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """GH-1609: required red on the first probe, bot legs settling on the third."""
+    probes = [
+        _result(
+            _check("git-history-linting", "fail", required=True),
+            _check("claude-review", "pending"),
+            _check("hygiene-review", "pending"),
+        ),
+        _result(
+            _check("git-history-linting", "fail", required=True),
+            _check("claude-review", "pass"),
+            _check("hygiene-review", "pending"),
+        ),
+        _result(
+            _check("git-history-linting", "fail", required=True),
+            _check("claude-review", "pass"),
+            _check("hygiene-review", "pass"),
+        ),
+    ]
+    served: list[dict] = []
+
+    def probe(**_kwargs: Any) -> dict:
+        result = probes[min(len(served), len(probes) - 1)]
+        served.append(result)
+        return result
+
+    monkeypatch.setattr(ci_check_status_module, "probe_once", probe)
+    monkeypatch.setattr(ci_check_status_module.time, "sleep", lambda *_a, **_k: None)
+    return served
+
+
+def test_fast_path_honours_wait_for_past_a_red_required_check(fast_path_probes: list[dict]):
+    result = ci_check_status_module.poll_until_terminal(
+        pr_number=1,
+        repo="o/r",
+        initial_wait=0,
+        poll_interval=0,
+        max_polls=5,
+        wait_for=_BOT_LEGS,
+    )
+
+    assert len(fast_path_probes) == 3
+    assert unsettled_named_checks(result=result, wait_for=_BOT_LEGS) == []
+
+
 def test_monitor_is_on_the_bash_validator_chain():
     """A loop routed through Monitor to dodge the Bash hook is seen too."""
-    hooks = json.loads(_HOOKS.read_text())
-    pre = hooks["hooks"]["PreToolUse"]
-    monitor = next(entry for entry in pre if entry["matcher"] == "Monitor")
-    bash = next(entry for entry in pre if entry["matcher"] == "Bash")
-    assert monitor["hooks"][0]["command"] == bash["hooks"][0]["command"]
+    commands = {
+        matcher: command
+        for event, matcher, command, _ in merged_hook_entries(plugin_root=_REPO_ROOT)
+        if event == "PreToolUse"
+    }
+    assert commands["Monitor"] == commands["Bash"]
 
 
 @pytest.mark.parametrize("rule_name", ["ci-loop-handrolled", "watch-loop-handrolled"])
 def test_loop_shapes_are_denied_not_advised(rule_name: str):
-    data = yaml.safe_load(_MAP.read_text()) or {}
+    data = load_document(yaml_path=_MAP)
     rule = next(r for r in data["rules"] if r["name"] == rule_name)
     assert rule["hook_block"] is True
     assert rule["compensations"], "a blocking rule must name an executable fix"

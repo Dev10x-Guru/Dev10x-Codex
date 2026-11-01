@@ -27,9 +27,9 @@ The code review system uses a **multi-agent architecture**:
 | File Pattern | Primary Agent | Required References |
 |---|---|---|
 | `**/*.py`, `**/*.sh` | `reviewer-generic`, `reviewer-security`, `reviewer-silent-failures` | `references/review-checks-common.md` |
-| `Makefile`, `bin/**`, `hooks/**`, `*.sh` | `reviewer-infra` | `references/review-checks-common.md` |
-| `docs/**`, `.claude/**/*.md`, `README.md` | `reviewer-docs` | `references/review-checks-common.md` |
-| `.claude/rules/**`, `.claude/agents/**`, `agents/**` | `reviewer-rules-maintenance` | (self-contained) |
+| `Makefile`, `bin/**`, `hooks/**`, `*.sh`, `.github/**` | `reviewer-infra` | `references/review-checks-common.md` |
+| `docs/**`, `.claude/**/*.md`, `CLAUDE.md`, `README.md` | `reviewer-docs` | `references/review-checks-common.md` |
+| `.claude/rules/**`, `.claude/agents/**`, `agents/**`, `references/**` | `reviewer-rules-maintenance` | (self-contained) |
 | `skills/**` | `reviewer-skill`, `reviewer-skill-behavior` | `.claude/rules/skill-naming.md`, `references/skill-invocation.md`, `references/eval-schema.md` |
 | `**/tasks.py`, `**/celery.py` | `reviewer-celery` | (self-contained) |
 | `**/features/**/*.feature`, `**/features/steps/*.py`, `**/environment.py`, `**/e2e/**/*.py` | `reviewer-e2e` | (self-contained) |
@@ -49,7 +49,7 @@ The code review system uses a **multi-agent architecture**:
 | `.claude/rules/model-selection.md` | When editing `agents/**` or `skills/**` | Model & effort selection for agent dispatch |
 | `.claude/rules/playbook-pattern.md` | When editing `skills/**` with playbooks | Playbook patterns, user customization, reviewer expectations |
 | `.claude/rules/github-workflows.md` | When editing `.github/workflows/**` | GitHub Actions patterns |
-| `.claude/rules/claude-ci-cost.md` | When editing `.github/workflows/claude*.yml`, `.github/claude/**` | Prompt-caching prefix, prefetch, usage reporting (GH-1585) |
+| `.claude/rules/claude-ci-cost.md` | When editing `.github/workflows/claude*.yml`, `.github/claude/**`, `.github/claude-ci-settings.json`, `.github/scripts/claude-pr-context/**` | Prompt-caching prefix, prefetch, usage reporting (GH-1585), CLI pin (GH-1615), federation (GH-1622) |
 | `.claude/rules/hook-state-schema.md` | When editing `hooks/**` state writers | Hook JSON state documentation |
 | `.claude/rules/hook-patterns.md` | When editing `hooks/**` with dual implementations | Python-shell hook equivalence |
 | `.claude/rules/cwd-discipline.md` | When editing `src/dev10x/**` Python that runs subprocesses or reads CWD | GH-979 effective-CWD routing, no module-scope GitContext |
@@ -94,7 +94,7 @@ Always apply `references/review-checks-common.md`.
 | `config-resolution.md` | 3-tier config paths, project mapping format | All playbook/settings skills | Referenced, not auto-loaded |
 | `testing-patterns.md` | Pytest fixture composition, async handlers, parametrized tests | Code reviews, test authoring | Referenced, not auto-loaded |
 | `pr-backlog-deferral.md` | Deferring non-blocking review findings to a backlog | `dev10x:gh-pr-review` skill, code review CI | Referenced, not auto-loaded |
-| `milestone-naming.md` | Milestone naming convention, initiative prefixes (AUD-Mn vs MCP-Mn) | `dev10x:project-scope`, `dev10x:work-on` milestone steps | Referenced, not auto-loaded |
+| `milestone-naming.md` | Milestone naming convention, initiative prefixes, `Depends on:` ordering (no sequence numbers) | `dev10x:project-scope`, `dev10x:work-on` milestone steps | Referenced, not auto-loaded |
 | `backpressure.md` | Two-direction backpressure architecture (action gating + friction tuning + output gates) | Review & architecture docs, code review CI | Referenced, not auto-loaded |
 | `html-artifact-reporting.md` | Optional HTML artifacts for long comparison-shaped reports; markdown stays default | `dev10x:ddd` deliverables, foreman morning report | Referenced, not auto-loaded |
 
@@ -105,9 +105,9 @@ Internal review-only agents (≤ 50 lines each).
 | File | Trigger | References |
 |------|---------|------------|
 | `reviewer-generic.md` | `**/*.py`, `**/*.sh` | `references/review-checks-common.md` |
-| `reviewer-infra.md` | `Makefile`, `**/*.sh`, `bin/**`, `.github/workflows/**` | `references/review-checks-common.md` |
-| `reviewer-docs.md` | `docs/**`, `.claude/**/*.md`, `README.md` | `references/review-checks-common.md` |
-| `reviewer-rules-maintenance.md` | `.claude/rules/**`, `.claude/agents/**`, `agents/**` | (self-contained) |
+| `reviewer-infra.md` | `Makefile`, `**/*.sh`, `bin/**`, `hooks/**`, `.github/**` | `references/review-checks-common.md` |
+| `reviewer-docs.md` | `docs/**`, `.claude/**/*.md`, `CLAUDE.md`, `README.md` | `references/review-checks-common.md` |
+| `reviewer-rules-maintenance.md` | `.claude/rules/**`, `.claude/agents/**`, `agents/**`, `references/**` | (self-contained) |
 | `reviewer-skill.md` | `skills/**` | `.claude/rules/skill-naming.md`, `references/skill-invocation.md`, `references/eval-schema.md` |
 | `reviewer-skill-behavior.md` | `skills/**` | `references/task-orchestration.md`, `.claude/rules/skill-gates.md` |
 | `reviewer-security.md` | `**/*.py`, `**/*.sh` | (self-contained) |
@@ -233,9 +233,13 @@ cohesive, justified by scope):
   the new file. The caller-side half of the rule — a write is a
   request, not a receipt — went to `.claude/rules/mcp-tools.md`
   instead, since it binds every MCP caller and not only foreman crews.
-  `tool-surface.md` and `overseer-discipline.md` are now both AT the
+  `tool-surface.md` and `overseer-discipline.md` were both AT the
   200-line cap — the next addition to either needs an extraction, not
-  an append. GH-1109 applied the same trade once more: arming and
+  an append. GH-1599 did exactly that for `overseer-discipline.md`:
+  the overseer-tier fallback ladder moved to the new
+  `overseer-fallback-ladder.md` (33 lines), leaving a 3-line pointer,
+  and the freed room took the watchdog's never-`mv`/`cp`/`rm`-a-run-dir
+  rule (GH-1577) — the file is now 194 lines. GH-1109 applied the same trade once more: arming and
   tearing down the external wake timer is execution-gating (Phase 1
   step 2 and Phase 3 step 1, ~14 lines inline), while the evidence for why a
   paused session cannot observe its own quota reset went to

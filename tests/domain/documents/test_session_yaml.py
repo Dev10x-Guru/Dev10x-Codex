@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from dev10x.domain.dev10x_paths import Dev10xConfigDir
 from dev10x.domain.documents.session_yaml import (
     DURABLE_KEYS,
@@ -520,6 +519,10 @@ class TestReadProtectedBranches:
     def test_is_a_durable_key(self) -> None:
         """Must be in DURABLE_KEYS or readers filter it out of project entries."""
         assert "protected_branches" in DURABLE_KEYS
+
+    def test_dx017_is_a_durable_key(self) -> None:
+        """GH-1493: readers would filter per-rule validator config out otherwise."""
+        assert "dx017" in DURABLE_KEYS
 
 
 class TestConfigRender:

@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
+from dev10x.config.loader import load_document
+from dev10x.domain.rules.validation_rule import MatchingRule
 
 from tests.validators.loop_shapes import BARE_POLL_LOOP
 
@@ -30,8 +31,7 @@ _REQUIRED_RULE_FIELDS: frozenset[str] = frozenset(
 
 
 def _load_rules() -> list[dict[str, Any]]:
-    data: dict[str, Any] = yaml.safe_load(_YAML_PATH.read_text()) or {}
-    return data.get("rules", [])
+    return load_document(yaml_path=_YAML_PATH).get("rules", [])
 
 
 def _hook_block_rules() -> list[dict[str, Any]]:
@@ -51,7 +51,7 @@ class TestYamlFileAccessible:
         assert _YAML_PATH.exists(), f"YAML not found at {_YAML_PATH}"
 
     def test_yaml_parses_without_error(self) -> None:
-        data = yaml.safe_load(_YAML_PATH.read_text())
+        data = load_document(yaml_path=_YAML_PATH)
         assert isinstance(data, dict)
 
     def test_rules_list_is_non_empty(self) -> None:
@@ -350,6 +350,30 @@ class TestGh879WatchLoopEntry:
         for pattern in _rule_by_name(name)["patterns"]:
             re.compile(pattern)
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api --method POST repos/o/r/check-suites/123/rerequest",
+            "gh api -X POST repos/o/r/check-suites/123/rerequest",
+            "gh api --method POST repos/o/r/actions/runs/9/rerun-failed-jobs",
+            "gh api -X POST repos/o/r/actions/runs/9/rerun",
+        ],
+    )
+    def test_ci_rerun_forms_route_to_the_wrapper(self, command: str) -> None:
+        rule = _rule_by_name("gh-ci-rerun")
+        assert _matches_any_pattern(rule=rule, command=command)
+
+    def test_ci_rerun_steer_targets_the_wrapper_and_is_advisory(self) -> None:
+        rule = _rule_by_name("gh-ci-rerun")
+        assert (
+            _compensation_targets(rule) == {"mcp__plugin_dev10x_cli__ci_rerun"}
+            and rule["hook_block"] is False
+        )
+
+    def test_ci_rerun_steer_ignores_reads(self) -> None:
+        rule = _rule_by_name("gh-ci-rerun")
+        assert not _matches_any_pattern(rule=rule, command="gh api repos/o/r/actions/runs/9")
+
     def test_find_exec_search_recognized(self) -> None:
         rule = _rule_by_name("find-search")
         assert _matches_any_pattern(
@@ -543,6 +567,50 @@ class TestGh1117ForLoopEntry:
 
     def test_names_diag_friction_as_related(self) -> None:
         assert "dev10x:diag-friction" in _rule_by_name("for-loop-handrolled")["related"]
+
+
+class TestGh1667GogGlobalFlagsFirst:
+    """GH-1667: a gog command led by global flags matches no catalogued read
+    rule; the map steers it to put the flags after the subcommand path."""
+
+    @pytest.fixture
+    def rule(self) -> MatchingRule:
+        return MatchingRule.from_yaml_entry(entry=_rule_by_name("gog-global-flags-first"))
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gog -a me@example.com --readonly chat messages list spaces/X "
+            "--thread spaces/X/threads/T --json --wrap-untrusted",
+            "gog --account me@example.com drive ls",
+            "gog --json youtube channels list --mine",
+        ],
+    )
+    def test_leading_flag_shapes_recognized(self, rule: MatchingRule, command: str) -> None:
+        assert rule.matches_command(command=command)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gog chat messages list spaces/X -a me@example.com --readonly --json",
+            "gog --version",
+            "gog --help",
+            "gogcli -a me drive ls",
+        ],
+    )
+    def test_flags_after_the_path_not_matched(self, rule: MatchingRule, command: str) -> None:
+        assert not rule.matches_command(command=command)
+
+    def test_steers_to_reordering(self) -> None:
+        description = _rule_by_name("gog-global-flags-first")["compensations"][0]["description"]
+        assert "after the subcommand path" in description
+
+    def test_is_advisory_not_blocking(self) -> None:
+        # A leading flag is not unsafe; it only defeats prefix matching.
+        assert _rule_by_name("gog-global-flags-first")["hook_block"] is False
+
+    def test_names_the_gog_skill_as_related(self) -> None:
+        assert "dev10x:gog" in _rule_by_name("gog-global-flags-first")["related"]
 
 
 def _fallback_text(rule: dict[str, Any]) -> str:

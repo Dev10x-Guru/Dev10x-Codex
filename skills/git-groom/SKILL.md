@@ -28,6 +28,10 @@ allowed-tools:
   # so they must be declared here or every groom pays per-call approval.
   - Bash(git log:*)
   - Bash(git merge-base:*)
+  # Rename-first split (GH-1629): staged-candidate check and the
+  # R100 purity check on each rename commit.
+  - Bash(git diff --cached:*)
+  - Bash(git show --name-status:*)
   # Phase 1 resolves the base branch through this tool rather than
   # assuming `develop`, so it needs declaring for the same reason.
   - mcp__plugin_dev10x_cli__detect_base_branch
@@ -36,6 +40,15 @@ allowed-tools:
   - Bash(git reset HEAD:*)
   - Bash(git tag -f groom-backup-*:*)
   - Bash(git diff groom-backup-*:*)
+  # Strategy B post-reset file-set check (GH-1683)
+  - Bash(git diff --cached --name-only:*)
+  - Bash(git diff --name-only:*)
+  # Tree reconstruction ends by resetting onto the rebuilt parent (GH-1680)
+  - Bash(git reset --hard:*)
+  # Keeping a pick that became empty during a conflict (GH-1680)
+  - Bash(git commit --allow-empty -F:*)
+  - Bash(git rebase --continue:*)
+  - Bash(git rebase --abort:*)
   - Bash(git add -f:*)
   - Bash(git write-tree:*)
   - Bash(git commit-tree:*)

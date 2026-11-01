@@ -30,6 +30,8 @@ from dev10x.skills.permission.catalog_merge import MergedCatalog, merge_catalogs
 from dev10x.skills.permission.catalog_paths import catalog_text, shipped_projects_catalog
 from dev10x.skills.permission.catalog_result import _result
 from dev10x.skills.permission.config import parse_config, resolve_config
+from dev10x.skills.permission.granted_catalog import load_granted_rules, with_granted_rules
+from dev10x.skills.permission.settings_discovery import VENDORED_DIRS, discover_settings
 
 MEMORY_CONFIG = Dev10xConfigDir.projects_yaml()
 USERSPACE_CONFIG = Dev10xConfigDir.upgrade_cleanup_projects_yaml()
@@ -45,6 +47,16 @@ def extract_cache_publisher(plugin_cache: str) -> str | None:
         if part == "cache" and i >= 2 and parts[i - 1] == "plugins":
             if i + 1 < len(parts):
                 return parts[i + 1]
+    return None
+
+
+def extract_cache_plugin_dir(plugin_cache: str) -> str | None:
+    """The ``<plugin>`` segment of ``.../plugins/cache/<publisher>/<plugin>`` (GH-1602)."""
+    parts = list(Path(plugin_cache).expanduser().parts)
+    for i, part in enumerate(parts):
+        if part == "cache" and i >= 2 and parts[i - 1] == "plugins":
+            if i + 2 < len(parts):
+                return parts[i + 2]
     return None
 
 
@@ -85,8 +97,12 @@ def load_effective_config(config_path: Path) -> MergedCatalog:
     When ``config_path`` IS the shipped catalog — the pre-``init`` case
     where no userspace copy exists — there is nothing to merge and the
     file is returned as-is.
+
+    Rules remembered from a grant (GH-1677) join the user layer in both
+    cases, so they surface as user-only drift and reach every checkout
+    ``ensure-base`` or ``seed-worktree`` seeds.
     """
-    user_config = load_config(config_path)
+    user_config = with_granted_rules(config=load_config(config_path), granted=load_granted_rules())
     if PLUGIN_CONFIG is not None and config_path == PLUGIN_CONFIG:
         return MergedCatalog(config=user_config)
     return merge_catalogs(shipped=load_shipped_config(), user=user_config)
@@ -106,35 +122,23 @@ def find_settings_files(
     roots: list[str],
     *,
     include_user: bool,
+    excluded: frozenset[str] = VENDORED_DIRS,
 ) -> list[Path]:
-    files: list[Path] = []
-    if include_user:
-        user_dir = ClaudeDir.home()
-        for name in ("settings.json", "settings.local.json"):
-            candidate = user_dir / name
-            if candidate.exists():
-                files.append(candidate)
+    return discover_settings(roots=roots, include_user=include_user, excluded=excluded).files
 
-    project_settings_dir = ClaudeDir.projects_dir()
-    if project_settings_dir.is_dir():
-        for settings_file in project_settings_dir.rglob("settings.local.json"):
-            files.append(settings_file)
 
-    for root in roots:
-        root_path = Path(root).expanduser()
-        if not root_path.is_dir():
-            continue
-        for settings_file in root_path.rglob(".claude/settings.local.json"):
-            files.append(settings_file)
+def find_missing_settings(
+    roots: list[str],
+    *,
+    excluded: frozenset[str] = VENDORED_DIRS,
+) -> list[Path]:
+    """Worktree settings files ``ensure-base`` should create (GH-1664).
 
-    seen: set[Path] = set()
-    unique: list[Path] = []
-    for f in files:
-        resolved = f.resolve()
-        if resolved not in seen:
-            seen.add(resolved)
-            unique.append(resolved)
-    return unique
+    Kept apart from :func:`find_settings_files` so only the command that
+    creates files pays for asking, and every read-only caller keeps the
+    one seam it already has.
+    """
+    return discover_settings(roots=roots, include_user=False, excluded=excluded).missing
 
 
 KNOWN_PLUGIN_DIRS = ("dev10x", "Dev10x", "dev10x-claude")

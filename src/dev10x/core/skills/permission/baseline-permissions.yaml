@@ -275,8 +275,10 @@ groups:
       - Bash(uvx dev10x permission init:*)
       - Bash(uvx dev10x permission investigate:*)
       - Bash(uvx dev10x permission merge-worktree:*)
+      - Bash(uvx dev10x permission sync-worktrees:*)
       - Bash(uvx dev10x permission record-upgrade:*)
       - Bash(uvx dev10x permission report:*)
+      - Bash(uvx dev10x permission triage:*)
       - Bash(uvx dev10x permission update-paths:*)
       - Bash(uvx dev10x doctor run:*)
       - Bash(uvx dev10x session seed:*)
@@ -289,11 +291,22 @@ groups:
       - Bash(uvx dev10x platform:*)
       - Bash(uvx dev10x init:*)
       - Bash(uvx dev10x github-app:*)
+      # GH-1621: a dry run — GitHub writes go to an outbox, never out.
+      # dev10x:ci-review asks before any run that spends model tokens.
+      - Bash(uvx dev10x ci-review:*)
       # GH-1577, GH-1582
       - Bash(uvx dev10x foreman escalate:*)
       - Bash(uvx dev10x foreman probe:*)
       - Bash(uvx dev10x foreman retire:*)
       - Bash(uvx dev10x foreman watch:*)
+      # GH-1631 — read-only: validates an auditor findings block
+      - Bash(uvx dev10x permission findings:*)
+      # GH-1627 — dry-run by default; `--apply` runs only after the
+      # dev10x:skill-prune AskUserQuestion confirmation
+      - Bash(uvx dev10x skill prune-overrides:*)
+      # GH-1692 — binds 127.0.0.1 only; `unit` prints and installs nothing
+      - Bash(uvx dev10x supervisor serve:*)
+      - Bash(uvx dev10x supervisor unit:*)
 
   # ─── TIER 2 ─────────────────────────────────────────────────────────
 
@@ -1016,6 +1029,39 @@ groups:
       - Bash(vercel env ls:*)
       - Bash(gh secret list:*)
       - Bash(gh variable list:*)
+
+  browser-readonly:
+    tier: 3
+    sensitivity: pii
+    description: >
+      Observation-only tools of the known browser MCP servers (GH-1673).
+      They read a logged-in browser session — page DOM, screenshots,
+      network traffic, console output — so the group is OPT-IN, enabled
+      with `dev10x permission doctor --enable-group=browser-readonly`.
+      Rules name each tool by server because the matcher compares the
+      full `mcp__<server>__<tool>` name. Tools that act or run code stay
+      prompting and are deliberately absent: `evaluate_script` and
+      `javascript_tool` execute arbitrary JavaScript in the session
+      (shell-equivalent, see the GH-1261 note in mcp-tools.md), and
+      `click`, `fill`, `fill_form`, `upload_file`, `handle_dialog`,
+      `navigate_page`, `computer` and `form_input` change page state.
+      `get_network_request` only reads a captured request, but the
+      write-precedence classifier (GH-593) reads its `request` token as a
+      verb; it stays out so every read group passes the same check.
+    rules:
+      - mcp__chrome-devtools__list_pages
+      - mcp__chrome-devtools__take_snapshot
+      - mcp__chrome-devtools__take_screenshot
+      - mcp__chrome-devtools__list_network_requests
+      - mcp__chrome-devtools__list_console_messages
+      - mcp__chrome-devtools__get_console_message
+      - mcp__chrome-devtools__get_css_styles
+      - mcp__claude-in-chrome__tabs_context_mcp
+      - mcp__claude-in-chrome__read_page
+      - mcp__claude-in-chrome__get_page_text
+      - mcp__claude-in-chrome__find
+      - mcp__claude-in-chrome__read_console_messages
+      - mcp__claude-in-chrome__read_network_requests
 
 # ─── DEPRECATIONS ─────────────────────────────────────────────────────
 # Rules the doctor should rewrite or remove on sweep.

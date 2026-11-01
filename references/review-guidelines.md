@@ -48,12 +48,21 @@ The guard applies to:
    to avoid duplicating feedback
 2. Check for previous summary comments (`gh pr view {PR_NUMBER} --json comments`)
    to identify obsolete summaries
-3. Analyze current diff (`gh pr diff`)
+3. Analyze the current diff one file at a time. In this repo's CI the
+   PR context bundle holds one patch per file; elsewhere list the files
+   with `gh api repos/{REPO}/pulls/{PR_NUMBER}/files --paginate --jq '.[].filename'`
+   and fetch one patch with
+   `gh api repos/{REPO}/pulls/{PR_NUMBER}/files --paginate --jq 'map(select(.filename == "PATH").patch)[]'`.
+   An empty patch means the file is too large or binary: Read it at
+   HEAD. Never pull the whole `gh pr diff` — a large one overflows the
+   output, and in CI the redirect that would work around that is denied
 4. For each previous Claude Code Review thread:
    - Fixed/removed → reply "Addressed" (do NOT resolve — leave for human)
    - Persists in unchanged code → reply "Still applies"; do NOT duplicate
    - Changed but issue remains → reply with update
-5. Use inline comment tools ONLY for NEW issues
+5. Use inline comment tools ONLY for NEW issues; in the Claude CI
+   review only blocking (CRITICAL/WARNING) ones — INFO and
+   suggestions go in the summary
 6. Hide obsolete review summaries before posting the new one:
    a. Query review threads via the `pr_comments` /
       `unresolved_threads` MCP wrappers (never raw `gh api graphql`,
@@ -68,24 +77,37 @@ The guard applies to:
    d. Skip the current review cycle's own review
    e. Thread resolution must come from the human supervisor —
       the reviewer MUST NOT resolve threads to trigger this gate
-7. Create ONE summary review comment (`gh pr review --comment`) with:
+7. When a summary is warranted (§ Summary Comment Strategy), create
+   exactly ONE summary review (`gh pr review`, state per item 8) with:
    - High-level observations and quality assessment
    - Cross-cutting concerns not tied to specific lines
    - Acknowledgment of addressed issues
    - DO NOT repeat inline comment content
-8. Use COMMENT status (not REQUEST_CHANGES or APPROVE)
-9. If inline comments were posted, convert PR to draft:
-   `gh pr ready --undo $PR_NUMBER`
+8. Review state. The Claude CI review (`claude-code-review.yml`)
+   submits the state its verdict names: REQUEST_CHANGES when this
+   round posted an inline comment or an earlier blocker still
+   applies, APPROVE otherwise — a findings-free re-review included,
+   with a one-line body, so it replaces its own earlier
+   REQUEST_CHANGES. On a PR `claude[bot]` authored it uses COMMENT,
+   since GitHub refuses self-approval. A bot approval is a hand-off
+   signal, never a sign-off that moves the merge off the author.
+   Interactive reviews keep their own submit-state gate
+9. If inline comments were posted or changes were requested, the PR
+   goes to draft:
    - Prevents noisy re-reviews on fixup commits
    - Author marks "Ready for review" when fixes are complete
-   - Do NOT convert if the review was clean (no inline comments)
+   - Do NOT convert if the review was clean (no inline comments, no
+     blocker still applies)
+   - In this repo's CI, a workflow step does the conversion after
+     the review — never change the draft state yourself there
+     (GH-1618). Elsewhere: `gh pr ready --undo $PR_NUMBER`
 
 ## Workflow Cross-Awareness
 
 | Workflow                   | Trigger              | Scope                          |
 |----------------------------|----------------------|--------------------------------|
 | `pr-hygiene-review.yml`   | PR opened/ready      | PR metadata (title, body, commits) |
-| `claude-code-review.yml`  | PR opened/ready/sync  | Code quality, architecture     |
+| `claude-code-review.yml`  | PR opened/ready      | Code quality, architecture     |
 | `claude.yml`              | @claude mention      | Interactive assistance         |
 | `claude-memory-review.yml`| PR merged            | Lessons learned extraction     |
 
@@ -123,7 +145,9 @@ is an accepted `Fixes:` value.
 When the PR body contains "Stacked on #N" or "Depends on #N":
 1. Note the dependency in the review summary
 2. Focus on files/changes unique to the current PR
-3. Use `gh pr view <base-pr>` to understand base PR scope
+3. Use `gh pr view <base-pr> --json number,title,body,files` to
+   understand base PR scope (a bare `gh pr view` also queries check
+   status, which the CI token cannot read)
 4. Flag interleaved commits from base and current PR
 
 ## Context-Aware Review Depth
@@ -164,9 +188,11 @@ Do NOT re-flag the name in the next review round.
 ## Summary Comment Strategy
 
 - ONE summary per review cycle (not per commit)
-- **Only post if** there are new issues or material changes to review
-- **If there are no new issues, post NO review at all.** An empty-body
-  COMMENTED review adds noise without value.
+- **Only post a summary if** there are new issues, a blocker that
+  still applies, or material changes to review
+- **If there are no new issues and no blocker still applies, post no
+  summary.** The Claude CI review still submits the one-line approval
+  from item 8 (`✅ No new findings`); never a summary-length body.
 - After fixes: post ONE brief acknowledgment, not per-file comments
 - After 3+ summaries saying "looks good": do NOT post another
 
@@ -183,7 +209,7 @@ Do NOT re-flag the name in the next review round.
 ```
 
 Round numbering tracks review invocations, not author fix commits.
-Each time Claude is triggered to review (e.g., on `synchronize`),
+Each time Claude is triggered to review (a ready-for-review flip),
 that is a new round — even if the author pushed multiple fix commits
 between rounds.
 

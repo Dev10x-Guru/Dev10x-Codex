@@ -18,6 +18,10 @@ This repository uses four Claude-powered workflows:
 4. **claude-pr-hygiene.yml** - PR metadata quality check on
    `opened` / `ready_for_review`
 
+The reviews run once per ready-for-review flip, and
+`pr-draft-on-push.yml` drafts a ready PR on every push:
+`.claude/rules/claude-ci-cost.md` § Review Trigger Cadence (GH-1694).
+
 ## Multi-Agent Architecture
 
 The code review workflow (`claude-code-review.yml`) uses a
@@ -41,13 +45,14 @@ Review guidelines are centralized in:
 
 Workflows should reference these files rather than duplicating content.
 
-API cost and prompt caching for the Claude review workflows:
-`.claude/rules/claude-ci-cost.md` (GH-1585).
+API cost, prompt caching, the CLI pin (rule 8) and which files a review
+reads from base vs the PR: `.claude/rules/claude-ci-cost.md`.
 
 ## Workflow Optimization
 
 - Keep prompts minimal — reference agent specs and rules on demand
-- Add `Read` tool to `claude_args` so Claude can load files on-demand
+- Give a job only the tools it uses: `--tools` for built-in schemas,
+  `--allowed-tools` for permission (`claude-ci-cost.md` rule 5)
 - Use context variables for dynamic values (repository, PR number)
 - Only load agent specs for domains with changed files
 

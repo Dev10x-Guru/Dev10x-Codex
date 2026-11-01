@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from dev10x.comm.skills.bus.maildir import (
@@ -18,6 +19,16 @@ def parse_header(raw: str) -> tuple[str, str]:
     if not separator:
         raise argparse.ArgumentTypeError(f"{raw!r} is not KEY=VALUE")
     return key, value
+
+
+def parse_minutes(raw: str) -> timedelta:
+    try:
+        minutes = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not a whole number of minutes") from exc
+    if minutes < 1:
+        raise argparse.ArgumentTypeError("--expires-in must be at least 1 minute")
+    return timedelta(minutes=minutes)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -42,6 +53,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="deliver to threads/<a>--<b>/ instead of the recipient inbox",
     )
     parser.add_argument(
+        "--expires-in",
+        dest="expires_in",
+        type=parse_minutes,
+        metavar="MINUTES",
+        help="readers drop the message after this many minutes (Expires header)",
+    )
+    parser.add_argument(
         "--header", action="append", default=[], type=parse_header, metavar="KEY=VALUE"
     )
     parser.add_argument("--root", type=Path, default=BUS_ROOT, help=argparse.SUPPRESS)
@@ -55,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.body_file == "-"
         else Path(args.body_file).read_text(encoding="utf-8")
     )
+    expires = datetime.now().astimezone() + args.expires_in if args.expires_in else None
     try:
         delivery = send(
             root=args.root,
@@ -66,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
                 in_reply_to=args.in_reply_to,
                 references=args.references,
                 voice=args.voice,
+                expires=expires,
                 extra_headers=tuple(args.header),
             ),
             body=body,

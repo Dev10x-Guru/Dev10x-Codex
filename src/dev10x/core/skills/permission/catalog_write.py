@@ -3,8 +3,8 @@
 Every function here mutates a settings file, and every mutation goes
 through :func:`dev10x.skills.permission.backup.backed_up_write` (GH-1429)
 and — at the operation level — through :func:`partition_writable`, the
-GH-1136/GH-1155 guard that keeps a git-tracked ``settings.json`` out of a
-maintenance run. The rules being written are computed in
+GH-1136/GH-1155/GH-1686 guard that keeps a git-tracked settings file out
+of a maintenance run. The rules being written are computed in
 :mod:`dev10x.skills.permission.catalog_rules`; the catalog they come from
 is loaded by :mod:`dev10x.skills.permission.catalog_load`. Split out of
 ``update_paths.py`` by GH-1432.
@@ -17,6 +17,7 @@ from pathlib import Path
 
 from dev10x.domain.claude_paths import ClaudeDir
 from dev10x.domain.common.result import Result, err, ok
+from dev10x.domain.file_locks import atomic_write_text, file_lock
 from dev10x.skills.permission.backup import backed_up_write
 from dev10x.skills.permission.catalog_load import detect_latest_version
 from dev10x.skills.permission.catalog_merge import CatalogDrift
@@ -40,6 +41,7 @@ from dev10x.skills.permission.catalog_rules import (
 )
 from dev10x.skills.permission.policy_catalog_migration import migrate_flat_config
 from dev10x.skills.permission.policy_renderer import render_permissions
+from dev10x.skills.permission.settings_discovery import linked_worktree_roots
 
 
 def ensure_base_permissions(
@@ -355,15 +357,18 @@ def generalize_permissions(
     return len(replacements), messages
 
 
-def _is_git_tracked(path: Path) -> bool:
-    """True when `path` is tracked by git (GH-1136).
+_NOT_A_REPO_MARKER = "not a git repository"
 
-    A maintenance run must never write a git-tracked
-    `.claude/settings.json`: doing so dirtied 16 working trees at once
-    and rode into unrelated commits. Only `settings.local.json` — which
-    projects gitignore — is a safe write target. An untracked file, a
-    path outside any repo, and a missing `git` binary all answer False,
-    so the check never blocks a legitimate write.
+
+def _is_git_tracked(path: Path) -> bool | None:
+    """Whether git tracks `path`: True, False, or None when git cannot say (GH-1686).
+
+    A maintenance run must never write a git-tracked settings file:
+    doing so dirtied 16 working trees at once and rode into unrelated
+    commits (GH-1136). `--error-unmatch` exits 1 for an untracked file,
+    and a path outside any repo is untracked by definition — both answer
+    False. A missing binary, a timeout or any other git failure answers
+    None, because "could not ask" is not evidence that a write is safe.
     """
     from dev10x import subprocess_utils
 
@@ -376,8 +381,14 @@ def _is_git_tracked(path: Path) -> bool:
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode == 0:
+        return True
+    if completed.returncode == 1:
         return False
-    return completed.returncode == 0
+    if _NOT_A_REPO_MARKER in (completed.stderr or ""):
+        return False
+    return None
 
 
 def partition_writable(
@@ -385,6 +396,7 @@ def partition_writable(
     *,
     redirect_tracked: bool = False,
     allow_tracked: bool = False,
+    allow_tracked_paths: frozenset[Path] = frozenset(),
 ) -> tuple[list[Path], list[str]]:
     """Split settings files into writable ones and skip messages (GH-1136).
 
@@ -404,6 +416,12 @@ def partition_writable(
 
     `allow_tracked` is the escape hatch for a user who genuinely intends
     to commit their settings; it disables the guard entirely and says so.
+    `allow_tracked_paths` lifts the guard for named files only — the
+    global `~/.claude/settings.json` kept in a dotfiles repo (GH-1664).
+
+    A committed `settings.local.json` is skipped too (GH-1686): it has no
+    further sibling to redirect to. A file whose tracked state git cannot
+    report is skipped rather than written.
     """
     if allow_tracked:
         return list(settings_files), ["  (--allow-tracked: git-tracked guard disabled)"]
@@ -411,10 +429,17 @@ def partition_writable(
     writable: list[Path] = []
     messages: list[str] = []
     for path in settings_files:
-        if path.name != "settings.json" or not _is_git_tracked(path):
+        if path in allow_tracked_paths:
             writable.append(path)
             continue
-        if not redirect_tracked:
+        tracked = _is_git_tracked(path)
+        if tracked is False:
+            writable.append(path)
+            continue
+        if tracked is None:
+            messages.append(f"  SKIP (git could not report tracked state): {path}")
+            continue
+        if path.name != "settings.json" or not redirect_tracked:
             messages.append(f"  SKIP (git-tracked): {path}")
             continue
         local_sibling = path.with_name("settings.local.json")
@@ -428,6 +453,11 @@ def partition_writable(
             # this reports the gap and writes nothing.
             messages.append(
                 f"  SKIP (git-tracked, no {local_sibling.name} to redirect to): {path}"
+            )
+            continue
+        if _is_git_tracked(local_sibling) is not False:
+            messages.append(
+                f"  SKIP (git-tracked, {local_sibling.name} is tracked or unknown too): {path}"
             )
             continue
         messages.append(f"  REDIRECT (git-tracked): {path} -> {local_sibling.name}")
@@ -497,6 +527,26 @@ def ensure_workspace_directories(
     return len(missing), messages
 
 
+DERIVE_WORKTREE_ROOTS_KEY = "derive_worktree_roots"
+
+
+def derived_worktree_roots(*, config: dict, settings_files: list[Path]) -> list[str]:
+    """Worktree roots to register when the user opted in (GH-1666).
+
+    A herdr worktree lives at ``<herdr-root>/worktrees/<repo>/<name>``, a
+    directory no Dev10x default names, so each user hand-maintained it
+    under ``additionalDirectories`` and a new layout was missed. With
+    ``derive_worktree_roots: true`` in the userspace catalog, the parent
+    of every linked worktree living outside its main checkout is added.
+    Opt-in, because each entry widens the Read/Edit scope of every
+    session that reads the file.
+    """
+    if config.get(DERIVE_WORKTREE_ROOTS_KEY) is not True:
+        return []
+    checkouts = [path.parent.parent for path in settings_files if path.parent.name == ".claude"]
+    return linked_worktree_roots(checkouts)
+
+
 def ensure_workspace(
     *,
     config: dict,
@@ -514,7 +564,9 @@ def ensure_workspace(
     messages: list[str] = []
     errors: list[str] = []
 
-    workspace_dirs = config.get("workspace_directories", [])
+    workspace_dirs = list(config.get("workspace_directories", []))
+    derived = derived_worktree_roots(config=config, settings_files=settings_files)
+    workspace_dirs.extend(root for root in derived if root not in workspace_dirs)
     if not workspace_dirs:
         if not quiet:
             messages.append("No workspace_directories defined in config.")
@@ -744,6 +796,8 @@ def ensure_base(
     drift: CatalogDrift | None = None,
     toplevel: str | None = None,
     dedupe_global: bool = False,
+    create_missing: list[Path] | None = None,
+    include_global: bool = False,
 ) -> dict[str, object]:
     """Add missing base permissions to each settings file. Returns result dict.
 
@@ -754,10 +808,24 @@ def ensure_base(
     project, so treating global as coverage wrote nothing to any project
     file for months while reporting success. Same opt-in posture as
     ``clean --aggressive``.
+
+    ``create_missing`` names worktree settings files to create first
+    (GH-1664): discovery reports a worktree whose sibling checkout has a
+    file and it does not, which otherwise reads only the global files.
+    ``include_global`` writes the global ``settings.json`` even when a
+    dotfiles repo tracks it — the only file a worktree with no settings
+    of its own inherits from.
     """
     errors: list[str] = []
     catalog = render_catalog(config=config, toplevel=toplevel, quiet=quiet)
     messages = list(catalog.messages)
+    created, create_messages, create_errors = _create_missing_settings(
+        paths=create_missing or [],
+        dry_run=dry_run,
+    )
+    messages.extend(create_messages)
+    errors.extend(create_errors)
+    settings_files = [*settings_files, *created]
     base_permissions = catalog.allow
     base_denies = catalog.deny
     base_asks = catalog.ask
@@ -776,7 +844,13 @@ def ensure_base(
         filtered = list(base_permissions)
         skipped = 0
 
-    writable_files, skip_messages = _partition_writable(sorted(settings_files))
+    global_settings = ClaudeDir.settings_json()
+    writable_files, skip_messages = _partition_writable(
+        sorted(settings_files),
+        allow_tracked_paths=frozenset({global_settings}) if include_global else frozenset(),
+    )
+    if any(str(global_settings) in message for message in skip_messages):
+        skip_messages.append("  (pass --global to write the tracked global settings.json anyway)")
 
     total_added = 0
     changed_files: set[Path] = set()
@@ -909,12 +983,46 @@ def ensure_base(
     errors.extend(residual)
 
     return _result(
-        exit_code=1 if residual else 0,
+        exit_code=1 if residual or create_errors else 0,
         messages=messages,
         errors=errors,
         total_added=total_added,
         files_changed=files_changed,
     )
+
+
+def _create_missing_settings(
+    *,
+    paths: list[Path],
+    dry_run: bool,
+) -> tuple[list[Path], list[str], list[str]]:
+    """Create each empty ``settings.local.json`` so ensure-base can fill it.
+
+    Returns ``(created, messages, errors)``. Creation re-checks existence
+    under the file's lock and writes atomically, so a concurrent seed that
+    filled the file first is never truncated back to ``{}``.
+    """
+    created: list[Path] = []
+    messages: list[str] = []
+    errors: list[str] = []
+    for path in paths:
+        if path.exists():
+            continue
+        if dry_run:
+            messages.append(f"  Would create {path}")
+            continue
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with file_lock(path):
+                if path.exists():
+                    continue
+                atomic_write_text(path, "{}\n")
+        except OSError as error:
+            errors.append(f"ERROR: cannot create {path}: {error}")
+            continue
+        messages.append(f"  Created {path}")
+        created.append(path)
+    return created, messages, errors
 
 
 def _unmatchable_rule_messages(*, unmatchable: list[str], quiet: bool) -> list[str]:
@@ -972,6 +1080,7 @@ def catalog_gap(
     quiet: bool = False,
     verbose: bool = False,
     toplevel: str | None = None,
+    out_of_roots: list[Path] | None = None,
 ) -> dict[str, object]:
     """Report which catalog rules each settings file is missing (GH-1136).
 
@@ -979,6 +1088,10 @@ def catalog_gap(
     carry the catalog?" without writing anything, so post-upgrade
     verification is a command rather than a reading of a maintenance log.
     Exits non-zero when any file has a gap.
+
+    ``out_of_roots`` names the worktrees discovery reached only through
+    git (GH-1626). They are checked like any other file, and also listed
+    on their own so a location missing from ``roots`` is visible.
     """
     from dev10x.skills.permission.catalog_gap import compute_gap, format_gap_report
 
@@ -1007,6 +1120,14 @@ def catalog_gap(
         messages.extend(format_gap_report(gap, verbose=verbose))
         messages.append("")
 
+    if out_of_roots:
+        messages.append(
+            f"Out-of-roots worktrees ({len(out_of_roots)}): found through"
+            " `git worktree list`, not under any configured root"
+        )
+        messages.extend(f"  {path}" for path in out_of_roots)
+        messages.append("")
+
     return _result(
         exit_code=1 if total_missing else 0,
         messages=messages,
@@ -1014,6 +1135,26 @@ def catalog_gap(
         total_added=total_missing,
         files_changed=len(settings_files),
     )
+
+
+def _would_seed_count(*, settings: Path, config: dict, toplevel: str) -> int:
+    """How many catalog rules a real seed would add (GH-1664).
+
+    The dry run used to report a constant 0, so ``seed-worktree --dry-run``
+    said "Would seed 0 rule(s)" for a worktree that had no settings at all.
+    A missing file lacks every rendered rule; an existing one lacks its gap.
+    """
+    from dev10x.skills.permission.catalog_gap import compute_gap
+
+    catalog = render_catalog(config=config, toplevel=toplevel, quiet=True)
+    if not settings.exists():
+        return len(catalog.allow) + len(catalog.deny) + len(catalog.ask)
+    return compute_gap(
+        path=settings,
+        base_permissions=catalog.allow,
+        base_denies=catalog.deny,
+        base_asks=catalog.ask,
+    ).total_missing
 
 
 def seed_worktree(
@@ -1054,7 +1195,11 @@ def seed_worktree(
         return ok(
             {
                 "path": str(settings),
-                "added": 0,
+                "added": _would_seed_count(
+                    settings=settings,
+                    config=config,
+                    toplevel=str(worktree_root),
+                ),
                 "would_create": created_fresh,
                 "dry_run": True,
             }
@@ -1066,6 +1211,16 @@ def seed_worktree(
             settings.write_text("{}\n")
         except OSError as error:
             return err(f"cannot create worktree settings: {error}", path=str(settings))
+
+    # ensure_base runs quiet here and drops its skip lines, so a tracked or
+    # unknown-state target would otherwise come back as "seeded 0" (GH-1136).
+    writable, skip_messages = _partition_writable([settings])
+    if not writable:
+        return err(
+            f"worktree settings not seeded:{''.join(skip_messages)}",
+            path=str(settings),
+            created_fresh=created_fresh,
+        )
 
     result = ensure_base(
         config=config,

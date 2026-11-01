@@ -12,23 +12,33 @@ CLI entry point: ``dev10x permission merge-worktree``.
 """
 
 import json
+import logging
 import re
 from pathlib import Path
 
-from dev10x import subprocess_utils
 from dev10x.domain.common.allow_rule import AllowRule
 from dev10x.domain.common.mktmp_path import MKTMP_GENERALIZE_PATTERN, MKTMP_PATH_PATTERN
 from dev10x.domain.common.policy import Policy, PolicySource
 from dev10x.domain.common.result import Result
 from dev10x.domain.common.ticket_id import TICKET_ID_PATTERN
 from dev10x.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.skills.permission.backup import backed_up_write
 from dev10x.skills.permission.catalog_paths import shipped_projects_catalog
+from dev10x.skills.permission.catalog_write import partition_writable
 from dev10x.skills.permission.config import parse_config, resolve_config
 from dev10x.skills.permission.policy_authoring import policy_from_accepted_prompt
+from dev10x.skills.permission.settings_discovery import (
+    VENDORED_DIRS,
+    git_registered_worktrees,
+    resolve_main_project,
+    walk_repos,
+)
 
 MEMORY_CONFIG = Dev10xConfigDir.projects_yaml()
 USERSPACE_CONFIG = Dev10xConfigDir.upgrade_cleanup_projects_yaml()
 PLUGIN_CONFIG = shipped_projects_catalog()
+
+log = logging.getLogger(__name__)
 
 NOISE_PATTERNS = [
     re.compile(r"\.[A-Za-z0-9]{8,}\.(txt|md|json)"),
@@ -90,6 +100,38 @@ def generalize_permission(entry: str) -> str:
     return entry
 
 
+def _herdr_sibling_pattern(*, main_project: Path) -> re.Pattern[str]:
+    """Any herdr worktree of this repo, live or retired, in ``~`` or absolute form."""
+    repo = re.escape(main_project.name)
+    return re.compile(rf"(?:~|/[^\s()'\"]*?)/\.herdr/worktrees/{repo}/[^/\s()'\"]+/")
+
+
+def reanchor_worktree_paths(
+    entry: str,
+    *,
+    main_project: Path,
+    worktree_roots: list[Path],
+) -> str:
+    """Point a rule pinned inside a worktree at the same path in the main checkout.
+
+    The ``/.worktrees/<name>/`` regex in :data:`GENERALIZE_PATTERNS` only
+    knows one layout (GH-1666). Herdr puts worktrees at
+    ``<herdr-root>/worktrees/<repo>/<name>``, so their rules synced to the
+    main checkout still named a worktree path — dead everywhere else, and
+    dead in the worktree too once it was retired. Every root git has
+    registered for the project is rewritten, in absolute and ``~`` form,
+    longest first so ``wt-10/`` is never consumed as ``wt-1/``; a herdr
+    path naming this repo is rewritten even when its worktree is gone.
+    """
+    main = f"{main_project}/"
+    home = f"{Path.home()}/"
+    for root in sorted({str(root) for root in worktree_roots}, key=len, reverse=True):
+        entry = entry.replace(f"{root}/", main)
+        if root.startswith(home):
+            entry = entry.replace(f"~/{root[len(home) :]}/", main)
+    return _herdr_sibling_pattern(main_project=main_project).sub(main, entry)
+
+
 def find_config() -> Result[Path]:
     candidates = [MEMORY_CONFIG, USERSPACE_CONFIG]
     if PLUGIN_CONFIG is not None:
@@ -125,47 +167,6 @@ def sync_candidates_as_policies(*, entries: list[str]) -> list[Policy]:
         for entry in entries
     ]
     return [policy for policy in candidates if not is_noise(policy.signature)]
-
-
-def resolve_main_project(worktree_dir: Path) -> Path | None:
-    git_file = worktree_dir / ".git"
-    if not git_file.is_file():
-        return None
-    content = git_file.read_text().strip()
-    if not content.startswith("gitdir:"):
-        return None
-    gitdir = content.split(":", 1)[1].strip()
-    gitdir_path = Path(gitdir)
-    if "/worktrees/" not in str(gitdir_path):
-        return None
-    main_git_dir = gitdir_path.parent.parent
-    return main_git_dir.parent
-
-
-def git_registered_worktrees(root_path: Path) -> list[Path]:
-    """Worktree paths git has registered for the repo at ``root_path``.
-
-    Uses ``git worktree list --porcelain`` so worktrees registered *outside*
-    the conventional ``<root>/.worktrees/`` layout are discovered too — the
-    glob-only scan silently skipped them, and a whole project could be
-    missed if it kept its worktrees elsewhere (GH-813 Finding 2). Returns
-    ``[]`` when ``root_path`` is not a git repo or git is unavailable, so a
-    non-repo root degrades to the directory glob rather than erroring.
-    """
-    result = subprocess_utils.run(
-        ["git", "worktree", "list", "--porcelain"],
-        cwd=str(root_path),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        return []
-    return [
-        Path(line[len("worktree ") :].strip())
-        for line in result.stdout.splitlines()
-        if line.startswith("worktree ")
-    ]
 
 
 def find_worktree_groups(roots: list[str]) -> dict[Path, list[Path]]:
@@ -226,17 +227,23 @@ def merge_permissions(
     main_data = load_permissions(main_settings)
     main_allow = extract_allow_set(main_data)
 
-    new_entries: set[str] = set()
+    worktree_roots = [*worktree_dirs, *git_registered_worktrees(main_project)]
+    generalized: set[str] = set()
     source_map: dict[str, list[Path]] = {}
     for wt_dir in worktree_dirs:
         wt_settings = wt_dir / ".claude" / "settings.local.json"
         wt_data = load_permissions(wt_settings)
         wt_allow = extract_allow_set(wt_data)
         for entry in wt_allow - main_allow:
-            new_entries.add(entry)
-            source_map.setdefault(entry, []).append(wt_settings)
+            anchored = reanchor_worktree_paths(
+                entry,
+                main_project=main_project,
+                worktree_roots=worktree_roots,
+            )
+            stable = generalize_permission(anchored)
+            generalized.add(stable)
+            source_map.setdefault(stable, []).append(wt_settings)
 
-    generalized = {generalize_permission(e) for e in new_entries}
     generalized -= main_allow
     candidates = sync_candidates_as_policies(entries=sorted(generalized))
     stable_entries = [policy.signature for policy in candidates]
@@ -273,6 +280,115 @@ def merge_permissions(
             )
 
     return len(stable_entries), messages
+
+
+def find_repo_families(
+    roots: list[str],
+    *,
+    excluded: frozenset[str] = VENDORED_DIRS,
+) -> dict[Path, list[Path]]:
+    """Map each main checkout under ``roots`` to its worktrees that carry settings.
+
+    Unlike :func:`find_worktree_groups`, a root may be a container of many
+    repos (``/work/tt``), and a worktree may live anywhere on disk:
+    ``git worktree list`` names the main checkout first and every linked
+    worktree after it (GH-1673).
+    """
+    families: dict[Path, list[Path]] = {}
+    seen: set[Path] = set()
+    for root in roots:
+        root_path = Path(root).expanduser()
+        if not root_path.is_dir():
+            continue
+        for repo in walk_repos(root_path, excluded=excluded):
+            if repo.resolve() in seen:
+                continue
+            family = git_registered_worktrees(repo)
+            seen.update(member.resolve() for member in family)
+            if len(family) < 2:
+                continue
+            main, *linked = family
+            worktrees = [wt for wt in linked if (wt / ".claude" / "settings.local.json").is_file()]
+            if worktrees and (main / ".claude" / "settings.local.json").is_file():
+                families[main] = worktrees
+    return families
+
+
+def _home_relative(path: Path) -> str | None:
+    home = Path.home()
+    return f"~/{path.relative_to(home)}" if path.is_relative_to(home) else None
+
+
+def pins_a_checkout(entry: str, *, checkouts: list[Path]) -> bool:
+    """True when ``entry`` names a path inside one checkout of the family.
+
+    Such a rule only makes sense where it was granted (GH-1673, GH-1666):
+    copying ``Bash(/work/proj/bin/x.sh:*)`` into a sibling worktree grants
+    a script in the main checkout from inside the worktree, which is the
+    cross-checkout pinning the doctor's invariants already reject.
+    """
+    for checkout in checkouts:
+        spellings = [str(checkout), _home_relative(checkout)]
+        if any(spelling and f"{spelling}/" in entry for spelling in spellings):
+            return True
+    return False
+
+
+def _read_allow(settings: Path) -> set[str] | None:
+    """The file's allow rules, or ``None`` when it cannot be read or parsed."""
+    try:
+        return extract_allow_set(load_permissions(settings))
+    except (OSError, ValueError, AttributeError) as error:
+        log.warning("cannot read %s: %s", settings, error)
+        return None
+
+
+def sync_main_to_worktrees(
+    *,
+    main_project: Path,
+    worktree_dirs: list[Path],
+    dry_run: bool = False,
+) -> tuple[int, list[str]]:
+    """Copy rules granted in the main checkout into its existing worktrees.
+
+    Propagation used to be one-shot (GH-1673): a worktree got a snapshot
+    at creation, and ``merge-worktree`` only flows worktree → main. A
+    "don't ask again" answered in the main checkout after the worktrees
+    existed never reached them, so each kept prompting for a tool the
+    repo had already approved. Rules pinned to a checkout path and
+    session noise stay where they are.
+    """
+    main_settings = main_project / ".claude" / "settings.local.json"
+    main_allow = _read_allow(main_settings)
+    if main_allow is None:
+        return 0, [f"  SKIP (unreadable settings): {main_settings}"]
+    family = [main_project, *worktree_dirs]
+    portable = sorted(
+        entry
+        for entry in main_allow
+        if not pins_a_checkout(entry, checkouts=family) and not is_noise(entry)
+    )
+    targets = [wt / ".claude" / "settings.local.json" for wt in worktree_dirs]
+    writable, messages = partition_writable(targets)
+
+    total = 0
+    for settings in writable:
+        present = _read_allow(settings)
+        if present is None:
+            messages.append(f"  SKIP (unreadable settings): {settings}")
+            continue
+        missing = [entry for entry in portable if entry not in present]
+        if not missing:
+            continue
+        total += len(missing)
+        messages.append(f"  target: {settings}")
+        messages.extend(f"    + {entry}" for entry in missing)
+        if dry_run:
+            continue
+        with backed_up_write(path=settings) as live_data:
+            allow = live_data.setdefault("permissions", {}).setdefault("allow", [])
+            allow.extend(entry for entry in missing if entry not in allow)
+    return total, messages
 
 
 def _restore(*, config_path: Path) -> int:

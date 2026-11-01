@@ -1,6 +1,6 @@
 [project]
 name = "Dev10x"
-version = "0.108.0"
+version = "0.110.0"
 description = "Claude Code plugin providing reusable skills, hooks, and commands"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -60,7 +60,11 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"dev10x" = ["**/*.yaml"]
+"dev10x" = [
+    "**/*.yaml",
+    "comm/supervisor/static/*.html",
+    "comm/supervisor/static/assets/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

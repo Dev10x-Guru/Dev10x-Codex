@@ -12,6 +12,8 @@ result dicts (``exit_code``, ``messages``, ``errors``, stats). No
 from __future__ import annotations
 
 import asyncio
+import os
+from pathlib import Path
 from typing import Any, cast
 
 from dev10x.domain.common.result import ErrorResult, Result, err, ok
@@ -31,13 +33,13 @@ async def catalog_gap(*, verbose: bool = False) -> Result[dict[str, Any]]:
 
     Returns:
         ok({"total_missing": int, "files_checked": int, "clean": bool,
-            "messages": [str, ...]})
+            "messages": [str, ...], "out_of_roots": [str, ...]})
     """
     return await asyncio.to_thread(_run_catalog_gap, verbose=verbose)
 
 
 def _run_catalog_gap(*, verbose: bool) -> Result[dict[str, Any]]:
-    from dev10x.skills.permission import update_paths as mod
+    from dev10x.core.skills.permission import update_paths as mod
 
     ctx = load_permission_context()
     if isinstance(ctx, ErrorResult):
@@ -51,6 +53,7 @@ def _run_catalog_gap(*, verbose: bool) -> Result[dict[str, Any]]:
         settings_files=settings_files,
         quiet=False,
         verbose=verbose,
+        out_of_roots=ctx.value.out_of_roots,
     )
     # catalog_gap is typed dict[str, object]; the counts are ints by
     # contract, so narrow explicitly rather than trusting the annotation.
@@ -61,7 +64,109 @@ def _run_catalog_gap(*, verbose: bool) -> Result[dict[str, Any]]:
             "files_checked": int(cast(int, result.get("files_changed", 0))),
             "clean": total_missing == 0,
             "messages": result.get("messages", []),
+            "out_of_roots": [str(path) for path in ctx.value.out_of_roots],
         }
+    )
+
+
+async def triage(
+    *,
+    target: str,
+    working_dirs: list[str] | None = None,
+) -> Result[dict[str, Any]]:
+    """Recommend the one fix for a prompted command or rule (GH-1676).
+
+    Read-only. Returns the triage verdict — use-alternative, normalize,
+    outside-workdir, refuse-sensitive, denied, already-allowed or grant —
+    with the rule it would grant and the settings files that lack it.
+    """
+    return await asyncio.to_thread(_run_triage, target=target, working_dirs=working_dirs)
+
+
+async def grant(
+    *,
+    target: str,
+    rule: str,
+    working_dirs: list[str] | None = None,
+    dry_run: bool = False,
+) -> Result[dict[str, Any]]:
+    """Grant the triaged rule to every settings file that lacks it (GH-1676).
+
+    Refuses unless triage returns ``grant`` and derives exactly ``rule``,
+    so a better fix is never skipped and the approved rule is the one
+    written. Writes through the backup + git-tracked guard.
+    """
+    return await asyncio.to_thread(
+        _run_grant,
+        target=target,
+        rule=rule,
+        working_dirs=working_dirs,
+        dry_run=dry_run,
+    )
+
+
+def catalog_denies(*, config: dict[str, Any]) -> list[str]:
+    """Every deny the catalog would seed, tracker and IDE blocks included."""
+    from dev10x.skills.permission.catalog_write import render_catalog
+
+    rendered = render_catalog(config=config, toplevel=None, quiet=True)
+    return [*config.get("base_denies", []), *rendered.deny]
+
+
+def _resolve_working_dirs(*, working_dirs: list[str] | None) -> Result[list[Path]]:
+    from dev10x.subprocess_utils import effective_cwd
+
+    if not working_dirs:
+        return ok([Path(effective_cwd() or os.getcwd())])
+    paths = [Path(directory).expanduser() for directory in working_dirs]
+    relative = [str(path) for path in paths if not path.is_absolute()]
+    if relative:
+        return err(f"working_dirs must be absolute (GH-1264): {', '.join(relative)}")
+    return ok(paths)
+
+
+def _run_triage(*, target: str, working_dirs: list[str] | None) -> Result[dict[str, Any]]:
+    from dev10x.skills.permission.grant import triage as run_triage
+
+    ctx = load_permission_context()
+    if isinstance(ctx, ErrorResult):
+        return ctx
+    resolved = _resolve_working_dirs(working_dirs=working_dirs)
+    if isinstance(resolved, ErrorResult):
+        return resolved
+    result = run_triage(
+        target=target,
+        settings_files=ctx.value.settings_files,
+        working_dirs=resolved.value,
+        base_denies=catalog_denies(config=ctx.value.config),
+    )
+    return ok(result.to_dict())
+
+
+def _run_grant(
+    *,
+    target: str,
+    rule: str,
+    working_dirs: list[str] | None,
+    dry_run: bool,
+) -> Result[dict[str, Any]]:
+    from dev10x.skills.permission.grant import grant_everywhere
+
+    ctx = load_permission_context()
+    if isinstance(ctx, ErrorResult):
+        return ctx
+    if not ctx.value.settings_files:
+        return err("No settings files found.")
+    resolved = _resolve_working_dirs(working_dirs=working_dirs)
+    if isinstance(resolved, ErrorResult):
+        return resolved
+    return grant_everywhere(
+        target=target,
+        settings_files=ctx.value.settings_files,
+        working_dirs=resolved.value,
+        base_denies=catalog_denies(config=ctx.value.config),
+        dry_run=dry_run,
+        confirmed_rule=rule,
     )
 
 
@@ -75,7 +180,8 @@ def _run_sub_command(
     dry_run: bool = False,
     quiet: bool = False,
 ) -> Result[dict[str, Any]]:
-    from dev10x.skills.permission import update_paths as mod
+    from dev10x.core.skills.permission import update_paths as mod
+    from dev10x.core.skills.permission.settings_discovery import vendored_dirs
 
     ctx = load_permission_context()
     if isinstance(ctx, ErrorResult):
@@ -118,6 +224,10 @@ def _run_sub_command(
                 dry_run=dry_run,
                 quiet=quiet,
                 drift=ctx.value.drift,
+                create_missing=mod.find_missing_settings(
+                    roots=config.get("roots", []),
+                    excluded=vendored_dirs(config),
+                ),
             )
         ):
             return _format_failure(combined_messages, combined_errors, exit_code)
@@ -213,7 +323,7 @@ def _run_update_paths(
 ) -> Result[dict[str, Any]]:
     from pathlib import Path
 
-    from dev10x.skills.permission import update_paths as mod
+    from dev10x.core.skills.permission import update_paths as mod
 
     if init:
         return err("init is not supported via MCP; run `uvx dev10x permission init`.")
@@ -233,6 +343,7 @@ def _run_update_paths(
         return err(f"No versions found in {cache_dir}")
 
     publisher = mod.extract_cache_publisher(config["plugin_cache"])
+    plugin_dir = mod.extract_cache_plugin_dir(config["plugin_cache"])
 
     messages: list[str] = []
     if not quiet:
@@ -243,13 +354,18 @@ def _run_update_paths(
         if dry_run:
             messages.append("(dry run — no files will be modified)")
 
+    writable_files, skip_messages = mod.partition_writable(sorted(settings_files))
+    if not quiet:
+        messages.extend(skip_messages)
+
     total_changes = 0
     files_changed = 0
-    for path in sorted(settings_files):
+    for path in writable_files:
         count, file_messages = mod.update_file(
             path,
             target,
             target_publisher=publisher,
+            target_plugin_dir=plugin_dir,
             dry_run=dry_run,
         )
         if count > 0:

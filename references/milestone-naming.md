@@ -17,28 +17,40 @@ issue searches ambiguous.
 
 ## Convention
 
-Every milestone title must begin with a **namespaced prefix** that
-identifies the initiative, followed by a sequence number.
+Every milestone title begins with a **namespaced prefix** that
+identifies the initiative, followed by the outcome the milestone
+delivers. It carries **no sequence number**.
 
 ```
-<INIT>-M<n>: <short title>
+<INIT>: <outcome>
 ```
 
 | Field | Rule |
 |-------|------|
 | `<INIT>` | 2–6 uppercase letters identifying the initiative (see table below) |
-| `-M<n>` | Hyphen, capital M, integer (no leading zeros) |
 | `: ` | Colon + space separator |
-| `<short title>` | Human-readable description, ≤ 50 characters |
+| `<outcome>` | What the milestone delivers, ≤ 50 characters |
 
 **Examples:**
 
 ```
-AUD-M1: Domain Boundary Safety
-AUD-M9: Test Coverage Architectural Gaps
-MCP-M1: MCP daemon foundation
-MCP-M6: Installable GitHub bot/Action
+AUD: Domain Boundary Safety
+AUD: Test Coverage Architectural Gaps
+MCP: MCP daemon foundation
+MCP: Installable GitHub bot/Action
 ```
+
+### Ordering is a dependency, not a number (GH-1515)
+
+A sequence number after the prefix (`AUD-M1`, `CREW-M2`) is what
+`dev10x:project-scope` forbids since GH-1509: numbered names make
+milestones hard to split or merge, because every later title has to
+be renamed. The prefix namespaces; it does not order.
+
+Record ordering in the milestone **description** instead, as a
+`Depends on: <milestone name>` line, using the format in
+[`skills/project-scope/references/milestone-description.md`](../skills/project-scope/references/milestone-description.md).
+Omit the line only when the milestone can start now.
 
 ## Registered Initiative Prefixes
 
@@ -53,6 +65,16 @@ MCP-M6: Installable GitHub bot/Action
 | `QA` | qa-self evidence integrity & portability (2026-09-08) | active |
 | `ARCH` | Full architecture audit (2026-09-19) — patterns, archetypes, concurrency, best practices | active |
 | `PLG` | Staged plugin split, restructure first (ADR-0034, GH-1522) | active |
+| `HOOK` | Hook guards, performance & diagnostics (Claude2 port, 2026-10-18) | active |
+| `SKL` | Skill & permission tooling, new authoring skills (Claude2 port, 2026-10-18) | active |
+| `ADOPT` | Onboarding & distribution (Claude2 port, 2026-10-18) | active |
+| `CONT` | Video series, walkthrough & website content (Claude2 port, 2026-10-18) | active |
+| `PLAT` | Profiles, skill porting & model/platform compatibility | active |
+| `CREW` | Unattended-run (foreman/crew/subagent) reliability | active |
+| `FRIC` | Single-baseline friction model & config migration (ADR-0022) | active |
+| `PRW` | PR workflow correctness (gh-pr-* and git skills) | active |
+| `DX` | Developer experience: session UX, repo hygiene, green CI | active |
+| `COMM` | Chat-driven sessions (Google Chat / Slack watch & reply) | active |
 
 When starting a new initiative that spans multiple milestones, register
 its prefix here before creating the first milestone. Pick a prefix that
@@ -70,9 +92,11 @@ permission handling.
 
 ## Retroactive renaming
 
-Milestones closed before this convention existed do not need to be
-renamed — closed milestones are invisible in the default milestone
-list. Apply the prefix only to new milestones going forward.
+Milestones created before this convention existed — including open
+ones still named `<INIT>-M<n>` — are not renamed. Closed milestones
+are invisible in the default milestone list, and renaming an open one
+breaks every saved `milestone:` filter that names it. Apply the
+convention to new milestones only.
 
 ## Reference
 

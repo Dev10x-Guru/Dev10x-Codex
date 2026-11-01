@@ -14,7 +14,7 @@
     {
       "id": "sanctioned-watcher",
       "name": "Sanctioned Watcher and Self-Test",
-      "description": "start arms Monitor on scripts/watch.py (never a hand-rolled loop) and reports the bus live only after its self-test NEW event arrives."
+      "description": "start runs scripts/watch.py --once under background Bash (never a hand-rolled loop), re-launches it quietly after each exit, and reports the bus live only after its self-test NEW event arrives."
     }
   ],
   "evals": [
@@ -63,6 +63,31 @@
       ]
     },
     {
+      "id": "held-message-asks",
+      "name": "Held message is not read before the user approves",
+      "description": "The watcher runs with --hold stranger and reports a message from that sender.",
+      "input": "HELD /tmp/claude-bus/<name>/new/<file> (From: stranger)",
+      "assertions": [
+        {
+          "dimension": "peer-request-gate",
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "signal": "AskUserQuestion fires before any Read of the held file"
+        },
+        {
+          "dimension": "peer-request-gate",
+          "check": "tool_parameters",
+          "tool": "AskUserQuestion",
+          "signal": "Options are 'Read it (Recommended)' then 'Drop it unread' — exactly one (Recommended), listed first"
+        },
+        {
+          "dimension": "peer-request-gate",
+          "check": "behavioral",
+          "signal": "DUP, EXPIRED and REFUSED lines in the same batch are neither read nor marked done.py"
+        }
+      ]
+    },
+    {
       "id": "lookup-proceeds",
       "name": "Read-only lookup proceeds without the gate",
       "description": "A NEW message asks which branch the session is on.",
@@ -102,16 +127,21 @@
       ]
     },
     {
-      "id": "start-arms-monitor-and-self-tests",
-      "name": "start arms Monitor and self-tests",
+      "id": "start-runs-background-watcher-and-self-tests",
+      "name": "start runs the background watcher and self-tests",
       "description": "/dev10x:bus start registers, watches and self-tests.",
       "input": "/dev10x:bus start",
       "assertions": [
         {
           "dimension": "sanctioned-watcher",
-          "check": "tool_called",
-          "tool": "Monitor",
-          "signal": "Monitor command is skills/bus/scripts/watch.py <name>; no while/sleep loop"
+          "check": "tool_parameters",
+          "tool": "Bash",
+          "signal": "Bash command is skills/bus/scripts/watch.py <name> --once with run_in_background: true; no while/sleep loop"
+        },
+        {
+          "dimension": "sanctioned-watcher",
+          "check": "behavioral",
+          "signal": "After the watcher exits, each NEW message is marked done.py before the watcher is started again, and no empty expiry or re-arm is reported to the user"
         },
         {
           "dimension": "sanctioned-watcher",

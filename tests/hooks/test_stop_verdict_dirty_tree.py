@@ -100,23 +100,18 @@ class TestADirtyTreeMeansNotDone:
 
 
 class TestOpenWorkIsNeverGatedOnTheTree:
-    def test_open_work_continues_without_mentioning_the_tree(
+    def test_open_work_ends_quietly_despite_a_dirty_tree(
         self, tmp_path: Path, isolated_markers: Path
     ) -> None:
-        """WIP mid-task is normal, so the tree is not consulted yet.
-
-        The turn still continues (GH-1366), but on the plan's authority
-        — the steer names the next task, not the uncommitted files.
-        """
+        """WIP mid-task is normal, so the tree is not consulted yet."""
         verdict = decide(
             data={"session_id": "d5", "transcript_path": _transcript(tmp_path=tmp_path)},
             plan=PENDING_PLAN,
             dirty=_DIRTY,
         )
 
-        assert verdict.signal == StopSignal.CONTINUE
-        assert "Monitor CI" in verdict.reason
-        assert "stop_verdict.py" not in verdict.reason
+        assert verdict.block is False
+        assert verdict.signal == StopSignal.OPEN_WORK
 
     def test_an_absent_list_advances_with_a_dirty_tree(
         self, tmp_path: Path, isolated_markers: Path
@@ -130,6 +125,35 @@ class TestOpenWorkIsNeverGatedOnTheTree:
 
         assert verdict.block is False
         assert verdict.signal == StopSignal.NO_TASK_LIST
+
+
+class TestTheSteerNeverClaimsAnOpenTaskIsDone:
+    """GH-1603: the steer fired with a task still open and said otherwise."""
+
+    def test_an_open_sign_off_gate_is_not_called_complete(
+        self, tmp_path: Path, isolated_markers: Path
+    ) -> None:
+        verdict = decide(
+            data={"session_id": "d9", "transcript_path": _transcript(tmp_path=tmp_path)},
+            plan={"tasks": [{"subject": "Verify acceptance criteria", "status": "pending"}]},
+            dirty=_DIRTY,
+        )
+
+        assert verdict.signal == StopSignal.DIRTY_TREE
+        assert "Every task on the list is complete" not in verdict.reason
+
+    def test_an_in_progress_verify_step_is_still_open_work(
+        self, tmp_path: Path, isolated_markers: Path
+    ) -> None:
+        """Only the sign-off gate is terminal, not every subject saying "verify ac…"."""
+        verdict = decide(
+            data={"session_id": "d10", "transcript_path": _transcript(tmp_path=tmp_path)},
+            plan={"tasks": [{"subject": "Verify access rules", "status": "in_progress"}]},
+            dirty=_DIRTY,
+        )
+
+        assert verdict.block is False
+        assert verdict.signal == StopSignal.OPEN_WORK
 
 
 class TestACleanTreeIsUnchanged:

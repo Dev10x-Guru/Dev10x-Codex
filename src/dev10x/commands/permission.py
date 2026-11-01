@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from types import ModuleType
 
 import click
 
+from dev10x.core.permission.service import PermissionContext, load_permission_context
 from dev10x.domain.claude_paths import ClaudeDir
 from dev10x.domain.common.result import ErrorResult
-from dev10x.core.permission.service import PermissionContext, load_permission_context
 
 
 @click.group()
@@ -132,7 +133,7 @@ def update_paths(
     restore: bool,
 ) -> None:
     """Update versioned plugin cache paths to the latest version."""
-    from dev10x.skills.permission import update_paths as mod
+    from dev10x.core.skills.permission import update_paths as mod
 
     if restore:
         sys.exit(mod._restore(config_path=_require_config(mod)))
@@ -150,6 +151,7 @@ def update_paths(
         sys.exit(1)
 
     publisher = mod.extract_cache_publisher(config["plugin_cache"])
+    plugin_dir = mod.extract_cache_plugin_dir(config["plugin_cache"])
     if not quiet:
         click.echo(f"Target version: {target}")
         if publisher:
@@ -178,6 +180,7 @@ def update_paths(
             path,
             target,
             target_publisher=publisher,
+            target_plugin_dir=plugin_dir,
             dry_run=dry_run,
         )
         if count > 0:
@@ -230,21 +233,58 @@ def update_paths(
     is_flag=True,
     help="Skip rules already in ~/.claude/settings.json (pre-GH-1136 behaviour)",
 )
-def ensure_base(*, dry_run: bool, quiet: bool, dedupe_global: bool) -> None:
+@click.option(
+    "--global",
+    "include_global",
+    is_flag=True,
+    help="Also write ~/.claude/settings.json when a dotfiles repo tracks it (GH-1664)",
+)
+@click.option(
+    "--no-create",
+    is_flag=True,
+    help="Do not create settings files in worktrees whose siblings have one (GH-1664)",
+)
+def ensure_base(
+    *,
+    dry_run: bool,
+    quiet: bool,
+    dedupe_global: bool,
+    include_global: bool,
+    no_create: bool,
+) -> None:
     """Add missing base permissions from projects.yaml.
 
     Exits non-zero when any settings file still lacks catalog rules after
     the run — the defect in GH-1136 was that silence read as success.
+    A worktree with no settings file of its own gets one when a sibling
+    checkout of the same repo has one, unless --no-create is passed.
     """
-    from dev10x.skills.permission import update_paths as mod
+    from dev10x.core.skills.permission import update_paths as mod
+    from dev10x.core.skills.permission.settings_discovery import vendored_dirs
 
-    _run_fix(
-        mod.ensure_base,
-        needs_config=True,
-        dry_run=dry_run,
-        quiet=quiet,
-        show_config=True,
-        extra={"dedupe_global": dedupe_global},
+    ctx = _require_settings(show_config=True, quiet=quiet)
+    if ctx is None:
+        return
+    create_missing = (
+        []
+        if no_create
+        else mod.find_missing_settings(
+            roots=ctx.config.get("roots", []),
+            excluded=vendored_dirs(ctx.config),
+        )
+    )
+    sys.exit(
+        _emit_result(
+            mod.ensure_base(
+                config=ctx.config,
+                settings_files=ctx.settings_files,
+                dry_run=dry_run,
+                quiet=quiet,
+                dedupe_global=dedupe_global,
+                create_missing=create_missing,
+                include_global=include_global,
+            )
+        )
     )
 
 
@@ -258,7 +298,7 @@ def catalog_gap(*, quiet: bool, verbose: bool) -> None:
     and exits non-zero when any file has a gap, so post-upgrade
     verification is a command rather than a reading of a maintenance log.
     """
-    from dev10x.skills.permission import update_paths as mod
+    from dev10x.core.skills.permission import update_paths as mod
 
     ctx = _require_settings(show_config=True, quiet=quiet)
     if ctx is None:
@@ -270,9 +310,94 @@ def catalog_gap(*, quiet: bool, verbose: bool) -> None:
                 settings_files=ctx.settings_files,
                 quiet=quiet,
                 verbose=verbose,
+                out_of_roots=ctx.out_of_roots,
             )
         )
     )
+
+
+def _working_dirs(*, values: tuple[str, ...]) -> list[Path]:
+    # abspath, not resolve(): triage compares un-resolved paths, so following
+    # symlinks here alone would give the CLI different verdicts than MCP.
+    return [Path(os.path.abspath(Path(value).expanduser())) for value in values] or [Path.cwd()]
+
+
+@permission.command(name="triage")
+@click.argument("target")
+@click.option(
+    "--working-dir",
+    "working_dirs",
+    multiple=True,
+    help="Session working directory (repeatable; default: CWD)",
+)
+def triage(*, target: str, working_dirs: tuple[str, ...]) -> None:
+    """Recommend the one fix for a prompted command or rule (GH-1676).
+
+    Read-only. Exits 0 only on a `grant` verdict, so a script can gate a
+    grant on it.
+    """
+    from dev10x.core.permission import catalog_denies
+    from dev10x.skills.permission.grant import Verdict
+    from dev10x.skills.permission.grant import triage as run_triage
+
+    ctx = _require_context()
+    result = run_triage(
+        target=target,
+        settings_files=ctx.settings_files,
+        working_dirs=_working_dirs(values=working_dirs),
+        base_denies=catalog_denies(config=ctx.config),
+    )
+    click.echo(f"Verdict: {result.verdict}")
+    click.echo(f"Rule:    {result.rule}")
+    click.echo(f"Reason:  {result.reason}")
+    for line in result.advice:
+        click.echo(f"  - {line}")
+    for path in result.files_missing:
+        click.echo(f"  missing in {path}")
+    for path in result.files_unreadable:
+        click.echo(f"  unreadable {path}")
+    sys.exit(0 if result.verdict is Verdict.GRANT else 1)
+
+
+@permission.command(name="grant")
+@click.argument("target")
+@click.option(
+    "--working-dir",
+    "working_dirs",
+    multiple=True,
+    help="Session working directory (repeatable; default: CWD)",
+)
+@click.option("--dry-run", is_flag=True, help="Show changes without modifying files")
+def grant(*, target: str, working_dirs: tuple[str, ...], dry_run: bool) -> None:
+    """Pre-approve a command's rule in every settings file at once (GH-1676).
+
+    Exits non-zero when nothing was written, so a scripted grant cannot
+    read silence as success (GH-1136).
+    """
+    from dev10x.core.permission import catalog_denies
+    from dev10x.skills.permission.grant import grant_everywhere
+
+    ctx = _require_settings()
+    if ctx is None:
+        sys.exit(1)
+    result = grant_everywhere(
+        target=target,
+        settings_files=ctx.settings_files,
+        working_dirs=_working_dirs(values=working_dirs),
+        base_denies=catalog_denies(config=ctx.config),
+        dry_run=dry_run,
+    )
+    if isinstance(result, ErrorResult):
+        click.echo(f"ERROR: {result.error}", err=True)
+        for line in result.details.get("messages", []):
+            click.echo(line, err=True)
+        for line in result.details.get("triage", {}).get("advice", []):
+            click.echo(f"  - {line}", err=True)
+        sys.exit(1)
+    for message in result.value["messages"]:
+        click.echo(message)
+    verb = "Would grant" if dry_run else "Granted"
+    click.echo(f"{verb} {result.value['rule']} in {len(result.value['granted'])} file(s).")
 
 
 def _report_predicted() -> None:
@@ -316,8 +441,8 @@ def report(*, days: int, top: int, predicted: bool) -> None:
 
     from datetime import UTC, datetime, timedelta
 
-    from dev10x.teach.audit.log_reader import iter_records
     from dev10x.skills.permission.friction_report import build_report, format_report
+    from dev10x.teach.audit.log_reader import iter_records
 
     since = datetime.now(UTC) - timedelta(days=days) if days > 0 else None
     result = build_report(records=iter_records(since=since), top=top)
@@ -341,7 +466,7 @@ def catalog_diff(*, strict: bool) -> None:
     They now merge; this command names what differs so relics can be
     told apart from genuine preference.
     """
-    from dev10x.skills.permission import update_paths as mod
+    from dev10x.core.skills.permission import update_paths as mod
     from dev10x.skills.permission.catalog_merge import compute_drift, format_drift_report
 
     resolved = _require_config(mod)
@@ -414,7 +539,7 @@ def ensure_safety_keys(*, dry_run: bool, quiet: bool, allow_tracked: bool) -> No
     untouched; run ``dev10x permission doctor safety-keys`` to find an
     invalid value that needs a human decision to overwrite.
     """
-    from dev10x.skills.permission import safety_keys as mod
+    from dev10x.core.skills.permission import safety_keys as mod
 
     _run_fix(
         mod.ensure_safety_keys,
@@ -435,7 +560,7 @@ def ensure_safety_keys(*, dry_run: bool, quiet: bool, allow_tracked: bool) -> No
 )
 def generalize(*, dry_run: bool, quiet: bool, allow_tracked: bool) -> None:
     """Replace session-specific permission args with wildcard patterns."""
-    from dev10x.skills.permission import update_paths as mod
+    from dev10x.core.skills.permission import update_paths as mod
 
     _run_fix(
         mod.generalize,
@@ -461,7 +586,7 @@ def ensure_workspace(*, dry_run: bool, quiet: bool, allow_tracked: bool) -> None
     permissions.additionalDirectories — allow-rules alone are not
     sufficient (GH-40).
     """
-    from dev10x.skills.permission import update_paths as mod
+    from dev10x.core.skills.permission import update_paths as mod
 
     _run_fix(
         mod.ensure_workspace,
@@ -482,7 +607,7 @@ def ensure_workspace(*, dry_run: bool, quiet: bool, allow_tracked: bool) -> None
 )
 def ensure_scripts(*, dry_run: bool, quiet: bool, allow_tracked: bool) -> None:
     """Verify plugin and user-skill scripts have allow rules; add missing ones."""
-    from dev10x.skills.permission import update_paths as mod
+    from dev10x.core.skills.permission import update_paths as mod
 
     ctx = _require_settings()
     if ctx is None:
@@ -520,7 +645,7 @@ def ensure_scripts(*, dry_run: bool, quiet: bool, allow_tracked: bool) -> None:
 )
 def ensure_reads(*, dry_run: bool, quiet: bool, allow_tracked: bool) -> None:
     """Emit per-skill folder Read rules with ~/ + /home/<user>/ twins."""
-    from dev10x.skills.permission import update_paths as mod
+    from dev10x.core.skills.permission import update_paths as mod
 
     _run_fix(
         mod.ensure_reads,
@@ -581,7 +706,9 @@ def clean(
     aggressive: bool,
 ) -> None:
     """Clean redundant permissions from project settings files."""
-    from dev10x.skills.permission import clean_project_files as mod
+    from dev10x.core.skills.permission import clean_project_files as mod
+    from dev10x.core.skills.permission.catalog_prune import prune_messages
+    from dev10x.core.skills.permission.settings_discovery import vendored_dirs
 
     if restore:
         sys.exit(mod._restore(config_path=_require_config(mod)))
@@ -593,6 +720,9 @@ def clean(
 
     config_path = _require_config(mod)
     click.echo(f"Config: {config_path}")
+    if config_path != mod.PLUGIN_CONFIG:
+        for message in prune_messages(config_path=config_path, dry_run=dry_run):
+            click.echo(message)
     config = mod.load_config(config_path)
 
     global_data = mod.load_global_settings(mod.GLOBAL_SETTINGS)
@@ -606,7 +736,10 @@ def clean(
         click.echo(f"Current plugin version: {current_version}")
 
     base_permissions = set(config.get("base_permissions", []))
-    settings_files = mod.find_settings_files(roots=config.get("roots", []))
+    settings_files = mod.find_settings_files(
+        roots=config.get("roots", []),
+        excluded=vendored_dirs(config),
+    )
     migration_layers = mod.namespace_migration_layers(settings_files=settings_files)
 
     if not settings_files and not migration_layers:
@@ -695,7 +828,7 @@ def enumerate_mcp(*, dry_run: bool, quiet: bool, plugin_root: str | None) -> Non
     discovery failure is never mistaken for "no wildcards to expand"
     (GH-919). A clean run that found nothing to change exits 0.
     """
-    from dev10x.skills.permission import enumerate_mcp as mod
+    from dev10x.core.skills.permission import enumerate_mcp as mod
 
     ctx = _require_settings(show_config=True, quiet=quiet)
     if ctx is None:
@@ -773,7 +906,7 @@ def promote_plan(
     directly — so a fresh project never pays the first-prompt toll. PII/secret
     groups (tier 3) are never proactively seeded.
     """
-    from dev10x.skills.permission import promote as mod
+    from dev10x.core.skills.permission import promote as mod
 
     global_settings = ClaudeDir.settings_json()
     if proactive:
@@ -840,8 +973,8 @@ def provenance(*, settings_path: str | None) -> None:
     Classifies every allow/deny rule in a settings file as ``default`` (Dev10x
     base catalog), ``user`` (user-global settings), or ``project`` (local only).
     """
-    from dev10x.skills.permission import provenance as mod
-    from dev10x.skills.permission import update_paths as paths_mod
+    from dev10x.core.skills.permission import provenance as mod
+    from dev10x.core.skills.permission import update_paths as paths_mod
 
     config = paths_mod.load_config(_require_config(paths_mod))
     target = (
@@ -869,9 +1002,9 @@ def seed_worktree(*, worktree_path: str, dry_run: bool) -> None:
     Used at worktree creation so a curated read-only surface is honored in the
     new worktree without a first prompt.
     """
-    from dev10x.skills.permission import update_paths as paths_mod
+    from dev10x.core.skills.permission import update_paths as paths_mod
 
-    config = paths_mod.load_config(_require_config(paths_mod))
+    config = paths_mod.load_effective_config(_require_config(paths_mod)).config
     result = paths_mod.seed_worktree(
         worktree_root=Path(worktree_path), config=config, dry_run=dry_run
     )
@@ -900,7 +1033,8 @@ def ensure_ignored(*, dry_run: bool, quiet: bool) -> None:
     change, so a misconfigured root reads as a miss rather than a
     silent no-op success (GH-1215's class of blindness).
     """
-    from dev10x.skills.permission import ignore_session_state as mod
+    from dev10x.core.skills.permission import ignore_session_state as mod
+    from dev10x.core.skills.permission.settings_discovery import vendored_dirs
 
     ctx = _require_context()
     roots = ctx.config.get("roots", [])
@@ -911,7 +1045,10 @@ def ensure_ignored(*, dry_run: bool, quiet: bool) -> None:
     if dry_run and not quiet:
         click.echo("(dry run — no files will be modified)\n")
 
-    repo_roots = mod.discover_repo_roots([Path(root) for root in roots])
+    repo_roots = mod.discover_repo_roots(
+        roots=[Path(root) for root in roots],
+        excluded=vendored_dirs(ctx.config),
+    )
     if not repo_roots:
         click.echo(
             "0 candidates found — no git repository under the configured "
@@ -938,12 +1075,52 @@ def ensure_ignored(*, dry_run: bool, quiet: bool) -> None:
             click.echo(text)
 
 
+@permission.command(name="sync-worktrees")
+@click.option("--dry-run", is_flag=True, help="Show changes without modifying files")
+def sync_worktrees(*, dry_run: bool) -> None:
+    """Carry rules granted in a main checkout into its existing worktrees (GH-1673).
+
+    The reverse of merge-worktree. Rules pinned to a checkout path and
+    session-specific noise stay where they were granted; a git-tracked
+    worktree settings file is skipped.
+    """
+    from dev10x.core.skills.permission import merge_worktree_permissions as mod
+    from dev10x.core.skills.permission.settings_discovery import vendored_dirs
+
+    ctx = _require_context()
+    families = mod.find_repo_families(
+        ctx.config.get("roots", []),
+        excluded=vendored_dirs(ctx.config),
+    )
+    if not families:
+        click.echo("No main checkout with seeded worktrees found under the configured roots.")
+        return
+    if dry_run:
+        click.echo("(dry run — no files will be modified)\n")
+
+    total = 0
+    for main_project, worktree_dirs in sorted(families.items()):
+        count, messages = mod.sync_main_to_worktrees(
+            main_project=main_project,
+            worktree_dirs=worktree_dirs,
+            dry_run=dry_run,
+        )
+        if messages:
+            click.echo(f"\n{main_project} -> {len(worktree_dirs)} worktree(s)")
+            for message in messages:
+                click.echo(message)
+        total += count
+
+    verb = "Would add" if dry_run else "Added"
+    click.echo(f"\n{verb} {total} rule(s) across {len(families)} repo(s).")
+
+
 @permission.command(name="merge-worktree")
 @click.option("--dry-run", is_flag=True, help="Show changes without modifying files")
 @click.option("--restore", is_flag=True, help="Restore settings from most recent backups")
 def merge_worktree(*, dry_run: bool, restore: bool) -> None:
     """Merge worktree permissions back into main project settings."""
-    from dev10x.skills.permission import merge_worktree_permissions as mod
+    from dev10x.core.skills.permission import merge_worktree_permissions as mod
 
     config_path = _require_config(mod)
 
@@ -1001,7 +1178,7 @@ def merge_worktree(*, dry_run: bool, restore: bool) -> None:
 @permission.command(name="audit")
 def permission_audit() -> None:
     """Classify allow rules onto typed auditor assessments (PAP-6, GH-867)."""
-    from dev10x.skills.permission import policy_audit
+    from dev10x.core.skills.permission import policy_audit
     from dev10x.skills.permission.doctor import CATALOG_PATH, load_catalog
 
     ctx = _require_settings()
@@ -1013,6 +1190,51 @@ def permission_audit() -> None:
     rules = policy_audit.rules_from_settings(ctx.settings_files)
     for line in policy_audit.audit_report(rules=rules, catalog_policies=catalog_policies):
         click.echo(line)
+
+
+@permission.command(name="findings")
+@click.argument("findings_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--severity-max",
+    type=click.Choice(["CRITICAL", "HIGH", "MEDIUM", "LOW"], case_sensitive=False),
+    default=None,
+    help="Keep findings from CRITICAL down to this severity (e.g. HIGH keeps CRITICAL+HIGH)",
+)
+def permission_findings(*, findings_path: Path, severity_max: str | None) -> None:
+    """Validate permission-auditor FINDINGS_PATH and print them as JSON (GH-1631).
+
+    stdout carries one JSON object either way — the parsed findings or
+    ``{"error": ...}`` — so the apply skill parses a single channel.
+    """
+    import json
+
+    from dev10x.commands.json_output import fail_json
+    from dev10x.domain.common.audit_findings import (
+        Severity,
+        parse_findings,
+        select_findings,
+    )
+
+    try:
+        payload = json.loads(findings_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        fail_json(error=f"cannot read {findings_path}: {exc}")
+    parsed = parse_findings(payload=payload)
+    if isinstance(parsed, ErrorResult):
+        fail_json(error=parsed)
+    selection = select_findings(
+        findings=parsed.value,
+        severity_max=Severity(severity_max.upper()) if severity_max else None,
+    )
+    click.echo(
+        json.dumps(
+            {
+                "findings": [finding.to_dict() for finding in selection.selected],
+                "excluded_by_severity": [f.id for f in selection.excluded_by_severity],
+            },
+            indent=2,
+        )
+    )
 
 
 @permission.command(name="resolve")
@@ -1102,7 +1324,7 @@ def _resolve_state_path() -> Path:
 )
 def investigate_prepare(*, workdir: str | None) -> None:
     """Materialize fixtures and snapshot the user's settings files."""
-    from dev10x.skills.permission_investigator import runner
+    from dev10x.core.skills.permission_investigator import runner
 
     work = Path(workdir) if workdir else _investigator_workdir()
     sys.exit(
@@ -1120,7 +1342,7 @@ def investigate_prepare(*, workdir: str | None) -> None:
 @click.argument("cell_id")
 def investigate_apply(*, cell_id: str) -> None:
     """Apply the rule shape for ``cell_id`` to the appropriate target file(s)."""
-    from dev10x.skills.permission_investigator import runner
+    from dev10x.core.skills.permission_investigator import runner
 
     sys.exit(
         _emit_result(
@@ -1150,7 +1372,7 @@ def investigate_record(
     notes: str,
 ) -> None:
     """Record the outcome for one cell into the persisted matrix."""
-    from dev10x.skills.permission_investigator import runner
+    from dev10x.core.skills.permission_investigator import runner
 
     sys.exit(
         _emit_result(
@@ -1168,7 +1390,7 @@ def investigate_record(
 @investigate.command(name="restore")
 def investigate_restore() -> None:
     """Restore settings files from the pre-run snapshots."""
-    from dev10x.skills.permission_investigator import runner
+    from dev10x.core.skills.permission_investigator import runner
 
     sys.exit(_emit_result(runner.restore(state_path=_resolve_state_path())))
 
@@ -1182,7 +1404,7 @@ def investigate_restore() -> None:
 )
 def investigate_report(*, output: str | None) -> None:
     """Render the populated matrix as a markdown report."""
-    from dev10x.skills.permission_investigator import runner
+    from dev10x.core.skills.permission_investigator import runner
 
     sys.exit(_emit_result(runner.build_report(state_path=_resolve_state_path(), output=output)))
 
@@ -1190,7 +1412,7 @@ def investigate_report(*, output: str | None) -> None:
 @investigate.command(name="delta")
 def investigate_delta() -> None:
     """Compare matrix outcomes against current plugin-maintenance rules."""
-    from dev10x.skills.permission import update_paths as paths_mod
+    from dev10x.core.skills.permission import update_paths as paths_mod
     from dev10x.skills.permission_investigator import PermissionDeltaQuery
 
     config_path = _require_config(paths_mod)
@@ -1233,7 +1455,7 @@ def doctor_canonicalize(*, dry_run: bool, quiet: bool) -> None:
     ``dev10x permission update-paths`` to keep pinned paths current on
     upgrade.
     """
-    from dev10x.skills.permission import doctor as mod
+    from dev10x.core.skills.permission import doctor as mod
 
     ctx = _require_settings()
     if ctx is None:
@@ -1274,7 +1496,7 @@ def doctor_cross_contamination(*, cwd: str | None, quiet: bool) -> None:
       2. Source-repo paths when CWD is a worktree (use relative paths
          inside the worktree instead).
     """
-    from dev10x.skills.permission import doctor as mod
+    from dev10x.core.skills.permission import doctor as mod
 
     root = Path(cwd) if cwd else Path.cwd()
     sys.exit(_emit_result(mod.cross_contamination_for_root(root=root, quiet=quiet)))
@@ -1290,7 +1512,7 @@ def doctor_safety_keys(*, quiet: bool) -> None:
     so a settings file can look protected while enforcing nothing.
     Read-only; exits non-zero when any file has a finding.
     """
-    from dev10x.skills.permission import safety_keys as mod
+    from dev10x.core.skills.permission import safety_keys as mod
 
     ctx = _require_settings(quiet=quiet)
     if ctx is None:
@@ -1302,7 +1524,7 @@ def doctor_safety_keys(*, quiet: bool) -> None:
 @click.option("--dry-run", is_flag=True, help="Show changes without modifying files")
 def doctor_apply_deprecations(*, dry_run: bool) -> None:
     """Apply catalog deprecations (canonicalize / remove) to settings files."""
-    from dev10x.skills.permission import doctor as mod
+    from dev10x.core.skills.permission import doctor as mod
 
     catalog = mod.load_catalog()
     ctx = _require_settings()
@@ -1324,7 +1546,7 @@ def doctor_apply_deprecations(*, dry_run: bool) -> None:
 @click.option("--dry-run", is_flag=True, help="Show changes without modifying files")
 def doctor_enable_group(*, group_name: str, dry_run: bool) -> None:
     """Add a Tier 3 group's rules from the baseline-permissions catalog."""
-    from dev10x.skills.permission import doctor as mod
+    from dev10x.core.skills.permission import doctor as mod
 
     catalog = mod.load_catalog()
     rules = catalog.group_rules(group_name)
@@ -1366,7 +1588,7 @@ def doctor_anchor_worktree_roots(*, dry_run: bool, quiet: bool) -> None:
     3. Flags bare-relative ``.claude/skills/.../scripts/`` allow rules that
        silently target different skill dirs per worktree CWD.
     """
-    from dev10x.skills.permission import doctor as mod
+    from dev10x.core.skills.permission import doctor as mod
 
     ctx = _require_context()
     roots = ctx.config.get("roots", [])
@@ -1444,7 +1666,7 @@ def doctor_migrate_config(*, cwd: str | None, dry_run: bool) -> None:
     ``session.yaml`` durable keys) into a ``projects[]`` entry there, then
     removes the stale per-repo files once parity is confirmed.
     """
-    from dev10x.skills.permission import migrate_config as mod
+    from dev10x.core.skills.permission import migrate_config as mod
 
     root = Path(cwd) if cwd else Path.cwd()
     sys.exit(_emit_result(mod.migrate_config_to_friction(root=root, dry_run=dry_run)))
