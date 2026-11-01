@@ -167,35 +167,12 @@ class TestCodexHookRegistration:
         ]
 
 
-class TestClaudeEditPathUnchanged:
-    def test_edit_on_blocked_file_is_denied_with_claude_envelope(
-        self,
-        rules_yaml: Path,
-        capsys: pytest.CaptureFixture[str],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.delenv("DEV10X_HARNESS", raising=False)
-        data = {
-            "tool_name": "Edit",
-            "tool_input": {"file_path": "/work/repo/.env", "new_string": "KEY=1"},
-        }
-
-        code = _run(data, rules_yaml)
-
-        payload = json.loads(capsys.readouterr().err)
-        assert code == 2
-        assert payload == {
-            "hookSpecificOutput": {"permissionDecision": "deny"},
-            "systemMessage": "BLOCKED: Editing sensitive file: /work/repo/.env",
-        }
-
+class TestEditAndWriteTools:
     def test_edit_on_harmless_file_exits_zero_without_output(
         self,
         rules_yaml: Path,
         capsys: pytest.CaptureFixture[str],
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.delenv("DEV10X_HARNESS", raising=False)
         data = {
             "tool_name": "Write",
             "tool_input": {"file_path": "/work/repo/main.py", "content": "x = 1"},

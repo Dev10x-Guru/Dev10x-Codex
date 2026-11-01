@@ -35,6 +35,7 @@ shipped and tested.
 | Everything else | Take upstream |
 
 Fork-only files: `.codex-plugin/`, `.agents/plugins/`, `.gitattributes`,
+`conftest.py` (repo root),
 `.github/workflows/codex-ci.yml`, `AGENTS.md`, `codex/references/`,
 `docs/codex*.md`,
 `hooks/codex-hooks.json`, `hooks/scripts/session-guidance-codex.md`,
@@ -169,6 +170,25 @@ Codex behavior is covered by the fork's own tests: `tests/skills/codex/`,
 `tests/validators/test_codex_messages.py`, `tests/test_harness.py`,
 `tests/mcp/test_plan_tools_codex.py` and
 `tests/mcp/test_tool_annotations.py`.
+
+The harness defaults to Codex (#27); `DEV10X_HARNESS=claude` is the only
+way to get Claude output.
+The fork-only repo-root `conftest.py` keeps upstream tests green without
+editing them:
+
+- Files listed in `UPSTREAM_TESTS_ASSERTING_CLAUDE_OUTPUT` run with
+  `DEV10X_HARNESS=claude`, because they assert Claude's reply format and
+  wording for guards Codex also uses.
+- Tests listed in `UPSTREAM_TESTS_OF_CLAUDE_ONLY_FEATURES` are skipped,
+  because they cover features Codex leaves out (plan-sync writes, the
+  SessionStart skills index).
+
+When a merge brings a new upstream test that fails only on Claude
+wording, add its file to the first list; when it tests a feature Codex
+leaves out, add it to the second.
+Never edit the upstream test itself.
+#53 tracks making those tests harness-neutral upstream so the pin can go.
+
 On macOS the daemon tests fail with `AF_UNIX path too long`; they fail
 identically upstream.
 

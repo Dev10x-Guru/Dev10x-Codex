@@ -6,8 +6,8 @@ import re
 from dev10x.domain.rules.validation_rule import Compensation
 from dev10x.skills.codex.catalog import codex_skill_for, to_codex_casing
 
-CODEX_ISSUE_REPO = "https://github.com/Dev10x-Guru/Dev10x-Codex"
-CLAUDE_ISSUE_REPO = "https://github.com/Dev10x-Guru/dev10x-claude"
+ISSUE_REPO = "https://github.com/Dev10x-Guru/Dev10x-Codex"
+UPSTREAM_ISSUE_REPO = "https://github.com/Dev10x-Guru/dev10x-claude"
 NOT_AVAILABLE_IN_CODEX = "not yet available in Codex"
 
 SKIP_ENV_VAR = "DEV10X_SKIP_CMD_VALIDATION"
@@ -31,7 +31,7 @@ _BACKTICK_SKILL_RE = re.compile(rf"`Skill\({_SKILL_NAME}\)`")
 _BARE_SKILL_RE = re.compile(rf"Skill\({_SKILL_NAME}\)")
 _SLASH_SKILL_RE = re.compile(rf"/{_SKILL_NAME}")
 
-_CODEX_PHRASES: tuple[tuple[str, str], ...] = (
+_UPSTREAM_PHRASES: tuple[tuple[str, str], ...] = (
     (
         "If you are inside a skill that instructed this command, file an issue at",
         "If Dev10x guidance told you to run this command, file an issue at",
@@ -79,7 +79,7 @@ SHELL_LOOP_WRAP_BLOCK = (
     "`{inner} ...` with the iteration value substituted in.\n"
 )
 
-CODEX_OVERRIDE_HINT = (
+OVERRIDE_HINT = (
     f"\n\n⚠️  Do NOT use {SKIP_ENV_VAR} as a shortcut to silence this block. "
     "It is not an escape hatch for an agent reacting to a hook message.\n\n"
     "The correct response is the Dev10x skill or MCP tool named above. When "
@@ -92,7 +92,7 @@ CODEX_OVERRIDE_HINT = (
     f"The boolean form ({SKIP_ENV_VAR}=true) is rejected (GH-226)."
 )
 
-CODEX_MCP_UNAVAILABLE_HINT = (
+MCP_UNAVAILABLE_HINT = (
     "\n\n⚠️  If the Dev10x MCP tools are missing from your tool list, "
     "the Dev10x `cli` MCP server is not connected. Ask the user to check "
     "`/mcp` and restart the Codex session. Do NOT use "
@@ -106,7 +106,7 @@ CODEX_MCP_UNAVAILABLE_HINT = (
     "write is what these guardrails exist to gate."
 )
 
-CODEX_UNRATIONALIZED_SKIP_MSG = f"""\
+UNRATIONALIZED_SKIP_MSG = f"""\
 ⛔  Un-rationalized {SKIP_ENV_VAR} bypass — rejected.
 
 The boolean form ({SKIP_ENV_VAR}=true / =1 / =yes) is not accepted.
@@ -175,17 +175,13 @@ def _replace_slash_skill(match: re.Match[str]) -> str:
     return f"{match.group(1)} ({NOT_AVAILABLE_IN_CODEX})"
 
 
-def _claude_footers() -> tuple[tuple[str, str], ...]:
-    from dev10x.validators.skill_redirect import (
-        MCP_UNAVAILABLE_HINT,
-        OVERRIDE_HINT,
-        UNRATIONALIZED_SKIP_MSG,
-    )
+def _upstream_footers() -> tuple[tuple[str, str], ...]:
+    from dev10x.core.validators import skill_redirect as upstream
 
     return (
-        (UNRATIONALIZED_SKIP_MSG, CODEX_UNRATIONALIZED_SKIP_MSG),
-        (MCP_UNAVAILABLE_HINT, CODEX_MCP_UNAVAILABLE_HINT),
-        (OVERRIDE_HINT, CODEX_OVERRIDE_HINT),
+        (upstream.UNRATIONALIZED_SKIP_MSG, UNRATIONALIZED_SKIP_MSG),
+        (upstream.MCP_UNAVAILABLE_HINT, MCP_UNAVAILABLE_HINT),
+        (upstream.OVERRIDE_HINT, OVERRIDE_HINT),
     )
 
 
@@ -237,9 +233,9 @@ def _replace_upstream_blocks(message: str) -> str:
 
 def adapt_message_for_codex(message: str) -> str:
     message = _replace_upstream_blocks(message)
-    for claude_text, codex_text in (*_claude_footers(), *_CODEX_PHRASES):
-        message = message.replace(claude_text, codex_text)
-    message = message.replace(CLAUDE_ISSUE_REPO, CODEX_ISSUE_REPO)
+    for upstream_text, codex_text in (*_upstream_footers(), *_UPSTREAM_PHRASES):
+        message = message.replace(upstream_text, codex_text)
+    message = message.replace(UPSTREAM_ISSUE_REPO, ISSUE_REPO)
     message = codex_tool_name(to_codex_casing(message))
     message = _INVOKE_SKILL_RE.sub(_replace_invoke_skill, message)
     message = _IF_SKILL_FAILS_RE.sub(_replace_if_skill_fails, message)
@@ -253,7 +249,7 @@ def format_codex_skill_block(*, label: str, comp: Compensation) -> str:
     tool = codex_tool_for_skill(comp.skill)
     file_issue_hint = (
         f"\n\nIf Dev10x guidance told you to run this command, file an issue at "
-        f"{CODEX_ISSUE_REPO} — the guidance needs updating."
+        f"{ISSUE_REPO} — the guidance needs updating."
     )
     if skill:
         tool_line = f"\n  Or call the MCP tool `{tool}` directly." if tool else ""
@@ -264,7 +260,7 @@ def format_codex_skill_block(*, label: str, comp: Compensation) -> str:
             f"enforces ({comp.guardrails})."
         )
         fallback_intro = "If the skill is unavailable, apply these guardrails manually:"
-        unavailable_hint = CODEX_MCP_UNAVAILABLE_HINT if tool else ""
+        unavailable_hint = MCP_UNAVAILABLE_HINT if tool else ""
     elif tool:
         head = (
             f"⛔  `{label}` blocked — use the Dev10x MCP tool instead.\n\n"
@@ -273,7 +269,7 @@ def format_codex_skill_block(*, label: str, comp: Compensation) -> str:
             f"enforces ({comp.guardrails})."
         )
         fallback_intro = "If the tool is unavailable, apply these guardrails manually:"
-        unavailable_hint = CODEX_MCP_UNAVAILABLE_HINT
+        unavailable_hint = MCP_UNAVAILABLE_HINT
     else:
         head = (
             f"⛔  `{label}` blocked — the Dev10x `{comp.skill}` workflow is\n"
@@ -289,5 +285,5 @@ def format_codex_skill_block(*, label: str, comp: Compensation) -> str:
         else "No manual procedure is documented — ask the user how to proceed."
     )
     return adapt_message_for_codex(
-        f"{head}\n\n{guidance}{unavailable_hint}{file_issue_hint}{CODEX_OVERRIDE_HINT}"
+        f"{head}\n\n{guidance}{unavailable_hint}{file_issue_hint}{OVERRIDE_HINT}"
     )
