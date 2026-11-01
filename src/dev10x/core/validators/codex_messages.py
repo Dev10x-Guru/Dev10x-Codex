@@ -50,7 +50,7 @@ _CODEX_PHRASES: tuple[tuple[str, str], ...] = (
 
 _TEMPLATE_FIELD_RE = re.compile(r"\{(\w+)\}")
 
-CODEX_CHAIN_TEMPLATE = (
+CHAIN_BLOCK = (
     "⚠️  {shape} blocked — permission friction risk.\n\n"
     "Dev10x runs one simple command per shell call, so Codex's approval\n"
     "rules and the Dev10x guardrails see each command on its own. A chain\n"
@@ -58,7 +58,7 @@ CODEX_CHAIN_TEMPLATE = (
     "Split into separate shell calls instead.\n"
 )
 
-CODEX_REDIRECT_THEN_POSITIONAL_TEMPLATE = (
+REDIRECT_THEN_POSITIONAL_BLOCK = (
     "⚠️  Redirect before positional args blocked — permission friction risk.\n\n"
     "`{cmd} ... {redirect} {after}` puts the redirect in the middle of the\n"
     "command. Dev10x keeps redirects last so the command reads as one\n"
@@ -67,7 +67,7 @@ CODEX_REDIRECT_THEN_POSITIONAL_TEMPLATE = (
     "    {cmd} {before} {after} {redirect}\n"
 )
 
-CODEX_SHELL_LOOP_WRAP_TEMPLATE = (
+SHELL_LOOP_WRAP_BLOCK = (
     "⚠️  Shell {wrapper} wraps an allowed command (`{inner}`) — permission friction risk.\n\n"
     "The call starts with `{wrapper}`, not `{inner}`, so a rule that approves\n"
     "`{inner}` does not cover it, and the Dev10x guardrails cannot see each\n"
@@ -203,12 +203,12 @@ def template_pattern(template: str) -> re.Pattern[str]:
     return re.compile("".join(parts), re.DOTALL)
 
 
-def _chain_template(shape: str) -> str:
-    return CODEX_CHAIN_TEMPLATE.replace("{shape}", shape)
+def _chain_block(shape: str) -> str:
+    return CHAIN_BLOCK.replace("{shape}", shape)
 
 
 @functools.cache
-def _claude_templates() -> tuple[tuple[re.Pattern[str], str], ...]:
+def _upstream_blocks() -> tuple[tuple[re.Pattern[str], str], ...]:
     from dev10x.validators.prefix_friction import (
         NEWLINE_CHAIN_MSG,
         OR_CHAIN_MSG,
@@ -218,25 +218,25 @@ def _claude_templates() -> tuple[tuple[re.Pattern[str], str], ...]:
     )
 
     return tuple(
-        (template_pattern(claude_template), codex_template)
-        for claude_template, codex_template in (
-            (SEMICOLON_CHAIN_MSG, _chain_template("`;` chain")),
-            (OR_CHAIN_MSG, _chain_template("`||` chain")),
-            (NEWLINE_CHAIN_MSG, _chain_template("Bare-newline chain")),
-            (REDIRECT_THEN_POSITIONAL_MSG, CODEX_REDIRECT_THEN_POSITIONAL_TEMPLATE),
-            (SHELL_LOOP_WRAP_MSG, CODEX_SHELL_LOOP_WRAP_TEMPLATE),
+        (template_pattern(upstream_template), block)
+        for upstream_template, block in (
+            (SEMICOLON_CHAIN_MSG, _chain_block("`;` chain")),
+            (OR_CHAIN_MSG, _chain_block("`||` chain")),
+            (NEWLINE_CHAIN_MSG, _chain_block("Bare-newline chain")),
+            (REDIRECT_THEN_POSITIONAL_MSG, REDIRECT_THEN_POSITIONAL_BLOCK),
+            (SHELL_LOOP_WRAP_MSG, SHELL_LOOP_WRAP_BLOCK),
         )
     )
 
 
-def _rewrite_claude_templates(message: str) -> str:
-    for pattern, codex_template in _claude_templates():
-        message = pattern.sub(lambda match: codex_template.format(**match.groupdict()), message)
+def _replace_upstream_blocks(message: str) -> str:
+    for pattern, block in _upstream_blocks():
+        message = pattern.sub(lambda match: block.format(**match.groupdict()), message)
     return message
 
 
 def adapt_message_for_codex(message: str) -> str:
-    message = _rewrite_claude_templates(message)
+    message = _replace_upstream_blocks(message)
     for claude_text, codex_text in (*_claude_footers(), *_CODEX_PHRASES):
         message = message.replace(claude_text, codex_text)
     message = message.replace(CLAUDE_ISSUE_REPO, CODEX_ISSUE_REPO)
