@@ -218,6 +218,8 @@ one session). Use these shapes verbatim:
 | `run_node_tests` | none; optional `runner` (detected from `cwd` when omitted, GH-1683), `script`, `env` | passing `runner="jest"` in a vitest repo — jest ran zero tests and reported passed 0 / failed 0 with only `returncode: 1` as the signal |
 | `gchat_watch_arm` | `thread` (full name) or `space`; plus `notify` / `notify_roles` (lists) or `route=true` | singular `notify="<mailbox>"`; expecting it to read Chat — only `dev10x skill notify gchat-watch poll` reads (GH-1682) |
 | `update_pr` | `pr_number`, plus at least one of `body` / `title` / `base_branch` / `milestone` | `gh pr edit --milestone` — routed here (GH-1098) |
+| `audit_handoff_report` | `report`, `pr_state` (JSON objects, not file paths) | the script's `report_file` / `pr_state_file` (GH-1777) |
+| `reconcile_fixes_links` | `body` (text), `base`; optional `head`, `repo_dir` (absolute), `acknowledge` (list) | `body_file` — the tool takes the body itself; a relative `repo_dir` is rejected (GH-1777) |
 | `permission_triage` / `permission_grant` | `target` (the prompted command, or a rule); grant also needs `rule`, the triage rule echoed back so the approval prompt names it; optional `working_dirs` (absolute), and `dry_run` / `remember` on grant | expecting a grant to reach a worktree created later without `remember=true`, which also records the rule in `~/.config/Dev10x/granted-permissions.yaml` for `ensure-base` / `seed-worktree` (GH-1677); passing a hand-built rule for a command — pass the command so triage can see its shape (GH-1676); expecting grant to write on a non-`grant` verdict, or with a `rule` triage did not derive — it refuses and returns the triage; relative `working_dirs` — rejected (GH-1264) |
 
 Behavioral caveats:
@@ -794,6 +796,9 @@ supporting each tool:
 | `gchat_watch_arm` | `cli` | GH-1682 | v0.109.0+ |
 | `gchat_watch_disarm` | `cli` | GH-1682 | v0.109.0+ |
 | `gchat_watch_list` | `cli` | GH-1682 | v0.109.0+ |
+| `find_fixup_target` | `cli` | GH-1777 | v0.112.0+ |
+| `audit_handoff_report` | `cli` | GH-1777 | v0.112.0+ |
+| `reconcile_fixes_links` | `cli` | GH-1777 | v0.112.0+ |
 | `query` | `db` | PR #126 | v0.25.0+ |
 
 When adding a new tool, update this table and note any dependencies on
