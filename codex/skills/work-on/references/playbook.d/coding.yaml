@@ -1,6 +1,6 @@
 # work-on plays — the coding plugin's fragment of the shared default
 # playbook (GH-1555, ADR-0034 Stage A3). Merged after the core mechanism
-# file, <plugin-root>/plugins/coding/skills/playbook/references/playbook.yaml,
+# file, <plugin-root>/skills/playbook/references/playbook.yaml,
 # which documents the schema, carries the version, and holds the
 # `overrides` slot. Edit plays here; edit the schema there.
 #

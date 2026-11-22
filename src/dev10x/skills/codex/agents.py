@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 from dev10x.skills.codex.catalog import DEFERRED_AGENTS
@@ -90,7 +91,12 @@ def toml_multiline_string(text: str) -> str:
 
 
 def render_instructions(
-    *, stem: str, body: str, read_only: bool, plugin_dir: PurePosixPath = PurePosixPath()
+    *,
+    stem: str,
+    body: str,
+    read_only: bool,
+    plugin_dir: PurePosixPath = PurePosixPath(),
+    exists: Callable[[PurePosixPath], bool] | None = None,
 ) -> str:
     equivalents = f"{PLUGIN_ROOT_PLACEHOLDER}/{TOOL_EQUIVALENTS_RELPATH.as_posix()}"
     lines = [
@@ -103,7 +109,8 @@ def render_instructions(
             "Read-only: never create, modify or delete files and never commit. Codex cannot "
             "restrict your tools, so keeping this rule is up to you."
         )
-    return "\n".join(lines) + "\n\n" + rewrite_text(body, plugin_dir=plugin_dir).strip() + "\n"
+    rewritten = rewrite_text(body, plugin_dir=plugin_dir, exists=exists).strip()
+    return "\n".join(lines) + "\n\n" + rewritten + "\n"
 
 
 def render_role(
@@ -201,6 +208,7 @@ def translate_agents(root: Path) -> GeneratedTree:
                 body=body,
                 read_only=is_read_only(agent_tools(front_matter.get("tools"), source=source)),
                 plugin_dir=plugin_dir,
+                exists=lambda path: (root / path).exists(),
             ),
             source=source,
         )

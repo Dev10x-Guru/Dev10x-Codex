@@ -54,7 +54,9 @@ DISPLAY_ACRONYMS: dict[str, str] = {
 _NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _FRONT_MATTER_RE = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
 _MCP_PREFIX_RE = re.compile(r"mcp__plugin_Dev10x_(cli|db)__")
-_PLUGIN_ROOT_RE = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT\b")
+_PLUGIN_ROOT_RE = re.compile(
+    r"(?:\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT\b)(?P<rest>/[A-Za-z0-9._/-]*)?"
+)
 _SKILL_CALL_RE = re.compile(
     r"Skill\(\s*(?:skill\s*=\s*)?[\"']?(Dev10x:[a-z0-9-]+\b|test\b)[\"']?"
     r"(?:\s*,\s*(?:args\s*=\s*)?|\s+)?([^)]*?)\s*\)"
@@ -149,9 +151,34 @@ def _replace_skill_call(match: re.Match[str]) -> str:
     return f"{reference} (args: {arguments})" if arguments else reference
 
 
-def rewrite_text(text: str, *, plugin_dir: PurePosixPath = PurePosixPath()) -> str:
+def resolve_plugin_root(
+    rest: str,
+    *,
+    plugin_dir: PurePosixPath,
+    exists: Callable[[PurePosixPath], bool] | None = None,
+) -> str:
+    satellite = plugin_root_placeholder(plugin_dir)
+    target = rest.rstrip(".").strip("/")
+    if not plugin_dir.parts or exists is None or not target:
+        return satellite + rest
+    if exists(plugin_dir / target) or not exists(PurePosixPath(target)):
+        return satellite + rest
+    return PLUGIN_ROOT_PLACEHOLDER + rest
+
+
+def rewrite_text(
+    text: str,
+    *,
+    plugin_dir: PurePosixPath = PurePosixPath(),
+    exists: Callable[[PurePosixPath], bool] | None = None,
+) -> str:
     text = _MCP_PREFIX_RE.sub(r"mcp__\1__", to_codex_casing(text))
-    text = _PLUGIN_ROOT_RE.sub(plugin_root_placeholder(plugin_dir), text)
+    text = _PLUGIN_ROOT_RE.sub(
+        lambda match: resolve_plugin_root(
+            match.group("rest") or "", plugin_dir=plugin_dir, exists=exists
+        ),
+        text,
+    )
     text = _SKILL_CALL_RE.sub(_replace_skill_call, text)
     return _SLASH_SKILL_RE.sub(lambda m: f"{m.group(1)}{codex_skill_reference(m.group(2))}", text)
 
@@ -331,13 +358,16 @@ def translate_skills(root: Path) -> GeneratedTree:
     files: dict[PurePosixPath, str] = {}
     warnings: list[str] = []
 
+    def exists(path: PurePosixPath) -> bool:
+        return (root / path).exists()
+
     def relink(text: str, *, source: PurePosixPath, target: PurePosixPath) -> str:
         return rewrite_links(
-            rewrite_text(text, plugin_dir=plugin_dir_of(source)),
+            rewrite_text(text, plugin_dir=plugin_dir_of(source), exists=exists),
             source=source,
             target=target,
             copied=copied,
-            exists=lambda path: (root / path).exists(),
+            exists=exists,
         )
 
     for skill in skills:
@@ -373,7 +403,7 @@ def translate_skills(root: Path) -> GeneratedTree:
             elif source.suffix == ".md":
                 files[target] = relink(text, source=source, target=target)
             else:
-                files[target] = rewrite_text(text, plugin_dir=skill.plugin_dir)
+                files[target] = rewrite_text(text, plugin_dir=skill.plugin_dir, exists=exists)
         files[CODEX_SKILLS_RELPATH / name / OPENAI_YAML_RELPATH] = render_openai_yaml(
             directory=name, implicit=deferred_issue is None
         )

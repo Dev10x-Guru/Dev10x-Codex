@@ -24,6 +24,7 @@ from dev10x.skills.codex.translate import (
     codex_description,
     codex_skill_name,
     display_name,
+    resolve_plugin_root,
     rewrite_links,
     rewrite_text,
     skill_sources,
@@ -471,8 +472,14 @@ class TestSatellitePluginSkills:
             plugin / "plugins" / "coding" / "skills" / "work-on" / "SKILL.md",
             "---\nname: dev10x-coding:work-on\ndescription: Start work.\n---\n\n"
             "Run `${CLAUDE_PLUGIN_ROOT}/skills/work-on/scripts/go.sh`, then "
-            "`Skill(dev10x-coding:git-commit)`.\n",
+            "`Skill(dev10x-coding:git-commit)`.\n"
+            "Check gaps with `${CLAUDE_PLUGIN_ROOT}/bin/core-tool.py --all`.\n",
         )
+        write(
+            plugin / "plugins" / "coding" / "skills" / "work-on" / "scripts" / "go.sh",
+            "#!/bin/sh\n",
+        )
+        write(plugin / "bin" / "core-tool.py", "print('core')\n")
         write(
             plugin / "plugins" / "coding" / "skills" / "work-on" / "references" / "plays.md",
             "Plays.\n",
@@ -488,6 +495,13 @@ class TestSatellitePluginSkills:
         text = translate_skills(split_plugin).files[CODEX_SKILLS_RELPATH / "work-on" / "SKILL.md"]
         assert f"{PLUGIN_ROOT_PLACEHOLDER}/plugins/coding/skills/work-on/scripts/go.sh" in text
         assert "plugins/coding/skills/work-on/" in text
+
+    def test_satellite_reference_to_a_core_only_file_points_at_the_core_file(
+        self, split_plugin: Path
+    ) -> None:
+        text = translate_skills(split_plugin).files[CODEX_SKILLS_RELPATH / "work-on" / "SKILL.md"]
+        assert f"`{PLUGIN_ROOT_PLACEHOLDER}/bin/core-tool.py --all`" in text
+        assert "plugins/coding/bin/core-tool.py" not in text
 
     def test_core_skill_plugin_root_stays_at_the_plugin_folder(self, split_plugin: Path) -> None:
         text = translate_skills(split_plugin).files[
@@ -512,6 +526,30 @@ class TestSatellitePluginSkills:
         )
         with pytest.raises(InvalidPluginRoot, match="one namespace"):
             translate_skills(split_plugin)
+
+    @pytest.mark.parametrize(
+        ("rest", "present", "expected"),
+        [
+            ("/bin/tool.py", {"bin/tool.py"}, f"{PLUGIN_ROOT_PLACEHOLDER}/bin/tool.py"),
+            (
+                "/bin/tool.py",
+                {"bin/tool.py", "plugins/coding/bin/tool.py"},
+                f"{PLUGIN_ROOT_PLACEHOLDER}/plugins/coding/bin/tool.py",
+            ),
+            ("/bin/gone.py", set(), f"{PLUGIN_ROOT_PLACEHOLDER}/plugins/coding/bin/gone.py"),
+            ("/bin/tool.py.", {"bin/tool.py"}, f"{PLUGIN_ROOT_PLACEHOLDER}/bin/tool.py."),
+            ("", {"bin/tool.py"}, f"{PLUGIN_ROOT_PLACEHOLDER}/plugins/coding"),
+        ],
+    )
+    def test_resolve_plugin_root_prefers_the_satellite_and_falls_back_to_core(
+        self, rest: str, present: set[str], expected: str
+    ) -> None:
+        resolved = resolve_plugin_root(
+            rest,
+            plugin_dir=PurePosixPath("plugins/coding"),
+            exists=lambda path: path.as_posix() in present,
+        )
+        assert resolved == expected
 
     def test_sources_list_every_root(self, split_plugin: Path) -> None:
         sources = {skill.name: skill for skill in skill_sources(split_plugin)}

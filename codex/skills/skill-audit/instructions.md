@@ -622,7 +622,7 @@ so it runs identically in lightweight and forensic strategies.
 **Command:**
 
 ```bash
-<plugin-root>/plugins/teach/bin/check-skill-eval-gaps.py --all
+<plugin-root>/bin/check-skill-eval-gaps.py --all
 ```
 
 Exit code 0 means no gaps. Exit code 1 prints one line per gated
