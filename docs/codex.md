@@ -148,7 +148,7 @@ Dev10x 0.105.0; `N` restarts at 1 when a new upstream release is
 merged.
 The same version appears in `.codex-plugin/plugin.json`.
 To stay on one release instead of following `main`, add the
-marketplace with `--ref v0.110.0+codex.1`; move to a newer release by
+marketplace with `--ref v0.116.0+codex.1`; move to a newer release by
 removing the marketplace and adding it again with the new tag.
 
 Check the MCP servers are registered:
