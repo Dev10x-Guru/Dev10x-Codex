@@ -17,10 +17,13 @@ REMOTE_WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWo
 REMOTE_DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True)
 
 _READ_LOCAL_TOOLS = (
+    "audit_handoff_report",
     "audit_hook_log_path",
     "audit_hook_recent",
     "background_preamble",
+    "chat_queue_list",
     "detect_tracker",
+    "find_fixup_target",
     "gchat_watch_list",
     "ide_status",
     "list_client_roots",
@@ -29,6 +32,7 @@ _READ_LOCAL_TOOLS = (
     "permission_triage",
     "plan_sync_json_summary",
     "preset_pin_status",
+    "reconcile_fixes_links",
     "resolve_plugin_origin",
     "rule_confidence_report",
     "slack_thread_is_forward",
@@ -40,6 +44,7 @@ _READ_LOCAL_TOOLS = (
 
 _READ_REMOTE_TOOLS = (
     "author_reference_rules",
+    "bot_review_status",
     "candidate_rules_report",
     "check_top_level_comments",
     "ci_check_status",
@@ -54,17 +59,23 @@ _READ_REMOTE_TOOLS = (
     "pr_detect",
     "pr_get",
     "pr_list",
+    "pr_wait",
     "query",
+    "review_readiness_audit",
     "triage_roster",
     "unresolved_threads",
     "validate_candidate_patterns",
     "verify_pr_state",
+    "wait_for",
+    "worktree_prune_candidates",
 )
 
 _LOCAL_WRITE_TOOLS = (
     "audit_analyze_actions",
     "audit_analyze_permissions",
     "audit_extract_session",
+    "chat_queue_ack",
+    "chat_queue_claim",
     "create_worktree",
     "gchat_watch_arm",
     "gchat_watch_disarm",
@@ -74,6 +85,7 @@ _LOCAL_WRITE_TOOLS = (
     "plan_sync_set_context",
     "pre_pr_checks",
     "resolve_gate",
+    "review_stamp_write",
     "run_node_tests",
     "run_tests",
     "task_index_append",
@@ -96,6 +108,7 @@ _LOCAL_DESTRUCTIVE_TOOLS = (
 )
 
 _REMOTE_WRITE_TOOLS = (
+    "chat_queue_reply",
     "ci_rerun",
     "create_pr",
     "issue_comment",
