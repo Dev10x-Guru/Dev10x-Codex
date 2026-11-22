@@ -974,6 +974,7 @@ def count_instructions(
 )
 @click.option("--check", is_flag=True, help="Exit non-zero when codex/skills/ is stale")
 def codex_skills(*, root_path: Path | None, check: bool) -> None:
+    from dev10x.core.skills.permission.enumerate_mcp import plugin_root
     from dev10x.skills.codex.translate import (
         CODEX_SKILLS_RELPATH,
         InvalidFrontMatter,
@@ -983,7 +984,6 @@ def codex_skills(*, root_path: Path | None, check: bool) -> None:
         translate_skills,
     )
     from dev10x.skills.codex.tree import stale_paths, write_tree
-    from dev10x.core.skills.permission.enumerate_mcp import plugin_root
 
     root = root_path or plugin_root()
     try:
@@ -1028,6 +1028,7 @@ def codex_skills(*, root_path: Path | None, check: bool) -> None:
 )
 @click.option("--check", is_flag=True, help="Exit non-zero when codex/agents/ is stale")
 def codex_agents(*, root_path: Path | None, check: bool) -> None:
+    from dev10x.core.skills.permission.enumerate_mcp import plugin_root
     from dev10x.skills.codex.agents import (
         CODEX_AGENTS_RELPATH,
         InvalidAgentFile,
@@ -1035,7 +1036,6 @@ def codex_agents(*, root_path: Path | None, check: bool) -> None:
     )
     from dev10x.skills.codex.translate import InvalidFrontMatter, InvalidPluginRoot
     from dev10x.skills.codex.tree import stale_paths, write_tree
-    from dev10x.core.skills.permission.enumerate_mcp import plugin_root
 
     root = root_path or plugin_root()
     try:
