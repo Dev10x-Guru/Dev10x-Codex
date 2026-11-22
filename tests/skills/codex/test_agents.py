@@ -66,6 +66,36 @@ def plugin(tmp_path: Path) -> Path:
     return tmp_path
 
 
+class TestSatellitePluginAgents:
+    @pytest.fixture
+    def split_plugin(self, plugin: Path) -> Path:
+        write(
+            plugin / "plugins" / "scoping" / "agents" / "architect-api.md",
+            agent("architect-api").replace(
+                "use Skill(Dev10x:git-commit).",
+                "read ${CLAUDE_PLUGIN_ROOT}/references/api.md.",
+            ),
+        )
+        return plugin
+
+    def test_satellite_agent_becomes_a_codex_role(self, split_plugin: Path) -> None:
+        files = translate_agents(split_plugin).files
+        assert CODEX_AGENTS_RELPATH / "architect-api.toml" in files
+
+    def test_role_header_names_the_satellite_upstream(self, split_plugin: Path) -> None:
+        role = translate_agents(split_plugin).files[CODEX_AGENTS_RELPATH / "architect-api.toml"]
+        assert role.startswith("# Generated from plugins/scoping/agents/architect-api.md")
+
+    def test_plugin_root_points_at_the_satellite_folder(self, split_plugin: Path) -> None:
+        role = translate_agents(split_plugin).files[CODEX_AGENTS_RELPATH / "architect-api.toml"]
+        assert "<plugin-root>/plugins/scoping/references/api.md" in role
+
+    def test_an_agent_shipped_by_two_plugins_is_refused(self, split_plugin: Path) -> None:
+        write(split_plugin / "plugins" / "coding" / "agents" / "code-reviewer.md", agent("x"))
+        with pytest.raises(InvalidPluginRoot, match="one role namespace"):
+            translate_agents(split_plugin)
+
+
 class TestCodexRoleName:
     def test_prefixes_the_agent_file_name(self) -> None:
         assert codex_role_name("reviewer-celery") == "Dev10x:reviewer-celery"

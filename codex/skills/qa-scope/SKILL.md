@@ -2,12 +2,12 @@
 name: qa-scope
 description: 'Analyze a PR for QA needs, check e2e coverage gaps, and create QA sub-tickets when manual testing or new e2e tests are needed. TRIGGER when: PR needs QA analysis for coverage gaps or manual test requirements. DO NOT TRIGGER when: executing QA test cases (use Dev10x:qa-self), or PR has no user-facing changes.'
 metadata:
-  upstream: skills/qa-scope/SKILL.md
+  upstream: plugins/coding/skills/qa-scope/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/qa-scope/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/qa-scope/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/qa-scope/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/qa-scope/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # QA Scope - PR Quality Assurance Assessment

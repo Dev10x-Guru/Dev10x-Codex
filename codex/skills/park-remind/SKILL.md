@@ -2,12 +2,12 @@
 name: park-remind
 description: 'Schedule a Slack reminder — so deferred items appear when you are clearing messages, not buried in a file you might not open. TRIGGER when: deferring work that should resurface via Slack notification later. DO NOT TRIGGER when: deferring to code or project storage (use Dev10x:park-todo), or routing to the best destination automatically (use Dev10x:park).'
 metadata:
-  upstream: skills/park-remind/SKILL.md
+  upstream: plugins/tasks/skills/park-remind/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/park-remind/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/tasks/skills/park-remind/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/park-remind/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/tasks/skills/park-remind/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:park-remind — Slack DM Reminder

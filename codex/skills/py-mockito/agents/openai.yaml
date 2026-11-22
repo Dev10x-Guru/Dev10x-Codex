@@ -1,0 +1,4 @@
+interface:
+  display_name: "Python Mockito"
+policy:
+  allow_implicit_invocation: true

@@ -2,12 +2,12 @@
 name: park
 description: 'Smart deferral router — saves tasks for later to the right place (PR, ticket, code, Slack, or the project task index) so they are actually rediscovered instead of being forgotten. TRIGGER when: a task should be saved for later instead of done now. DO NOT TRIGGER when: task should be done now, or specifically deferring to code (use Dev10x:park-todo) or Slack (use Dev10x:park-remind).'
 metadata:
-  upstream: skills/park/SKILL.md
+  upstream: plugins/tasks/skills/park/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/park/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/tasks/skills/park/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/park/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/tasks/skills/park/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:park — Smart Deferral Router

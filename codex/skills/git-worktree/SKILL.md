@@ -2,12 +2,12 @@
 name: git-worktree
 description: 'Create git worktrees for clean workspace isolation. Offers two modes: native EnterWorktree (switches CWD in current session) or external worktree (IDE-isolated, requires restarting claude in new dir). Inside Herdr (HERDR_ENV=1) a third mode is chosen automatically: Herdr creates the worktree in its own workspace and a briefed agent starts there. TRIGGER when: starting feature work needing isolation, or executing implementation plans with independent tasks. DO NOT TRIGGER when: work can be done on the current branch without isolation, or user explicitly wants to stay in the current worktree.'
 metadata:
-  upstream: skills/git-worktree/SKILL.md
+  upstream: plugins/coding/skills/git-worktree/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/git-worktree/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/git-worktree/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/git-worktree/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/git-worktree/`.
 
 # Git Worktree
 
@@ -162,10 +162,18 @@ hook-blocked on this worktree; use `$Dev10x:git` (which wraps
 
 Default pattern: `../.worktrees/<project-basename>-NN`
 
-Calculate the next available path:
+Calculate the next available path.
+
+**Primary (MCP tool):** Call `mcp__cli__next_worktree_name`
+with `cwd=<absolute repo path>`.
+It returns `{"path": "<calculated-path>"}` and never prompts for
+approval.
+Pass `base_dir` to override the `../.worktrees` parent.
+
+**Fallback (script):** Only when the MCP server is unavailable:
 
 ```bash
-<plugin-root>/skills/git-worktree/scripts/next-worktree-name.sh
+<plugin-root>/plugins/coding/skills/git-worktree/scripts/next-worktree-name.sh
 ```
 
 Ask user to confirm (AskUserQuestion):
@@ -179,8 +187,18 @@ See **Hook Templates** section below.
 
 ### Step B3: Create the Worktree
 
+**Primary (MCP tool):** Call `mcp__cli__create_worktree`
+with `branch=<branch-name>`, `path=<worktree-path>` and
+`cwd=<absolute path of the target repo>`.
+Pass `base` (e.g. `origin/develop`) to start the new branch from a
+specific ref; omit it to branch from the repo's current HEAD.
+The result carries `worktree_path`, and the tool also seeds the new
+worktree's safe permission defaults (`seeded_permissions`).
+
+**Fallback (script):** Only when the MCP server is unavailable:
+
 ```bash
-<plugin-root>/skills/git-worktree/scripts/create-worktree.sh \
+<plugin-root>/plugins/coding/skills/git-worktree/scripts/create-worktree.sh \
   <worktree-path> <branch-name> [base-ref] [repo-root]
 ```
 
@@ -191,12 +209,13 @@ See **Hook Templates** section below.
 - Both trailing args are positional — pass an empty string (`""`) to
   skip `base-ref` while still supplying `repo-root` (GH-960).
 
-The `post-checkout` hook fires automatically after this script runs.
+The `post-checkout` hook fires automatically after the worktree is
+created, on either path.
 
 ### Step B4: Install SessionEnd Cleanup Hook
 
 ```bash
-<plugin-root>/skills/git-worktree/scripts/setup-session-end-hook.sh <worktree-path>
+<plugin-root>/plugins/coding/skills/git-worktree/scripts/setup-session-end-hook.sh <worktree-path>
 ```
 
 This writes a SessionEnd hook into `<worktree-path>/.claude/settings.local.json`
@@ -274,7 +293,7 @@ Husky overwrites `.git/hooks/` on every `yarn/npm install`. Writing to
 
 ### Template A: Python/uv
 
-Source: [`templates/post-checkout-python-uv.sh`](../../../skills/git-worktree/templates/post-checkout-python-uv.sh)
+Source: [`templates/post-checkout-python-uv.sh`](../../../plugins/coding/skills/git-worktree/templates/post-checkout-python-uv.sh)
 
 Copies `.env`, `development.secrets.env`, `.claude/` (excluding WIP), `.idea/`,
 and runs `uv sync`.
@@ -288,7 +307,7 @@ on first launch.
 
 ### Template B: Node.js + Husky (write to `.husky/post-checkout`)
 
-Source: [`templates/post-checkout-node-husky.sh`](../../../skills/git-worktree/templates/post-checkout-node-husky.sh)
+Source: [`templates/post-checkout-node-husky.sh`](../../../plugins/coding/skills/git-worktree/templates/post-checkout-node-husky.sh)
 
 Copies `.env`, `.claude/` (excluding WIP), and runs `yarn install --frozen-lockfile`.
 
@@ -297,7 +316,7 @@ the repo root — this installs all workspace packages in one pass.
 
 ### Template C: Node.js without Husky (write to `.git/hooks/post-checkout`)
 
-Source: [`templates/post-checkout-node.sh`](../../../skills/git-worktree/templates/post-checkout-node.sh)
+Source: [`templates/post-checkout-node.sh`](../../../plugins/coding/skills/git-worktree/templates/post-checkout-node.sh)
 
 Copies `.env`, `.claude/` (excluding WIP), and runs `yarn install` or `npm ci`.
 
@@ -318,11 +337,16 @@ The SessionEnd hook installed by Path B prompts:
 If yes: `git worktree remove <path>`
 If no: the worktree persists for future sessions.
 
-Manual removal:
+That prompt covers one worktree per session and never fires for
+herdr-created (Path C) or crew/fanout worktrees. To sweep every
+worktree whose work has merged, run `Dev10x:git-worktree-prune`: it
+classifies them all in one call, asks once, and keeps anything dirty,
+unpushed or open.
+
+Manual removal of a single clean worktree:
 
 ```bash
 git worktree remove <path>
-git worktree remove --force <path>  # if dirty
 git worktree list                   # list all worktrees
 ```
 

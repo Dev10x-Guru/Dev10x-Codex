@@ -2,12 +2,12 @@
 name: py-uv
 description: 'Guide UV installation and migrate Python scripts from legacy shebangs to UV inline metadata (PEP 723). TRIGGER when: migrating scripts to uv, setting up uv for the first time, or converting shebangs to PEP 723 format. DO NOT TRIGGER when: uv is already configured, or user is writing standard Python packages (not standalone scripts).'
 metadata:
-  upstream: skills/py-uv/SKILL.md
+  upstream: plugins/coding/skills/py-uv/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/py-uv/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/py-uv/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/py-uv/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/py-uv/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # UV Python Script Manager
@@ -34,7 +34,7 @@ with PEP 723 inline metadata.
 Run the check script to assess current state:
 
 ```
-<plugin-root>/skills/py-uv/scripts/check-uv.sh
+<plugin-root>/plugins/coding/skills/py-uv/scripts/check-uv.sh
 ```
 
 Parse the structured output:

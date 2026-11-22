@@ -2,12 +2,12 @@
 name: project-audit
 description: 'Comprehensive project-level architecture audit. Catalogs design patterns from multiple sources, stress-tests domain models, maps JTBD from PR history against test coverage, and produces a prioritized improvement backlog. TRIGGER when: user requests architecture audit, project health check, pattern catalog mapping, or comprehensive quality review. DO NOT TRIGGER when: reviewing a single branch (use Dev10x:review), scoping a single ticket (use Dev10x:ticket-scope), or running a DDD workshop (use Dev10x:ddd).'
 metadata:
-  upstream: skills/project-audit/SKILL.md
+  upstream: plugins/scoping/skills/project-audit/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/project-audit/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/scoping/skills/project-audit/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/project-audit/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/scoping/skills/project-audit/`.
 > **Not supported in Codex yet**: this skill depends on Claude Code features Codex lacks (Dev10x-Codex#17). Use it from Claude Code; Codex runs it only when invoked by name.
 
 # Dev10x:project-audit — Comprehensive Architecture Audit

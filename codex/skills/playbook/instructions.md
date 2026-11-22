@@ -34,10 +34,10 @@ Where `<key>` is the skill directory name (e.g., `work-on`,
 
 **Tier 2 (global)** uses `projects[].match_repo` globs — matched
 against the repo's `nameWithOwner` (`org/repo`) — so one file can
-serve multiple repos. `match:` is accepted here as a deprecated
-alias (ADR-0026) until removal in `0.112.0` per the deprecation
-register (GH-1375, ADR-0028); it means a **directory path** in
-`friction.yaml`, so do not copy a glob between the two files. See
+serve multiple repos. `match:` is no longer read here (ADR-0026,
+GH-1771) — an entry carrying only `match:` selects nothing. That key
+means a **directory path** in `friction.yaml`, so do not copy a glob
+between the two files. See
 `references/config-resolution.md` for the YAML format, the portable
 `*/<repo>` form, and the no-`origin`-remote case.
 
@@ -309,7 +309,8 @@ projects:
 
 A step entry with `fragment: <name>` is replaced at resolution
 time by the steps from the named fragment. The reference may
-carry a `condition` override that applies to every expanded step.
+carry a `condition` that applies to every expanded step; a step
+with its own `condition` keeps it, joined as `<outer> and <inner>`.
 
 Fragments work in both default playbooks and user override files.
 User overrides can define their own `fragments:` section and
@@ -329,10 +330,11 @@ reference those fragments (or default fragments) in their plays.
 4. Walk the step list; when `fragment: <name>` is found,
    look up the name in the merged fragments map
 5. Copy fragment steps inline, applying `condition` from the
-   reference to each expanded step
+   reference to each expanded step. A step's own `condition` is
+   not replaced: the two join as `<outer> and <inner>`
 6. `subject` and `type` from fragment steps are immutable —
-   only `condition` and `prompt` can be overridden at the
-   reference site
+   only `condition` (joined, see 5) and `prompt` can be set at
+   the reference site
 7. Detect circular references (max depth 3)
 8. Missing fragment → clear error, do not silently skip
 

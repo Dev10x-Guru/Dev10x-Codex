@@ -2,19 +2,20 @@
 name: playwright
 description: 'Run Playwright Python scripts against ExampleCorp staging safely. Use when writing or executing a Playwright automation script for self-QA or browser testing on staging-app.example.com. Handles CF Access headers, credential injection, syntax validation before execution, and uv run wrapping — so secrets are never hardcoded in scripts. TRIGGER when: running browser automation against ExampleCorp staging. DO NOT TRIGGER when: testing non-ExampleCorp sites, running unit tests, or writing Playwright scripts for other projects.'
 metadata:
-  upstream: skills/playwright/SKILL.md
+  upstream: plugins/qa/skills/playwright/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/playwright/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/qa/skills/playwright/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/playwright/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/qa/skills/playwright/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:playwright
 
 ## Orchestration
 
-This skill follows `references/task-orchestration.md` patterns.
+This skill follows the core `dev10x` plugin's
+`references/task-orchestration.md` patterns.
 Create a task at invocation, mark completed when done:
 
 **REQUIRED: Create a task at invocation.** Execute at startup:
@@ -173,13 +174,13 @@ no-hardcoded-credentials guarantee the wrapper exists to provide).
 
 Select one either by name, which is resolved against the file:
 ```bash
-<plugin-root>/skills/playwright/scripts/run-playwright.sh \
+<plugin-root>/plugins/qa/skills/playwright/scripts/run-playwright.sh \
   /tmp/Dev10x/playwright/qa-xxx.py --user <admin-level-username>
 ```
 
 or by suffix, which skips the lookup:
 ```bash
-<plugin-root>/skills/playwright/scripts/run-playwright.sh \
+<plugin-root>/plugins/qa/skills/playwright/scripts/run-playwright.sh \
   /tmp/Dev10x/playwright/qa-xxx.py --profile 2
 ```
 
@@ -199,20 +200,20 @@ project's own notes alongside the secrets file.
 
 ### Validate only (no browser)
 ```bash
-<plugin-root>/skills/playwright/scripts/run-playwright.sh \
+<plugin-root>/plugins/qa/skills/playwright/scripts/run-playwright.sh \
   /tmp/Dev10x/playwright/qa-xxx.py --validate-only
 ```
 
 ### Execute
 ```bash
-<plugin-root>/skills/playwright/scripts/run-playwright.sh /tmp/Dev10x/playwright/qa-xxx.py
+<plugin-root>/plugins/qa/skills/playwright/scripts/run-playwright.sh /tmp/Dev10x/playwright/qa-xxx.py
 ```
 
 ### Against a PR preview, or any non-default host
 
 Pass the per-run knobs as flags, never as an environment prefix:
 ```bash
-<plugin-root>/skills/playwright/scripts/run-playwright.sh \
+<plugin-root>/plugins/qa/skills/playwright/scripts/run-playwright.sh \
   /tmp/Dev10x/playwright/qa-xxx.py \
   --staging-url https://<preview-host> \
   --secrets-file <path-to-settings.secrets.env> \

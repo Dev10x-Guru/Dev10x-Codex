@@ -2,12 +2,12 @@
 name: review-fix
 description: 'Consume structured findings from Dev10x:review and create one standalone fixup! commit per finding via Dev10x:git-fixup. TRIGGER when: Dev10x:review has produced a findings JSON file that needs fixup commits. DO NOT TRIGGER when: no findings file exists, or addressing PR review comments from external reviewers (use Dev10x:gh-pr-fixup).'
 metadata:
-  upstream: skills/review-fix/SKILL.md
+  upstream: plugins/coding/skills/review-fix/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/review-fix/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/review-fix/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/review-fix/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/review-fix/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Review Fix
@@ -130,6 +130,11 @@ Reads the same JSON format produced by `Dev10x:review`:
 Required fields: `file`, `line`, `description`
 Optional fields: `severity`, `confidence`, `source`,
 `suggested_fix`, `category`
+
+`source` is `automated` or `manual`. A finding with `category: spec`
+is a Phase 0 spec-compliance verdict from `Dev10x:review`: it names a
+scope or acceptance-criteria gap, not a code location, so list it in
+the summary and create no fixup for it (GH-1749).
 
 ## Integration
 

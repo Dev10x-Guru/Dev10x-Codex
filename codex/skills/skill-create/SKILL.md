@@ -2,12 +2,12 @@
 name: skill-create
 description: 'Use when creating or improving a local skill and hitting friction — bash commands keep prompting for approval, the skill doesn''t appear in MOTD, or it''s unclear which frontmatter fields wire up invocability — so you get the Dev10x-specific setup right without hunting through existing skills for examples. TRIGGER when: creating a new skill, fixing skill registration, or scaffolding skill directory structure. DO NOT TRIGGER when: editing skill content without structural issues, or writing non-skill code.'
 metadata:
-  upstream: skills/skill-create/SKILL.md
+  upstream: plugins/teach/skills/skill-create/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/skill-create/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/teach/skills/skill-create/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/skill-create/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/teach/skills/skill-create/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 > **In Codex:** It creates Claude Code skills; Codex sees a new skill only after `dev10x skill codex-skills` regenerates codex/skills/.
 
@@ -62,6 +62,7 @@ allowed-tools:                # pre-approve bash commands (removes prompts)
 | `invocation-name` | Required on every skill; matches `name:` by default, or shorter alias |
 | `user-invocable: true` | Skill appears in MOTD and is callable via Skill tool |
 | `allowed-tools` | Pre-approve bash commands Claude needs; use `:*` for any args |
+| `persona` | Optional, judgment-heavy skills only; mirror it as a `**Persona:**` line after the H1 — see `references/skill-personas.md` |
 
 ## Writing for User Gains (JTBD-influenced)
 
@@ -115,7 +116,7 @@ Options:
 Then run the scaffold:
 
 ```bash
-<plugin-root>/skills/skill-create/scripts/scaffold.sh <skill-name> <pattern>
+<plugin-root>/plugins/teach/skills/skill-create/scripts/scaffold.sh <skill-name> <pattern>
 ```
 
 This generates SKILL.md with correct frontmatter, evals/evals.json skeleton,
@@ -140,7 +141,7 @@ Follow `superpowers:writing-skills` RED-GREEN-REFACTOR:
 ### 3. Validate Structure
 
 ```bash
-<plugin-root>/skills/skill-index/scripts/generate-all.sh --force
+<plugin-root>/plugins/teach/skills/skill-index/scripts/generate-all.sh --force
 rg -n "<namespace>-<skill-name>" ~/.claude/SKILLS.md ~/.claude/.skills-menu.txt
 ```
 
@@ -153,7 +154,7 @@ new skill is discoverable at the next session start (run this if you skipped
 step 3 or made additional edits):
 
 ```bash
-<plugin-root>/skills/skill-index/scripts/generate-motd.sh --force
+<plugin-root>/plugins/teach/skills/skill-index/scripts/generate-motd.sh --force
 ```
 
 ## Patterns from Existing Skills

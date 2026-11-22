@@ -5,7 +5,7 @@ Discover → Pick modules → Strategy decisions → Scaffold → Verify & hand 
 
 The defining constraint: **nothing about the stack is hardcoded.** Path
 globs, the domain-routing table, and the reviewer roster are all derived
-from Phase 1 discovery. Templates in [`references/templates/`](../../../skills/gh-review-setup/references/templates)
+from Phase 1 discovery. Templates in [`references/templates/`](../../../plugins/coding/skills/gh-review-setup/references/templates)
 carry `{{PLACEHOLDER}}` tokens that later phases fill — you never copy a
 source project's workflow and scrub it by hand.
 
@@ -161,7 +161,11 @@ Render steps:
 1. **Secrets** — print exactly which secrets to add and where (repo
    Settings → Secrets and variables → Actions). List each required secret
    name from the rendered workflows and whether it is already present
-   (from Phase 1). Never create secrets.
+   (from Phase 1). Never create secrets. Also name the optional
+   `CLAUDE_REVIEW_ENABLED` Actions variable: unset leaves the reviews
+   on, `false` skips every rendered Claude job (a grey `skipped`
+   check, not a red one), and the `skip-claude-review` label skips
+   them for one PR (GH-1756).
 2. **Sanitization gate (REQUIRED).** Grep every rendered file for known
    project-identifying strings (source org names, repo slugs, vendor/domain
    nouns gathered in `references/sanitization.md`). Zero hits is the pass

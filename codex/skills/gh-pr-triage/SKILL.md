@@ -2,12 +2,12 @@
 name: gh-pr-triage
 description: 'Validate a PR review comment against the codebase. If invalid, reply with evidence. Never auto-resolves threads — resolution requires explicit user confirmation. Returns a verdict (VALID, YAGNI, INVALID, QUESTION, OUT_OF_SCOPE) so the caller knows whether to fix, remove out-of-scope code, reply, or defer. TRIGGER when: PR review comment needs validation before implementing fix. DO NOT TRIGGER when: comment is clearly valid and needs immediate fix (use Dev10x:gh-pr-fixup directly).'
 metadata:
-  upstream: skills/gh-pr-triage/SKILL.md
+  upstream: plugins/coding/skills/gh-pr-triage/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/gh-pr-triage/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/gh-pr-triage/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/gh-pr-triage/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/gh-pr-triage/`.
 
 # Triage PR Review Comment
 

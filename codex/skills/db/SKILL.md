@@ -2,12 +2,12 @@
 name: db
 description: 'Safe database query planning for Claude Code. When querying any database, ensures schema-first construction and read-only safety so queries are accurate and never modify production data. TRIGGER when: code needs database queries, schema discovery, or SQL construction. DO NOT TRIGGER when: no database interaction needed, or user is writing application code that happens to mention SQL in comments.'
 metadata:
-  upstream: skills/db/SKILL.md
+  upstream: plugins/db/skills/db/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/db/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/db/skills/db/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/db/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/db/skills/db/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Database Query Planning

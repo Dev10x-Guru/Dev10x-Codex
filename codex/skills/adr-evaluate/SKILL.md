@@ -2,12 +2,12 @@
 name: adr-evaluate
 description: 'Orchestrate adversarial evaluation of architectural options using domain-specific architect agents and produce ranked ADR drafts. TRIGGER when: evaluating design decisions with multiple competing approaches, running architecture trade-off analysis, or needing structured multi-perspective evaluation. DO NOT TRIGGER when: creating a simple ADR (use Dev10x:adr), or making code changes without architecture impact.'
 metadata:
-  upstream: skills/adr-evaluate/SKILL.md
+  upstream: plugins/scoping/skills/adr-evaluate/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/adr-evaluate/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/scoping/skills/adr-evaluate/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/adr-evaluate/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/scoping/skills/adr-evaluate/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # ADR Evaluation Skill

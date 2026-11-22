@@ -67,8 +67,9 @@ offer a `strict` / `guided` / `adaptive` picker.
 
 **Never write `friction.yaml` from this skill** — not with the Write
 tool, not under the repo's `.claude/` tree (ADR-0018). The pin tools
-lock and atomically write (GH-827); the PreCompact hook reads the
-resolved policy to inject posture context into recovery summaries.
+lock and atomically write (GH-827); the post-compaction SessionStart
+hook reads the resolved policy to inject posture context into
+recovery summaries.
 
 Posture is settled once per swarm. Nested `Dev10x:work-on`
 delegations skip their own Phase 0 and inherit it.
@@ -484,6 +485,14 @@ recovery, below) understood as the only recovery route.
 
 ### Swarm Dispatch (REQUIRED, GH-36)
 
+**Under Herdr (`HERDR_ENV=1`, GH-1702):** dispatch each item through
+`Dev10x:git-worktree` Path C instead of `Agent(isolation="worktree")`,
+and collect its status from the status file its brief names — never
+by polling. Follow
+[`references/herdr-dispatch.md`](references/herdr-dispatch.md) end to
+end; the wave sizing, finish lines and Phase 4 verification below
+still apply. Everything else in this section is the non-Herdr path.
+
 **Every work item MUST be delegated to a worktree-isolated
 background `Agent` whose prompt invokes
 `$Dev10x:work-on`.** Do NOT implement issues inline in
@@ -548,7 +557,7 @@ harvest `bailout` and `conflict_signal` events for re-dispatch
 decisions, but never publishes. Full event schema,
 decision-gate rules (wait vs bail), and producer/consumer
 contracts live in
-[`references/orchestration/fanout-bus.md`](../../../references/orchestration/fanout-bus.md).
+[`references/orchestration/fanout-bus.md`](../../references/orchestration/fanout-bus.md).
 
 **Friction-avoidance preamble (REQUIRED, GH-610):** Before building
 the prompt below, fetch the canonical preamble via
@@ -650,6 +659,10 @@ remember mid-task.
   autonomous/cascade) $Dev10x:gh-pr-merge to complete.
 - If your turn ends before the finish line, your final line MUST
   be NEEDS_CONTEXT (not DONE). The orchestrator will re-dispatch.
+- A hook denial is the one early end that is not NEEDS_CONTEXT:
+  use the sanctioned tool, or stop and end with
+  `BLOCKED: hook denied <command>` — a re-dispatch would hit the
+  same hook. Never work around it (GH-1835).
 
 Sibling coordination (BEST-EFFORT — never your conflict guard):
 - The real conflict guard is the orchestrator's Phase 2
@@ -1045,7 +1058,10 @@ merged or surfaced as a failure mode in the result.
 Phase 4's job is therefore **collection**, not orchestration:
 
 1. As each background agent's completion notification
-   arrives, parse its result for: PR URL, status (DONE /
+   arrives (under Herdr: as each backgrounded `herdr agent prompt
+   … --wait` exits, read the
+   item's status file — `references/herdr-dispatch.md` § 4), parse
+   its result for: PR URL, status (DONE /
    DONE_WITH_CONCERNS / NEEDS_CONTEXT / BLOCKED), cost, and
    any sibling-coordination signals.
    **Stranded-work check (GH-1363, REQUIRED before any status
@@ -1476,8 +1492,10 @@ resumable (expired turn, session ended, or `BLOCKED`).
 
 See [`references/orchestration/subagent-status-protocol.md`](
 ../../references/orchestration/subagent-status-protocol.md)
-for the full prompt template, parse pattern, and migration
-notes.
+for the full prompt template and parse pattern, and
+[`references/orchestration/subagent-status-operations.md`](
+../../references/orchestration/subagent-status-operations.md)
+for the resume and non-resumable cases and migration notes.
 
 ## Recursive-Fanout Guard (GH-36)
 

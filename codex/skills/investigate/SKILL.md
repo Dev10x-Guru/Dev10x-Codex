@@ -2,12 +2,12 @@
 name: investigate
 description: 'Root-cause a bug report, question, or unexpected behaviour from a Slack thread — posts a technical reply with GitHub links and creates a Linear ticket when warranted. TRIGGER when: given a Slack URL pointing to a bug report, question, or unexpected behaviour that needs investigation. DO NOT TRIGGER when: no Slack URL provided, issue already root-caused, or user wants to investigate without posting a reply.'
 metadata:
-  upstream: skills/investigate/SKILL.md
+  upstream: plugins/coding/skills/investigate/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/investigate/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/investigate/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/investigate/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/investigate/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:investigate
@@ -67,7 +67,7 @@ still apply to get context before delegating.
 ### Step 1 — Parse the Slack URL
 
 ```bash
-read channel_id thread_ts < <(<plugin-root>/skills/investigate/scripts/parse-slack-url.sh "<url>")
+read channel_id thread_ts < <(<plugin-root>/plugins/coding/skills/investigate/scripts/parse-slack-url.sh "<url>")
 ```
 
 URL format: `https://example.slack.com/archives/<CHANNEL_ID>/p<TIMESTAMP>`
@@ -128,7 +128,7 @@ Use branch `develop` unless investigating a specific release.
 ### Step 6 — Post the Reply
 
 ```bash
-<plugin-root>/skills/investigate/scripts/reply.sh "$channel_id" "$thread_ts" "<message>"
+<plugin-root>/plugins/coding/skills/investigate/scripts/reply.sh "$channel_id" "$thread_ts" "<message>"
 ```
 
 Show the draft to the user and wait for approval before posting unless they
@@ -148,7 +148,7 @@ Invoke `Dev10x:ticket-create` skill with the gathered context.
 After ticket creation, post a follow-up reply:
 
 ```bash
-<plugin-root>/skills/investigate/scripts/reply.sh "$channel_id" "$thread_ts" \
+<plugin-root>/plugins/coding/skills/investigate/scripts/reply.sh "$channel_id" "$thread_ts" \
   "Logged as <https://linear.app/example/issue/PAY-XXX|PAY-XXX>."
 ```
 

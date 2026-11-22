@@ -2,12 +2,12 @@
 name: gh-review-setup
 description: 'Guided, discovery-driven setup of Claude code-review GitHub Actions on any repo. Detects the stack, lets you pick independently-skippable review modules (code review, PR hygiene, ADR distillation, lessons-learned, second-opinion), surfaces pros/cons for each strategy decision, then scaffolds generalized workflows + reviewer specs with zero project-identifying strings copied from any source project. TRIGGER when: standing up Claude code review on a repo that has none, or adding/regenerating review automation on an existing repo. DO NOT TRIGGER when: running an existing review (use Dev10x:gh-pr-review or Dev10x:review), or monitoring a PR (use Dev10x:gh-pr-monitor).'
 metadata:
-  upstream: skills/gh-review-setup/SKILL.md
+  upstream: plugins/coding/skills/gh-review-setup/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/gh-review-setup/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/gh-review-setup/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/gh-review-setup/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/gh-review-setup/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 > **In Codex:** It sets up Claude-based GitHub Actions review, so the target repository needs an Anthropic API key secret.
 
@@ -66,7 +66,7 @@ Set sequential dependencies (each phase blocked by the previous).
 | 1 Discover | Detect languages/file-types, existing `.claude/` structure, tracker, review secrets, default branch | [`references/discovery.md`](references/discovery.md) |
 | 2 Pick modules | Toggle each module on/off with discovery-driven defaults | [`references/modules.md`](references/modules.md) |
 | 3 Strategy | Review depth, model tiering, action pinning, API-key strategy, lessons destination, notifications — each with pros/cons + a recommended default | [`references/strategies.md`](references/strategies.md) |
-| 4 Scaffold | Render generalized workflows + routing table + reviewer specs + shared review references from templates | [`references/scaffold.md`](references/scaffold.md), [`references/templates/`](../../../skills/gh-review-setup/references/templates) |
+| 4 Scaffold | Render generalized workflows + routing table + reviewer specs + shared review references from templates | [`references/scaffold.md`](references/scaffold.md), [`references/templates/`](../../../plugins/coding/skills/gh-review-setup/references/templates) |
 | 5 Verify | Confirm required secrets, summarize installed workflows + chosen strategies, remind to open the landing PR | `instructions.md` § Phase 5 |
 
 ## Decision Gates (REQUIRED)

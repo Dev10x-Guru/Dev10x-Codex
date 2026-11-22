@@ -2,12 +2,12 @@
 name: gh-pr-request-review
 description: 'Request review on a GitHub PR from teams or users. TRIGGER when: PR is ready for review and needs reviewer assignment. DO NOT TRIGGER when: PR is still draft or WIP, or review was already requested.'
 metadata:
-  upstream: skills/gh-pr-request-review/SKILL.md
+  upstream: plugins/coding/skills/gh-pr-request-review/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/gh-pr-request-review/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/gh-pr-request-review/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/gh-pr-request-review/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/gh-pr-request-review/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 ## Orchestration
@@ -63,7 +63,7 @@ projects:
   so a reviewed PR can be cleared for merge or escalated to the team
   without re-arguing the override (GH-998). Persists nothing — for a
   standing "no humans review here" posture set durable
-  `human_review: false` instead (ADR-0019)
+  `supervisor_review: none` instead (ADR-0022 D-2)
 - `default_action: ask` prompts the user for unconfigured projects;
   `skip` silently skips them; `standby` defers without prompting
 
@@ -82,12 +82,12 @@ re-derive preset behavior in prose. The tool reads session policy
    deprecation register, GH-1161, ADR-0028). Do NOT read
    `~/.config/Dev10x/friction.yaml` directly or re-derive its
    first-match-wins precedence in prose — same rule this section already
-   applies to `resolve_gate`. When it is `false`, this project has no humans in
+   applies to `resolve_gate`. When it is `none`, this project has no humans in
    the review loop: do NOT request review and do NOT resolve reviewers,
    but STILL run the **Pre-flight: Draft State Check** below (same
    reasoning as `effect == "skip"` in step 4 — a draft PR whose CI is
    suppressed would never become mergeable). Print "Skipping review
-   request (human_review: false)" and stop. Otherwise continue to
+   request (supervisor_review: none)" and stop. Otherwise continue to
    step 1.
 1. Call `mcp__cli__resolve_gate(gate="request_review",
    context={})`.
@@ -100,7 +100,7 @@ re-derive preset behavior in prose. The tool reads session policy
    review posture), but STILL run the **Pre-flight: Draft State Check**
    below first (GH-854 F4): a draft PR whose CI is suppressed until it
    is marked ready would otherwise never run CI and never become
-   mergeable. Flip draft→ready via `gh pr ready`, then print "Skipping
+   mergeable. Flip draft→ready via `pr_ready`, then print "Skipping
    review request (solo-maintainer)" and stop — skip only reviewer
    resolution, not the draft flip.
 5. `error` key present → fail safe: treat exactly like `effect ==
@@ -177,12 +177,12 @@ NOT notify the requested reviewers — the request is lost.
 
 1. Confirm PR identity via
    `mcp__cli__pr_detect(arg="<pr_number_or_url>")`
-   to resolve `pr_number` and `repo`, then fetch the draft flag
-   (no MCP wrapper exists for `isDraft`):
-   ```bash
-   gh pr view {pr_number} --repo {repo} --json isDraft -q .isDraft
-   ```
-2. If draft: run `gh pr ready` first, then proceed
+   to resolve `pr_number` and `repo`, then read `isDraft` from
+   `mcp__cli__pr_get(number={pr_number}, repo="{repo}")`.
+2. If draft: flip it with
+   `mcp__cli__pr_ready(pr_number={pr_number})` (the
+   `gh-pr-ready` hook blocks raw `gh pr ready`), note that this run
+   flipped it, then proceed
 3. If not draft: proceed to reviewer resolution
 
 ### Resolution workflow
@@ -215,7 +215,37 @@ NOT notify the requested reviewers — the request is lost.
      Defer path below (same clearance gate as the configured case)
    - **Not found, `default_action: skip`** → print "No reviewers
      configured for {repo}, skipping" and stop
-4. Call the `request_review` MCP tool with the resolved reviewers
+4. **Readiness check (GH-1834).** Reviewers are now known, so run the
+   CI, review-thread and bots-at-head conditions in
+   [`references/review-readiness.md`](../../references/review-readiness.md)
+   — the Draft State Check above already handled the draft. When this
+   run flipped a draft, first wait once with
+   `mcp__cli__ci_check_status(pr_number={pr_number},
+   repo="{repo}", wait=true)` so CI has run on the ready PR — a wait
+   ending in `infra_unavailable` is re-read once without `wait` and
+   judged by the normal rule, so a PR with no CI still passes — and run
+   this step even if `--readiness-checked` was passed: the caller
+   checked the PR before it was ready. Otherwise skip this step when
+   the caller passed `--readiness-checked` (`Dev10x:request-review`
+   already ran it). When a condition fails, resolve the run mode as
+   that file orders it: `--unattended`, else `run_mode.mode` from the
+   `resolve_gate(gate="request_review")` payload this skill already
+   read (`undetermined` is attended — print `Run mode: undetermined
+   ({basis}) — treated as attended`). Unattended: refuse and stop;
+   attended, **REQUIRED: Call
+   `AskUserQuestion`** (do NOT use plain text) with **Stop — fix it
+   first (Recommended)** and **Request review anyway**, header
+   `Readiness`. When the run stops here after this run flipped a
+   draft — an unattended refusal or "Stop — fix it first" — return
+   the PR to draft with
+   `mcp__cli__pr_ready(pr_number={pr_number}, undo=true)`
+   before stopping, so it is not left published with a known problem.
+   Whenever the run stops at this step, print `Readiness: stopped —
+   {reasons}` for humans, then end with the `review_request_result:`
+   line (`status: "stopped"`) from that file § Result for callers —
+   `Dev10x:request-review` reads its `status`, not the prose. Every
+   other ending of this skill emits that line too.
+5. Call the `request_review` MCP tool with the resolved reviewers
 
 ### Stand-by / Defer path (GH-396, ADR-0019, GH-998)
 
@@ -261,7 +291,7 @@ teammate is pinged. Where is PR #{pr_number}?"` Options:
   satisfied rather than missing.
 - **I reviewed it — request team review now** — clearance plus
   escalation. Record the clearance (below), then fall through to
-  normal reviewer resolution (step 4 of the resolution workflow) and
+  normal reviewer resolution (steps 4–5 of the resolution workflow) and
   request review from the configured reviewers, ignoring `standby`
   for this PR.
 
@@ -327,10 +357,9 @@ of the global `~/.config/Dev10x/friction.yaml`, read via
   what lifts the park; `Dev10x:git-groom` removes it after a
   force-push, so the park comes back on rewritten history.
 
-The deprecated `human_review: true|false` spelling is still read
-until removal in `0.112.0` per the deprecation register (GH-1161,
-ADR-0028) — `true` → `required`, `false` → `none`; an explicit
-`supervisor_review` always wins over it.
+The retired `human_review: true|false` key is no longer read (GH-1771).
+A repo still carrying it resolves to `required`.
+Run `dev10x config migrate-schema` to convert it to `supervisor_review`.
 
 The legacy `review-deferred` mode string is still **read** for
 back-compat (a playbook `modes.review-deferred.skip` clause or an

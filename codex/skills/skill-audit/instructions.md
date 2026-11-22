@@ -432,7 +432,7 @@ Create a unique output file:
 ```
 Store the returned path, then run the extraction script:
 ```bash
-<plugin-root>/skills/skill-audit/scripts/extract-session.sh \
+<plugin-root>/plugins/teach/skills/skill-audit/scripts/extract-session.sh \
   "<session_file>" <unique-path>
 ```
 
@@ -507,7 +507,7 @@ and produces structured markdown output:
 
 1. **Phase 1 (Action Inventory):**
    ```bash
-   <plugin-root>/skills/skill-audit/scripts/analyze-actions.sh \
+   <plugin-root>/plugins/teach/skills/skill-audit/scripts/analyze-actions.sh \
      "<TRANSCRIPT_PATH>" "<PHASE1_OUTPUT>"
    ```
 
@@ -518,7 +518,7 @@ Read the output file to verify it contains valid markdown tables.
 
 2. **Phase 4 (Permission Friction):**
    ```bash
-   <plugin-root>/skills/skill-audit/scripts/analyze-permissions.sh \
+   <plugin-root>/plugins/teach/skills/skill-audit/scripts/analyze-permissions.sh \
      "<TRANSCRIPT_PATH>" ~/.claude/settings.local.json "<PHASE4_OUTPUT>"
    ```
 
@@ -622,7 +622,7 @@ so it runs identically in lightweight and forensic strategies.
 **Command:**
 
 ```bash
-<plugin-root>/bin/check-skill-eval-gaps.py --all
+<plugin-root>/plugins/teach/bin/check-skill-eval-gaps.py --all
 ```
 
 Exit code 0 means no gaps. Exit code 1 prints one line per gated

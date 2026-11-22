@@ -1,4 +1,4 @@
-# Generated from agents/adr-reviewer.md by `dev10x skill codex-agents` — edit the upstream agent, not this file.
+# Generated from plugins/scoping/agents/adr-reviewer.md by `dev10x skill codex-agents` — edit the upstream agent, not this file.
 name = "Dev10x:adr-reviewer"
 description = "Synthesize arguments from architect agents into ranked ADR options. Fact-checks claims against the actual codebase. Used by Dev10x:adr-evaluate skill during the synthesis phase. Triggers: invoked by Dev10x:adr-evaluate skill only"
 model_reasoning_effort = "medium"

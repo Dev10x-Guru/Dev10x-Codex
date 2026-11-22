@@ -1,5 +1,5 @@
 # playbook.yaml — Respond workflow plays for Dev10x:gh-pr-respond
-# Default location: <plugin-root>/skills/gh-pr-respond/references/playbook.yaml
+# Default location: <plugin-root>/plugins/coding/skills/gh-pr-respond/references/playbook.yaml
 # User overrides (see references/config-resolution.md):
 #   1. .claude/Dev10x/playbooks/gh-pr-respond.yaml (project-local)
 #   2. ~/.config/Dev10x/playbooks/gh-pr-respond.yaml (global + repo match)

@@ -2,15 +2,19 @@
 name: ticket-scope
 description: 'Scope Linear tickets with technical research and architecture design. Extends the base scope skill with Linear ticket integration, story point estimation, and acceptance criteria formatting. TRIGGER when: preparing to implement a Linear ticket — scoping technical approach, estimating story points, or writing acceptance criteria. DO NOT TRIGGER when: scoping non-Linear tickets, multi-ticket projects (use Dev10x:project-scope), or new domain areas (use Dev10x:ddd first).'
 metadata:
-  upstream: skills/ticket-scope/SKILL.md
+  upstream: plugins/scoping/skills/ticket-scope/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/ticket-scope/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/scoping/skills/ticket-scope/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/ticket-scope/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/scoping/skills/ticket-scope/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Ticket Scope — Linear Ticket Scoping Skill
+
+**Persona:** Tech lead scoping work someone else will build: labels
+every assumption, still gives an estimate, and states the open
+questions that would move it.
 
 Create comprehensive technical scoping documents for Linear
 tickets. Extends the base `Dev10x:scope` skill with Linear-

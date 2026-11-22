@@ -74,9 +74,7 @@ gate**. Otherwise, offer the override once — **REQUIRED: Call
 **No contrary answer means the default.** Invoke `$Dev10x:afk`
 to compose it. Never offer `bypassPermissions` / auto-mode as an
 answer to prompt risk — this harness is never YOLO. Full
-durable-policy-check procedure and the GH-978 worktree caveat (a
-fresh `isolation="worktree"` checkout can see a phantom merge-gate
-`ask`):
+durable-policy-check procedure:
 [`references/gate-policy-detail.md`](references/gate-policy-detail.md).
 
 ### 0.4 Permission pre-flight (the one-time window)
@@ -126,7 +124,10 @@ each into this directory.
    inline loop/pipeline): `dev10x foreman watch --scratchpad <run-dir>
    --base-branch <base>`, using the CLI shape Phase 0.4 recorded. It
    emits `STALL <file>:` (one line per silent heartbeat file, already
-   naming the chunk — GH-1064), `MERGE REQUEST` / `ESCALATION` (tailed
+   naming the chunk — GH-1064), `BLOCKED <file>:` (a worker whose last
+   heartbeat line is `<ISO timestamp> BLOCKED: …`, reported at once and
+   again every stall window while it stands, in place of the stall
+   alarm — GH-1874), `MERGE REQUEST` / `ESCALATION` (tailed
    off `escalations-*.md`, so a request reaches you within a poll
    interval instead of whenever its message lands — GH-1060),
    `BASE MOVED:`, `QUOTA MILESTONE:`, `QUOTA RESET:`,
@@ -195,6 +196,11 @@ turn are the most precious resources on site:
   Who may enter a dead worker's tree, and the two sanctioned recovery
   paths when it holds uncommitted work:
   [`references/worktree-recovery.md`](references/worktree-recovery.md).
+- `BLOCKED <file>` → the worker stopped on a wall, usually a hook
+  denial, and is waiting. Relay to the foreman: point the worker at the
+  sanctioned tool for the denied command, or cut the scope per the crew
+  contract when no sanctioned path exists. Never tell it to retry the
+  denied shape or route around the hook (GH-1874).
 - `BASE MOVED` → relay to the foreman (it instructs the active worker
   to rebase, re-verify, and never merge on stale ancestry).
 - **`MERGE REQUEST <chunk>` from the foreman → run the merge gate.**
@@ -264,7 +270,7 @@ turn are the most precious resources on site:
    morning report — confirm every `roster.md` row against the tracker
    first, since a rendering is not evidence. Optional HTML artifact
    alongside the markdown, never a gate:
-   [`../../references/html-artifact-reporting.md`](../../../references/html-artifact-reporting.md).
+   [`../../references/html-artifact-reporting.md`](../../references/html-artifact-reporting.md).
 3. **Self-audit:** collect every prompted, denied, or hook-blocked
    command from the night; run `$Dev10x:diag-friction` on each;
    file upstream issues for the structural ones. Queue
@@ -353,8 +359,6 @@ apply with no `dev10x foreman watch` armed (never a crew worker):
   minutes" — it cannot; that is a false STALL per window.
 - Sending a time-critical escalation by message without writing it to
   `DECISIONS.md` first.
-- Answering a worker's phantom merge-gate `ask` one relay at a time
-  instead of authorizing every worker at spawn.
 - Anyone but the owning worker writing to `status-<chunk>.md`, or
   anyone but the foreman writing to `roster.md`.
 - A chunk state recorded ONLY in `roster.md` — it is a derived view,
@@ -389,5 +393,4 @@ apply with no `dev10x foreman watch` armed (never a crew worker):
 | "The worker said it committed the migration on branch X — resume from there" | An edit is not a commit and a commit is not a push. Field case: the branch never existed on origin and the worktree died with four uncommitted files; the chunk was a restart. `git ls-remote --heads origin '<glob>'` before you believe it. |
 | "I'll wait passively and heartbeat every 10 minutes" | An idle agent runs no code. There is no timer and nothing wakes it. Heartbeat, make ONE bounded blocking wait, heartbeat again — or accept a false STALL every window. |
 | "I messaged the watchdog about it, so it's escalated" | Messages are best-effort and have arrived hours late, batched behind unrelated pings. `DECISIONS.md` is the authoritative record and the `escalations-<role>.md` line is what the watcher turns into an event; the message is only a nudge that both exist. |
-| "The merge gate returned `ask`, so the supervisor wants to decide" | In a fresh isolation worktree that `ask` is a resolver fallback — no session policy, no matching config glob — not a supervisor decision (GH-978, fix landed on `janusz/GH-978/worktree-gate-policy`, pending merge). Workers stop at PR-open regardless. |
 | "Cheaper models everywhere will stretch the quota" | A failed chunk costs more than the model discount saves. Downgrade the overseer, never the crew. |

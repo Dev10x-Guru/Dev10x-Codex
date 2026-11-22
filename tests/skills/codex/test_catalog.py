@@ -20,6 +20,9 @@ class TestToCodexCasing:
             ("use dev10x:gh-pr-create", "use Dev10x:gh-pr-create"),
             ("mcp__plugin_dev10x_cli__push_safe", "mcp__plugin_Dev10x_cli__push_safe"),
             ("Skill(Dev10x:git-commit)", "Skill(Dev10x:git-commit)"),
+            ("Skill(dev10x-coding:git-commit)", "Skill(Dev10x:git-commit)"),
+            ("run /dev10x-tasks:park later", "run /Dev10x:park later"),
+            ("see dev10x-scoping:adr-evaluate", "see Dev10x:adr-evaluate"),
         ],
     )
     def test_upstream_lowercase_names_take_the_codex_plugin_casing(
@@ -31,6 +34,8 @@ class TestToCodexCasing:
         "text",
         [
             '"Skill(dev10x:*)"',
+            '"Skill(dev10x-coding:*)"',
+            "dev10x-unknown:skill",
             "uvx dev10x session pin",
             "cache/dev10x.tool:x",
             "my-dev10x:thing",

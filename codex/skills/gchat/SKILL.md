@@ -2,12 +2,12 @@
 name: gchat
 description: 'Send notifications to a Google Chat space via a private Chat bot (service-account app auth). Mirrors Dev10x:slack. TRIGGER when: sending a message to a Google Chat space. DO NOT TRIGGER when: posting a review request (use Dev10x:gchat-review-request), or sending to Slack (use Dev10x:slack).'
 metadata:
-  upstream: skills/gchat/SKILL.md
+  upstream: plugins/comm/skills/gchat/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/gchat/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/comm/skills/gchat/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/gchat/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/comm/skills/gchat/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:gchat — Google Chat Notifications
@@ -117,7 +117,18 @@ users:
   wooyek:
     chat_user_id: "1234567890"
     name: Janusz Skonieczny
+    bus_role: owner      # Chat bus allowlist: owner | trusted
 ```
+
+`bus_role` is the Chat bus allowlist (ADR-0035 D3).
+An entry without it, or with any other value, has no authority.
+Exactly one `owner` is required, or the bus refuses to start.
+Anyone may mention or DM the bot for a reply.
+Only the owner's 🎫 / 🤖 reactions or `start` / `implement` / `ticket`
+commands queue privileged work.
+The same command from a `trusted` user waits for the owner's ✅ or
+`approve <id>` in the approval DM.
+Nothing sent over Chat can change this file.
 
 ## Usage
 
@@ -226,6 +237,8 @@ the message itself arrives in the bus mailbox.
 
 Configuration (`watch:` block), the dispatcher (`--route`) and the
 event shapes: [`references/watch.md`](references/watch.md).
+The Chat bus service that turns Chat events into queued work for
+sessions (`dev10x chatbus`): [`references/chat-bus.md`](references/chat-bus.md).
 
 ## Updating and Deleting
 

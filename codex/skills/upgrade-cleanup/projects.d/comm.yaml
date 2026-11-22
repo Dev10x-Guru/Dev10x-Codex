@@ -11,3 +11,13 @@ base_permissions:
   - "mcp__cli__gchat_watch_arm"
   - "mcp__cli__gchat_watch_disarm"
   - "mcp__cli__gchat_watch_list"
+  # --- Dev10x MCP tools: Chat bus queue (GH-1842) ---
+  # list/claim/ack touch only the local SQLite store, so a session
+  # working the queue does not stop on a prompt. chat_queue_reply posts
+  # to Google Chat as the bot and stays in WRITE_TOOLS_NOT_SEEDED: the
+  # dispatcher grants it per agent (ADR-0035 D2, D10).
+  - "mcp__cli__chat_queue_list"
+  - "mcp__cli__chat_queue_claim"
+  - "mcp__cli__chat_queue_ack"
+  # --- dev10x-comm skills (GH-1567) ---
+  - "Skill(dev10x-comm:*)"

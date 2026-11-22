@@ -2,12 +2,12 @@
 name: py-test
 description: 'Run pytest with coverage enforcement. Verifies test suite passes with 100% coverage for new code. Reports pass/fail status and coverage percentage with full output only on failures. TRIGGER when: code changes need test verification before committing, explicitly asked to run tests, or creating a pull request. DO NOT TRIGGER when: no Python code changed, or running non-pytest test frameworks.'
 metadata:
-  upstream: skills/py-test/SKILL.md
+  upstream: plugins/coding/skills/py-test/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/py-test/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/py-test/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/py-test/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/py-test/`.
 
 # Python Test Verifier
 
@@ -40,9 +40,9 @@ Pass extra pytest args via the `args` parameter, e.g.
 `args=["src/dev10x/runner/"]` or `args=["-k", "name"]`. The tool
 returns a structured payload: `returncode`, `summary`, `passed`,
 `failed`, `skipped`, `coverage_percent`, `failed_tests`,
-`missing_coverage`, `extras`, `retried_with_extras`, `stdout`,
-`stderr`. The subprocess is launched from the MCP server so the
-PreToolUse hook does not apply.
+`missing_coverage`, `extras`, `retried_with_extras`, `launcher`,
+`uv_error`, `stdout`, `stderr`. The subprocess is launched from the
+MCP server so the PreToolUse hook does not apply.
 
 **The tool resolves the project's dependency extra itself
 (GH-1198).** It reads `[project.optional-dependencies]` from
@@ -52,7 +52,16 @@ anyone typing `--extra dev`. `extras` reports what it applied. When
 resolution finds nothing and the run dies at collection on a
 `ModuleNotFoundError`, it retries once with `--extra dev` and sets
 `retried_with_extras` — read that as a signal the project's extras
-are named unusually, not as a normal outcome.
+are named unusually, not as a normal outcome. The retry only fires
+when the project actually declares a `dev` extra.
+
+**A `pyproject.toml` with no `[project]` table (GH-1730)** — poetry,
+or a tool-config-only file — is not something `uv run` can resolve.
+The tool runs `.venv/bin/python -m pytest` when that virtualenv
+exists (`launcher: "venv"`), and otherwise returns an error with
+`verdict: "no_project_table"` naming the fix. When uv itself fails
+(an undefined extra, a Python it cannot download) its `error:` line
+is in `uv_error`.
 
 Before this, the sanctioned wrapper could not run such a suite at
 all, so the agent fell back to the raw command the routing table

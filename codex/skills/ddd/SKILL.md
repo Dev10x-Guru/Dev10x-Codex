@@ -2,12 +2,12 @@
 name: ddd
 description: 'Run or continue a DDD Event Storming workshop to explore, model, and stress-test domain architecture. TRIGGER when: user mentions DDD, domain modeling, event storming, bounded contexts, domain events, aggregates, "workshop", "domain session", "stress test the architecture", "apply archetype", "scope the domain", or asks domain exploration questions like "add tax support" or "what breaks if we add goods pricing". Always use before ticket-scope when the feature area is new or crosses bounded context boundaries. DO NOT TRIGGER when: implementing code within a well-understood domain, or scoping a ticket in a known bounded context (use Dev10x:ticket-scope).'
 metadata:
-  upstream: skills/ddd/SKILL.md
+  upstream: plugins/scoping/skills/ddd/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/ddd/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/scoping/skills/ddd/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/ddd/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/scoping/skills/ddd/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # DDD Event Storming Workshop

@@ -2,15 +2,19 @@
 name: adr
 description: 'Create Architecture Decision Records (ADRs) following project conventions. Extends the base scope skill with ADR-specific format, numbering, diagram generation, and decision documentation. TRIGGER when: documenting significant architectural decisions, design trade-offs, or technology choices that affect the codebase. DO NOT TRIGGER when: making code changes without architecture impact, or writing commit messages (use Dev10x:git-commit).'
 metadata:
-  upstream: skills/adr/SKILL.md
+  upstream: plugins/scoping/skills/adr/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/adr/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/scoping/skills/adr/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/adr/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/scoping/skills/adr/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # ADR Create - Architecture Decision Record Skill
+
+**Persona:** Staff architect who writes for the engineer implementing
+the decision long after the discussion; names the alternatives it
+rejected and why each lost.
 
 ## Orchestration
 
@@ -115,12 +119,19 @@ Shows flow of operations for key interactions.
 
 #### 3.3 Generate PNG Files
 
+Render each `.puml` with one call to the shared script — it writes
+the PNG beside the source and runs PlantUML under the SANDBOX
+security profile, so a diagram taken from a ticket or PR cannot pull
+local files or environment variables into the image:
+
 ```bash
-cd docs/adr/diagrams/{ADR_NUMBER}/
-for f in *.puml; do
-  java -jar ~/.local/bin/plantuml.jar "$f"
-done
+<plugin-root>/plugins/scoping/skills/diagram-sequence/scripts/render.sh docs/adr/diagrams/{ADR_NUMBER}/<name>.puml
 ```
+
+A local `!include` is refused (`cannot include <path>`): inline the
+content; only the jar's stdlib (`!include <C4/...>`) resolves. Fix and
+re-run until it prints `rendered:`, then read the PNG. Details:
+`<plugin-root>/plugins/scoping/references/diagrams/rendering.md`.
 
 ### Phase 4: Apply Design Principles
 
@@ -224,5 +235,5 @@ Dev10x:adr
 - Diagrams: `docs/adr/diagrams/NNNN/`
 
 ### PlantUML
-- Generate: `java -jar ~/.local/bin/plantuml.jar diagram.puml`
+- Generate: `<plugin-root>/plugins/scoping/skills/diagram-sequence/scripts/render.sh docs/adr/diagrams/NNNN/<name>.puml`
 - Themes: `!theme plain` for clean diagrams

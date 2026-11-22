@@ -1,4 +1,4 @@
-# Generated from agents/architect-domain.md by `dev10x skill codex-agents` — edit the upstream agent, not this file.
+# Generated from plugins/scoping/agents/architect-domain.md by `dev10x skill codex-agents` — edit the upstream agent, not this file.
 name = "Dev10x:architect-domain"
 description = "Evaluate domain modeling decisions using DDD principles, Software Archetypes, and Clean Architecture patterns. Used by adr-evaluate for domain modeling ADRs. Triggers: invoked by adr-evaluate skill for domain modeling ADRs"
 model_reasoning_effort = "medium"

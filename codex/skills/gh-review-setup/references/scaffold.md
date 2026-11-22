@@ -1,6 +1,6 @@
 # Phase 4 — Scaffold
 
-Render the selected modules from [`templates/`](../../../../skills/gh-review-setup/references/templates), filling
+Render the selected modules from [`templates/`](../../../../plugins/coding/skills/gh-review-setup/references/templates), filling
 placeholders from the `discovery` record. Never copy a source project's
 workflow and scrub it — render from templates so the output starts clean.
 

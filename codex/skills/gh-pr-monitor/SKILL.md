@@ -2,18 +2,31 @@
 name: gh-pr-monitor
 description: 'Launch a background agent to monitor PR CI checks and review comments, automatically address issues with fixup commits, and notify team when ready. Use after creating a PR to automate the entire review cycle. TRIGGER when: PR has been created and needs CI/review monitoring. DO NOT TRIGGER when: PR does not exist yet (use Dev10x:gh-pr-create first), or user wants to manually handle review comments.'
 metadata:
-  upstream: skills/gh-pr-monitor/SKILL.md
+  upstream: plugins/coding/skills/gh-pr-monitor/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/gh-pr-monitor/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/gh-pr-monitor/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/gh-pr-monitor/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/gh-pr-monitor/`.
 
 # PR Review Monitor (Background Agent)
 
 Launch a background agent that monitors a PR through its full
 lifecycle — CI checks, review comments, team notification — so
 the user can keep working.
+
+## Arguments
+
+- PR URL or number (optional) — passed to `pr_detect`; empty
+  detects the PR for the current branch.
+- `--unattended` (GH-1911) — nobody is watching this run. No phase
+  fires a notification widget: an `external_notify` gate that
+  resolves to `ask` is treated as `skip`, and Phase 3 passes
+  `--unattended` on to `Dev10x:request-review`. Without the flag
+  the run is still unattended when `resolve_gate`'s `run_mode.mode`
+  says so — an `afk` overlay or a work-on plan step in progress
+  (GH-1921, `references/review-readiness.md`). Strip the flag
+  before handing the PR argument to `pr_detect`.
 
 ## Instructions
 
@@ -24,6 +37,13 @@ handling, team notification, verification — lives in
 When this skill is invoked, Read `instructions.md` now and
 follow it end-to-end. `TaskCreate` and `AskUserQuestion` calls
 documented there are REQUIRED.
+
+`instructions.md` fits in one `Read` (GH-1922). It holds the
+orchestration, the task list and a phase index; each phase body
+lives in `references/phase-*.md` and is linked from that index.
+Read a phase's file when the supervisor reaches the phase — Phase
+3 (the review request and its `--unattended` pass-through) is in
+`references/phase-3-notification.md`.
 
 ## Mandatory Invocation After PR Creation (GH-162)
 

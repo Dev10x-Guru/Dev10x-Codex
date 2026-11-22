@@ -3,6 +3,7 @@ from __future__ import annotations
 import posixpath
 import re
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 import yaml
@@ -16,6 +17,7 @@ from dev10x.skills.codex.catalog import (
 from dev10x.skills.codex.tree import GeneratedTree, is_hidden
 
 UPSTREAM_SKILLS_RELPATH = PurePosixPath("skills")
+UPSTREAM_PLUGINS_RELPATH = PurePosixPath("plugins")
 CODEX_SKILLS_RELPATH = PurePosixPath("codex") / "skills"
 TOOL_EQUIVALENTS_RELPATH = PurePosixPath("codex") / "references" / "claude-tool-equivalents.md"
 
@@ -79,6 +81,37 @@ class InvalidFrontMatter(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class SkillSource:
+    directory: Path
+    upstream_dir: PurePosixPath
+    plugin_dir: PurePosixPath
+
+    @property
+    def name(self) -> str:
+        return self.directory.name
+
+
+def plugin_dir_of(upstream: PurePosixPath) -> PurePosixPath:
+    parts = upstream.parts
+    if parts[:1] == UPSTREAM_SKILLS_RELPATH.parts:
+        return PurePosixPath()
+    if len(parts) >= 3 and parts[0] == UPSTREAM_PLUGINS_RELPATH.name and parts[2] == "skills":
+        return PurePosixPath(*parts[:2])
+    raise ValueError(f"{upstream} is not under skills/ or plugins/<name>/skills/")
+
+
+def _skills_root_of(upstream: PurePosixPath) -> PurePosixPath:
+    plugin_dir = plugin_dir_of(upstream)
+    return plugin_dir / "skills" if plugin_dir.parts else UPSTREAM_SKILLS_RELPATH
+
+
+def plugin_root_placeholder(plugin_dir: PurePosixPath) -> str:
+    if not plugin_dir.parts:
+        return PLUGIN_ROOT_PLACEHOLDER
+    return f"{PLUGIN_ROOT_PLACEHOLDER}/{plugin_dir.as_posix()}"
+
+
 def codex_skill_name(directory: str) -> str:
     if len(directory) > NAME_MAX_LENGTH or not _NAME_RE.match(directory):
         raise InvalidSkillName(
@@ -116,9 +149,9 @@ def _replace_skill_call(match: re.Match[str]) -> str:
     return f"{reference} (args: {arguments})" if arguments else reference
 
 
-def rewrite_text(text: str) -> str:
+def rewrite_text(text: str, *, plugin_dir: PurePosixPath = PurePosixPath()) -> str:
     text = _MCP_PREFIX_RE.sub(r"mcp__\1__", to_codex_casing(text))
-    text = _PLUGIN_ROOT_RE.sub(PLUGIN_ROOT_PLACEHOLDER, text)
+    text = _PLUGIN_ROOT_RE.sub(plugin_root_placeholder(plugin_dir), text)
     text = _SKILL_CALL_RE.sub(_replace_skill_call, text)
     return _SLASH_SKILL_RE.sub(lambda m: f"{m.group(1)}{codex_skill_reference(m.group(2))}", text)
 
@@ -130,7 +163,7 @@ def unknown_skill_mentions(text: str, known: Iterable[str]) -> list[str]:
 
 
 def codex_path_for(upstream: PurePosixPath) -> PurePosixPath:
-    return CODEX_SKILLS_RELPATH / upstream.relative_to(UPSTREAM_SKILLS_RELPATH)
+    return CODEX_SKILLS_RELPATH / upstream.relative_to(_skills_root_of(upstream))
 
 
 def _relative(path: PurePosixPath, start: PurePosixPath) -> str:
@@ -198,9 +231,10 @@ def render_preamble(
     verified: bool,
     deferred_issue: int | None = None,
     caveat: str | None = None,
+    upstream: PurePosixPath | None = None,
 ) -> str:
     equivalents = _relative(TOOL_EQUIVALENTS_RELPATH, target.parent)
-    upstream_dir = (UPSTREAM_SKILLS_RELPATH / directory).as_posix()
+    upstream_dir = (upstream or UPSTREAM_SKILLS_RELPATH / directory).as_posix()
     lines = [
         f"> **Running in Codex.** Generated from `{upstream_dir}/` by "
         "`dev10x skill codex-skills` — edit the upstream skill, not this file.",
@@ -247,31 +281,51 @@ def _copied_files(skill_dir: Path, upstream_dir: PurePosixPath) -> list[PurePosi
     return files
 
 
-def _skill_directories(root: Path) -> list[Path]:
-    skills_root = root / UPSTREAM_SKILLS_RELPATH
-    directories = (
+def _skills_roots(root: Path) -> list[PurePosixPath]:
+    plugins = root / UPSTREAM_PLUGINS_RELPATH
+    satellites = (
         sorted(
-            path
-            for path in skills_root.iterdir()
-            if path.is_dir() and (path / SKILL_FILE).is_file()
+            UPSTREAM_PLUGINS_RELPATH / path.name / "skills"
+            for path in plugins.iterdir()
+            if (path / "skills").is_dir()
         )
-        if skills_root.is_dir()
+        if plugins.is_dir()
         else []
     )
-    if not directories:
+    return [UPSTREAM_SKILLS_RELPATH, *satellites]
+
+
+def skill_sources(root: Path) -> list[SkillSource]:
+    found: dict[str, SkillSource] = {}
+    for skills_root in _skills_roots(root):
+        folder = root / skills_root
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.iterdir()):
+            if not path.is_dir() or not (path / SKILL_FILE).is_file():
+                continue
+            upstream_dir = skills_root / path.name
+            if path.name in found:
+                raise InvalidPluginRoot(
+                    f"skill {path.name!r} exists in both {found[path.name].upstream_dir} and "
+                    f"{upstream_dir}; the bundled Codex plugin has one namespace"
+                )
+            found[path.name] = SkillSource(
+                directory=path, upstream_dir=upstream_dir, plugin_dir=plugin_dir_of(upstream_dir)
+            )
+    if not found:
         raise InvalidPluginRoot(
-            f"{skills_root} holds no skill folders with a {SKILL_FILE} — "
+            f"{root / UPSTREAM_SKILLS_RELPATH} holds no skill folders with a {SKILL_FILE} — "
             "refusing to translate an empty plugin"
         )
-    return directories
+    return [found[name] for name in sorted(found)]
 
 
 def translate_skills(root: Path) -> GeneratedTree:
-    directories = _skill_directories(root)
-    known = [directory.name for directory in directories]
+    skills = skill_sources(root)
+    known = [skill.name for skill in skills]
     sources: dict[str, list[PurePosixPath]] = {
-        directory.name: _copied_files(directory, UPSTREAM_SKILLS_RELPATH / directory.name)
-        for directory in directories
+        skill.name: _copied_files(skill.directory, skill.upstream_dir) for skill in skills
     }
     copied = frozenset(path for paths in sources.values() for path in paths)
     files: dict[PurePosixPath, str] = {}
@@ -279,15 +333,15 @@ def translate_skills(root: Path) -> GeneratedTree:
 
     def relink(text: str, *, source: PurePosixPath, target: PurePosixPath) -> str:
         return rewrite_links(
-            rewrite_text(text),
+            rewrite_text(text, plugin_dir=plugin_dir_of(source)),
             source=source,
             target=target,
             copied=copied,
             exists=lambda path: (root / path).exists(),
         )
 
-    for directory in directories:
-        name = codex_skill_name(directory.name)
+    for skill in skills:
+        name = codex_skill_name(skill.name)
         verified = name in VERIFIED_SKILLS
         deferred_issue = DEFERRED_SKILLS.get(name)
         for source in sources[name]:
@@ -312,13 +366,14 @@ def translate_skills(root: Path) -> GeneratedTree:
                         verified=verified,
                         deferred_issue=deferred_issue,
                         caveat=SKILL_CAVEATS.get(name),
+                        upstream=skill.upstream_dir,
                     )
                     + relink(body, source=source, target=target)
                 )
             elif source.suffix == ".md":
                 files[target] = relink(text, source=source, target=target)
             else:
-                files[target] = rewrite_text(text)
+                files[target] = rewrite_text(text, plugin_dir=skill.plugin_dir)
         files[CODEX_SKILLS_RELPATH / name / OPENAI_YAML_RELPATH] = render_openai_yaml(
             directory=name, implicit=deferred_issue is None
         )

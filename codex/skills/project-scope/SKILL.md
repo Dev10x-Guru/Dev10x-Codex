@@ -2,12 +2,12 @@
 name: project-scope
 description: 'Scope a multi-ticket project with milestones, blocking relationships, and tracker integration. Accepts a parent ticket URL/ID or free-text description and creates the full project structure in Linear, JIRA, or GitHub Issues. TRIGGER when: scoping a multi-ticket project with milestones and blocking relationships. DO NOT TRIGGER when: scoping a single ticket (use Dev10x:ticket-scope), or creating individual tickets (use Dev10x:ticket-create).'
 metadata:
-  upstream: skills/project-scope/SKILL.md
+  upstream: plugins/scoping/skills/project-scope/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/project-scope/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/scoping/skills/project-scope/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/project-scope/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/scoping/skills/project-scope/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Project Scope - Multi-Ticket Project Creation
@@ -27,6 +27,15 @@ description and produces a complete project structure in the tracker.
 - Single-ticket scoping (use `Dev10x:ticket-scope`)
 - Architectural decisions without implementation tickets (use `Dev10x:adr`)
 - Creating a single ticket (use `Dev10x:ticket-create`)
+
+> **[OVERRIDE DETECTED]** — over the 200-line SKILL.md budget
+> (GH-1705). The four phases form one pipeline whose gates (scope
+> approval, project-entity, tracker choice) and per-tracker dispatch
+> rules (3.1–3.7) are execution-gating: an agent that skips a section
+> creates tickets without milestones or blocking links. **Split plan:**
+> if it passes ~480 lines, move § Agent Delegation (the Phase 3–4
+> dispatch template) and § Error Handling to `references/`, keeping
+> the phase outline and gates inline.
 
 ## Orchestration
 

@@ -64,7 +64,7 @@ did not take.
 `--media` / `--upload-file` — so no gog invocation can carry a media
 body.
 
-That is the whole reason `skills/yt-upload/scripts/upload-video.py`
+That is the whole reason `Dev10x:yt-upload`'s `scripts/upload-video.py`
 hand-rolls the resumable `videos.insert` with a token exported from gog.
 Everything gog *can* do stays with gog: warming the token
 (`youtube channels list --mine`), minting the credential

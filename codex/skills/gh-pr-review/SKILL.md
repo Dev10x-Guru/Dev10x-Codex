@@ -2,12 +2,12 @@
 name: gh-pr-review
 description: 'Review a GitHub pull request and post findings with inline comments. Fetches PR diff, reads changed files, checks for interface impact, applies project review guidelines, and posts a review to GitHub. Supports Draft (PENDING) and submitted review modes via Step 8a gate. Supports courtesy-fixup disposition: mechanical, unambiguous findings may be pushed as fixup! commits with reviewer consent (Step 5b/6b). TRIGGER when: reviewing an external PR and posting review comments. DO NOT TRIGGER when: reviewing own branch changes before PR creation (use Dev10x:review), or PR does not exist yet.'
 metadata:
-  upstream: skills/gh-pr-review/SKILL.md
+  upstream: plugins/coding/skills/gh-pr-review/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/gh-pr-review/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/gh-pr-review/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/gh-pr-review/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/gh-pr-review/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # GitHub PR Review

@@ -1,4 +1,4 @@
-# Generated from agents/architect-frontend.md by `dev10x skill codex-agents` — edit the upstream agent, not this file.
+# Generated from plugins/scoping/agents/architect-frontend.md by `dev10x skill codex-agents` — edit the upstream agent, not this file.
 name = "Dev10x:architect-frontend"
 description = "Evaluate frontend architecture decisions — component patterns, state management, SSR strategies, testing approaches, and design system patterns. Used by adr-evaluate for frontend ADRs. Triggers: invoked by adr-evaluate skill for frontend architecture ADRs"
 model_reasoning_effort = "medium"

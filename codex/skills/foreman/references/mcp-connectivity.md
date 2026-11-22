@@ -184,7 +184,7 @@ silently re-drafting a PR). Same rule, one more reason for it.
   (GH-1072 / GH-1099 ask 1) — the transport is harness-owned.
 - **Drafted, not filed (GH-1121 item 1):** the harness-client report
   with the 60–90min reproduction is written up at
-  [`docs/memos/gh-1121-upstream-report-draft.md`](../../../../docs/memos/gh-1121-upstream-report-draft.md).
+  [`docs/memos/gh-1121-upstream-report-draft.md`](../../../docs/memos/gh-1121-upstream-report-draft.md).
   It has **not** been sent anywhere — filing it is outward-facing
   publication and the supervisor's call.
 - **Decided (GH-1121 item 2):** a server-side keepalive is worth
@@ -192,7 +192,7 @@ silently re-drafting a PR). Same rule, one more reason for it.
   with the soak that can falsify it — the SDK does expose
   `ServerSession.send_ping`, so the blocker is verification, not
   capability. Reasoning and build order in
-  [`docs/memos/gh-1121-keepalive-decision.md`](../../../../docs/memos/gh-1121-keepalive-decision.md).
+  [`docs/memos/gh-1121-keepalive-decision.md`](../../../docs/memos/gh-1121-keepalive-decision.md).
 - **Still open (GH-1121 item 3):** verify whatever lands against a real
   60–90+ minute cycle. Until then the worker-side `ToolSearch` re-run
   remains the interim answer.

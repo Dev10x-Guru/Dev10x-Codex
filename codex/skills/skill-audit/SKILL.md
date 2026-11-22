@@ -2,12 +2,12 @@
 name: skill-audit
 description: 'Audit a session''s skill usage, compliance, and extract lessons learned. Default (lightweight): analyzes visible context inline and presents a disposition gate — no separate terminal needed for most audits. Forensic (--full or escalation): dispatches parallel subagents for deep transcript analysis — run from a separate terminal. TRIGGER when: session is complete and user wants usage review, or a skill didn''t behave as expected. DO NOT TRIGGER when: mid-session during active work, or user is asking about a specific skill''s documentation.'
 metadata:
-  upstream: skills/skill-audit/SKILL.md
+  upstream: plugins/teach/skills/skill-audit/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/skill-audit/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/teach/skills/skill-audit/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/skill-audit/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/teach/skills/skill-audit/`.
 > **Not supported in Codex yet**: this skill depends on Claude Code features Codex lacks (Dev10x-Codex#17). Use it from Claude Code; Codex runs it only when invoked by name.
 
 # Skill Audit

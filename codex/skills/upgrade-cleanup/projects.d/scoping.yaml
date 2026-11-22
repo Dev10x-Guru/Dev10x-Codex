@@ -23,6 +23,8 @@ base_permissions:
   - "mcp__cli__milestones_bulk_create"
   - "mcp__cli__issues_bulk_create"
   - "mcp__cli__issues_bulk_edit"
+  # --- dev10x-scoping skills (GH-1570) ---
+  - "Skill(dev10x-scoping:*)"
 
 # --- Tracker-keyed permissions (GH-768) ---
 # `ensure-base` / `seed_worktree` fold in exactly ONE of these blocks —

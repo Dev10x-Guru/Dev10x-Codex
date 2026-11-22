@@ -1,6 +1,6 @@
 ---
 name: plugin-doctor
-description: 'Diagnose drift between user intent and observed agent behavior in Dev10x sessions. Runs pluggable strategies that each detect one drift category (MCP-vs-script confusion, missing dir coverage, stale memories, monorepo uv-run-project friction, missing local skill pre-approvals), explain the root cause, and propose a remediation patch — never auto-applied; always confirmed via AskUserQuestion. TRIGGER when: user hits repeated permission friction despite prior cleanup, notices the agent reaching for shell-script fallbacks instead of MCP tools, or wants a systemic audit of intent drift. DO NOT TRIGGER when: a single permission rule needs ad-hoc debugging (use Dev10x:permission-investigator) or the issue is a one-off skill bug (file a ticket instead).'
+description: 'Diagnose drift between user intent and observed agent behavior in Dev10x sessions. Runs pluggable strategies that each detect one drift category (MCP-vs-script confusion, missing dir coverage, stale memories, uv-run-project friction, missing local skill pre-approvals, a satellite enabled without core), explain the root cause, and propose a remediation patch — never auto-applied; always confirmed via AskUserQuestion. TRIGGER when: user hits repeated permission friction despite prior cleanup, notices the agent reaching for shell-script fallbacks instead of MCP tools, or wants a systemic audit of intent drift. DO NOT TRIGGER when: a single permission rule needs ad-hoc debugging (use Dev10x:permission-investigator) or the issue is a one-off skill bug (file a ticket instead).'
 metadata:
   upstream: skills/plugin-doctor/SKILL.md
 ---
@@ -81,7 +81,7 @@ class Strategy:
 
 `Context` carries paths to settings files, memory directories, and
 hook log access — strategies read but do not mutate. The first
-shipped strategy is :mod:`dev10x.skills.doctor.strategies.mcp_vs_script_drift`
+shipped strategy is :mod:`dev10x.core.skills.doctor.strategies.mcp_vs_script_drift`
 (MCP tool vs shell fallback). See
 [`references/strategy-catalog.md`](references/strategy-catalog.md)
 for the planned strategy roster.
@@ -118,6 +118,9 @@ Each remediation either:
 
 - Edits a memory file in place (use `Edit`)
 - Delegates to `Dev10x:plugin-maintenance` for settings changes
+- Calls the MCP tool a remediation names in `action.tool` with its
+  `action.arguments` (e.g. `sibling-only-grants` →
+  `permission_grant(..., remember=true)`)
 - Delegates to `Dev10x:memory-maintenance` for memory restructuring
 - Files an upstream issue via `mcp__cli__issue_create`
   when the drift originates in the plugin itself

@@ -2,12 +2,12 @@
 name: session-tasks
 description: 'Track in-session work items — so open loops are visible and triageable before session end without losing track of parallel work. TRIGGER when: managing in-session task tracking, viewing open loops, or adding work items mid-session. DO NOT TRIGGER when: starting structured work from inputs (use Dev10x:work-on), or wrapping up a session (use Dev10x:session-wrap-up).'
 metadata:
-  upstream: skills/session-tasks/SKILL.md
+  upstream: plugins/tasks/skills/session-tasks/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/session-tasks/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/tasks/skills/session-tasks/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/session-tasks/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/tasks/skills/session-tasks/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:session-tasks — In-Session Task Tracking

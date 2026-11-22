@@ -2,12 +2,12 @@
 name: request-review
 description: 'Request PR review — assigns GitHub reviewers and posts the team''s chat notification (Slack, Google Chat, or both) in one command. Delegates to Dev10x:gh-pr-request-review, Dev10x:slack-review-request and Dev10x:gchat-review-request. TRIGGER when: PR is ready for review and needs both GitHub reviewer assignment and a chat notification. DO NOT TRIGGER when: PR is draft/WIP, or only need GitHub assignment without a notification (use Dev10x:gh-pr-request-review directly).'
 metadata:
-  upstream: skills/request-review/SKILL.md
+  upstream: plugins/coding/skills/request-review/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/request-review/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/request-review/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/request-review/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/request-review/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 ## Orchestration
@@ -24,40 +24,34 @@ Mark completed when done: `TaskUpdate(taskId, status="completed")`
 
 ## Flow
 
+Arguments: PR URL or number, `--repo`, `--force`, `--unattended`,
+`--audit`.
+
+**Audit mode (`--audit`, GH-1834):** skip Steps 1–4. Call
+`mcp__cli__review_readiness_audit(repo="{REPO}")` (omit
+`repo` for the current one), print one line per PR —
+`#N verdict — problem detail (since)` — grouped `SENT-NOT-READY`
+first, then `WENT-RED-AFTER`, then `UNKNOWN`, then the counts — and,
+when `more_open_prs` is true, that only `scanned` PRs were read. Write
+nothing. Verdict meanings: `references/review-readiness.md` § Audit.
+
 ### Step 1: Detect PR context
 
-Use the MCP tool to detect PR number and repo:
-
-```
-mcp__cli__pr_detect(arg="$ARG")
-```
-
-Parse `PR_NUMBER`, `REPO`, `PR_URL` from the returned dict.
-Pass `$ARG` as the skill argument (PR URL, bare number, or empty).
-
+Call `mcp__cli__pr_detect(arg="$ARG")` with `$ARG` (PR
+URL, bare number, or empty) and parse `PR_NUMBER`, `REPO`, `PR_URL`.
 If detection fails, report the error and stop.
 
 ### Step 1.5: Approval state precheck (GH-993, GH-128)
 
-Before pinging reviewers, check whether the PR is already
-approved on its current HEAD **by a human reviewer**. Bot
-approvals (e.g., `claude[bot]`, `github-actions[bot]`) MUST
-NOT short-circuit the human review request.
+Check whether a **human** already approved the current HEAD. Call
+`mcp__cli__pr_get(number={PR_NUMBER}, repo="{REPO}")`
+and read `reviewDecision`, `reviews`, `headRefOid` and `isDraft`
+(GH-917 — never the hook-blocked raw `gh pr view`). Step 1.6 reuses
+`isDraft`.
 
-```
-mcp__cli__pr_get(number={PR_NUMBER}, repo="{REPO}")
-```
-
-Read `reviewDecision`, `reviews`, and `headRefOid` from the
-response — `pr_get` exposes all three (GH-917), so this precheck
-never needs the hook-blocked raw `gh pr view`.
-
-**Filter bot approvals first (GH-128).** Before matching reviews
-against `headRefOid`, drop any review whose `author.login` ends
-with `[bot]` (e.g., `claude[bot]`) or whose `author.type == "Bot"`.
-Bot approvals do not satisfy the "human review" requirement.
-
-Decision logic (operates on the human-filtered review list):
+**Filter bot approvals first (GH-128):** drop reviews whose
+`author.login` ends with `[bot]` or whose `author.type == "Bot"` — a
+bot approval never satisfies human review. Then:
 
 - A HUMAN review with `state == "APPROVED"` and `commit.oid`
   matching `headRefOid` → PR is human-approved on the current
@@ -77,31 +71,50 @@ Decision logic (operates on the human-filtered review list):
   HEAD, log "PR has only a bot approval — requesting human review"
   so the rationale is visible.
 
-Skip this precheck when invoked with `--force` or when the
-caller is `Dev10x:gh-pr-monitor` Phase 3 with explicit
-`bypass_approval_check: true` (re-review request after fixups
-where the monitor has already validated state).
+Skip this precheck on `--force` or when `Dev10x:gh-pr-monitor` Phase
+3 passes `bypass_approval_check: true` (re-review after fixups).
+
+### Step 1.6: Readiness check (GH-1834)
+
+Run the four conditions in
+[`references/review-readiness.md`](../../references/review-readiness.md)
+— draft, CI, unresolved threads, bots at head. A draft fails like the
+rest; never mark it ready here. `--force` does not skip this step.
+
+When any condition fails or cannot be read, resolve the run mode as
+that file's § "When the PR is not ready" orders it: `--unattended`,
+else `run_mode.mode` of `mcp__cli__resolve_gate(gate=
+"external_notify", context={})` (read only `run_mode`). `undetermined`
+or an error is attended, printed as `Run mode: undetermined ({basis})
+— treated as attended`.
+
+- **Unattended**: refuse — stop, report each reason, post nothing.
+- **Attended**: **REQUIRED: Call `AskUserQuestion`** (do NOT use plain
+  text). Question: `"PR #{PR_NUMBER} is not ready for review:
+  {reasons}. Request review anyway?"`, header `Readiness`. Options:
+  - **Stop — fix it first (Recommended)** — end here; report the
+    reasons. Nothing is assigned or posted.
+  - **Request review anyway** — continue to Step 2; Step 3.5 and the
+    Step 4 summary carry the reasons.
+
+A stop here goes straight to Step 4 with `status: "stopped"`.
 
 ### Step 2: Assign GitHub reviewers
 
-Delegate to the GitHub reviewer assignment skill:
+Delegate in this run's mode (`--readiness-checked`: Step 1.6 ran):
 
-```
-$Dev10x:gh-pr-request-review (args: "--pr {PR_NUMBER} --repo {REPO}")
-```
+1. Unattended run: `$Dev10x:gh-pr-request-review (args: "--pr {PR_NUMBER} --repo {REPO} --readiness-checked --unattended")`
+2. Attended run: `$Dev10x:gh-pr-request-review (args: "--pr {PR_NUMBER} --repo {REPO} --readiness-checked")`
 
-This skill reads `<Dev10x config>/github-reviewers-config.yaml`,
-resolves reviewers, and assigns them via GitHub API. It may skip
-if the project is configured with `skip: true`.
-
-Capture the outcome (assigned / skipped / error) for the summary.
+It resolves reviewers from `<Dev10x config>/github-reviewers-config.yaml`
+and may skip on `skip: true`. Read the `status` of its
+`review_request_result:` line (GH-1921), never its prose. `stopped`
+ends the run: skip Steps 3 and 3.5; Step 4 carries its reasons.
 
 ### Step 3: Post the review notification
 
-The transport is whichever one this team actually uses — Slack, Google
-Chat, or both. Resolve it from config rather than assuming (GH-1308);
-hardcoding Slack here left a Chat-only team with no supported way to
-invoke this skill at all.
+The transport is whichever one this team uses — Slack, Google Chat, or
+both — resolved from config, never assumed (GH-1308).
 
 **Resolve the transports.** `Read` each per-repo config and check
 whether its `projects` map names the repo's short name (the part after
@@ -129,23 +142,18 @@ $Dev10x:slack-review-request (args: "--pr {PR_NUMBER} --repo {REPO}")
 $Dev10x:gchat-review-request (args: "--pr {PR_NUMBER} --repo {REPO}")
 ```
 
-Each skill resolves its own config, formats the message, confirms with
-the user, and posts. Either may skip when its project entry sets
-`skip: true`.
-
-Capture the outcome per transport (posted / skipped / error) for the
-summary — name the transport that was actually used.
+Each skill formats, confirms and posts, or skips on `skip: true`.
+Capture posted / skipped / error per transport, naming the one used.
 
 ### Step 3.5: Post PR comment (optional)
 
-Post a review request comment on the PR mentioning assigned reviewers:
+Mention the assigned reviewers. After "Request review anyway" in Step
+1.6, the body names the reasons instead of claiming readiness:
 
 ```
-mcp__cli__pr_issue_comment(
-    pr_number={PR_NUMBER},
-    repo="{REPO}",
-    body="Ready for review @reviewer1 @reviewer2",
-)
+mcp__cli__pr_issue_comment(pr_number={PR_NUMBER}, repo="{REPO}",
+    body="Ready for review @reviewer1 @reviewer2")
+# override: body="Review requested before ready ({reasons}) @reviewer1"
 ```
 
 Skip this step if:
@@ -158,27 +166,18 @@ Report the combined result:
 
 ```
 Review request for PR #{PR_NUMBER}:
+- Readiness: {ready / not ready — requested anyway: reasons / stopped — reasons}
 - GitHub reviewers: {assigned / skipped / error}
 - PR comment: {posted / skipped}
 - {Slack | Google Chat} notification: {posted / skipped / error}
 ```
 
-List one line per transport that ran. A transport whose config does not
-name the repo is not reported at all — it was never in play.
+List one line per transport that ran — never one the config omits.
+End with the `review_request_result:` line and task metadata defined
+in `references/review-readiness.md` § Result for callers.
 
 ## Notes
 
-- Steps 2 and 3 are independent — if one skips, the other still runs
-- Both skipping is valid (project may be configured to skip both)
-- Either transport may skip independently of the other — the same
-  wording applies within Step 3
-- Each sub-skill uses its own config file — no combined config needed
-- This skill is invoked by `Dev10x:gh-pr-monitor` Phase 3 and
-  directly by users via `$Dev10x:request-review`
-
-## See Also
-
-- `Dev10x:gh-pr-request-review` — GitHub reviewer assignment
-- `Dev10x:slack-review-request` — Slack notification
-- `Dev10x:gchat-review-request` — Google Chat notification
-- `Dev10x:gh-pr-monitor` — calls this skill in Phase 3
+- A Step 1.6 refusal or a Step 2 stop ends the run. Otherwise Steps 2
+  and 3 are independent: each may skip on its own config file.
+- Callers: `Dev10x:gh-pr-monitor` Phase 3 and `$Dev10x:request-review`.

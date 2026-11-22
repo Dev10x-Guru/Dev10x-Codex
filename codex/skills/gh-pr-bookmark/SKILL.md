@@ -2,12 +2,12 @@
 name: gh-pr-bookmark
 description: 'Post a rich session bookmark comment on a PR — captures session ID, review thread status, current state, and next steps so the next session can pick up where this one left off. TRIGGER when: pausing or ending session with an open PR that has in-progress work. DO NOT TRIGGER when: no PR exists, or session-wrap-up handles bookmarking automatically.'
 metadata:
-  upstream: skills/gh-pr-bookmark/SKILL.md
+  upstream: plugins/coding/skills/gh-pr-bookmark/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/gh-pr-bookmark/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/gh-pr-bookmark/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/gh-pr-bookmark/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/gh-pr-bookmark/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:gh-pr-bookmark — PR Session Bookmark

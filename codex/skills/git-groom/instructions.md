@@ -12,6 +12,19 @@ This skill helps restructure, polish, and clean up git commit history in the cur
 - Before creating a PR to ensure clean history
 - When CI blocks merge due to fixup commits
 
+> **[OVERRIDE DETECTED]** — ~1100 lines against the 200-line budget
+> (GH-1705). History rewriting is the one workflow where a skipped
+> guard loses commits: the Phase 0 open-thread refusal, the remote
+> base resolution, the Strategy B tag → pin → ancestor-check → soft
+> reset sequence and the force-push-with-lease rules are interleaved
+> with the strategies they protect, and a reader of one strategy needs
+> the guard beside it. **Split plan:** move § Common Scenarios,
+> § Best Practices, § Commit Message Conventions and § Troubleshooting
+> (~290 lines, the file's tail from § Common Scenarios on) to
+> `references/` first; if the file
+> still passes ~800 lines, split Strategies A–E into one reference
+> file each and keep the Phase 0–2 decision flow inline.
+
 ## Orchestration
 
 This skill follows `references/task-orchestration.md` patterns.
@@ -162,7 +175,7 @@ scoping continue as before.
    project uses SPDD specs at all.
 3. **Drift** — only when step 2 found the file, call
    `detect_drift(spec_path=..., project_root=...)` from
-   `dev10x.spec` and branch on `report.has_behavioural`:
+   `dev10x.core.spec` and branch on `report.has_behavioural`:
    behavioural drift fails closed (below); structural drift warns.
 
 Do NOT probe for the spec with `ls docs/specs/` or `python3 -c
@@ -206,7 +219,7 @@ Steps sections describe a different code shape. Consider running
 from this spec gets the right file layout.
 ```
 
-This precondition uses the shared `dev10x.spec.drift_detector`
+This precondition uses the shared `dev10x.core.spec.drift_detector`
 module so `gh-pr-respond` and `git-groom` agree byte-for-byte
 on what counts as drift.
 
@@ -382,10 +395,21 @@ would cause `git rebase` to fail:
 git status --porcelain
 ```
 
-If unstaged changes exist (e.g., lock files, generated files):
-1. Stash them: `git stash --include-untracked`
-2. Run the rebase strategy
-3. Pop the stash: `git stash pop`
+If unstaged changes exist (e.g., lock files, generated files),
+set them aside under a tag only this run knows. The stash stack is
+shared by every worktree and session of the repo, so a bare
+`git stash pop` can restore another session's entry (GH-1703):
+
+1. Stash with a unique tag:
+   `git stash push -u -m groom-guard-<branch-slug>-<timestamp>`
+2. Capture this entry's SHA: `git stash list --format='%H %gs'`,
+   and take the line whose subject ends with the tag
+3. Run the rebase strategy
+4. Restore by SHA, never by position: `git stash apply <sha>`
+5. Drop the entry: re-list with `git stash list --format='%gd %gs'`,
+   find the tag's current `stash@{n}`, then `git stash drop stash@{n}`
+
+Never `git stash pop` or a bare `git stash` here.
 
 This prevents the common failure: `error: cannot rebase: You
 have unstaged changes.` — which halts the entire groom pipeline.
@@ -405,7 +429,7 @@ git autosquash-develop
 # Custom sequence (reordering, message rewrites, splits):
 # 1. Create unique seq file: /tmp/Dev10x/bin/mktmp.sh git rebase-seq .txt
 # 2. Write sequence to the returned path
-# 3. Run: <plugin-root>/skills/git/scripts/git-rebase-groom.sh <path> develop
+# 3. Run: <plugin-root>/plugins/coding/skills/git/scripts/git-rebase-groom.sh <path> develop
 ```
 
 **Key insight:** For pure autosquash (squashing fixup commits into their targets), use `git autosquash-develop` — an alias that wraps `GIT_SEQUENCE_EDITOR=true git rebase -i --autosquash $(git merge-base develop HEAD)` internally, avoiding env-prefix and subshell permission friction. The rebase script (`git-rebase-groom.sh`) replaces the todo with your sequence file, so commits not listed in the file are dropped. Only use the script when you need custom sequence control.
@@ -507,15 +531,21 @@ Use when rewriting many commit messages without structural changes (no
 splits, squashes, or file renames beyond what the commits already have).
 Fully automatable — no interactive editor required.
 
-**Use the script** (single permission approval, runs unattended):
+Create the config file with `mcp__cli__mktmp`
+(`namespace="git"`, `prefix="groom-config"`, `ext=".json"`) and write
+the config to the returned path.
+
+**Primary (MCP tool):** Call `mcp__cli__mass_rewrite`
+with `config_path=<config-path>` and `cwd=<absolute worktree path>`.
+It runs unattended and never prompts for approval.
+A conflict returns `conflict: true` with `conflicted_files`.
+
+**Fallback (script):** Only when the MCP server is unavailable:
 ```bash
 /tmp/Dev10x/bin/mktmp.sh git groom-config .json
+<plugin-root>/plugins/coding/skills/git-groom/scripts/mass-rewrite.py <config-path>
 ```
-Write the config to the returned path, then run:
-```bash
-<plugin-root>/skills/git-groom/scripts/mass-rewrite.py <config-path>
-```
-The script creates its own isolated workdir under `/tmp/Dev10x/git/`.
+Either path creates its own isolated workdir under `/tmp/Dev10x/git/`.
 
 Config format:
 ```json
@@ -579,7 +609,7 @@ Oldest commit at top.
 
 **Step 5:** Run the non-interactive rebase:
 ```bash
-<plugin-root>/skills/git/scripts/git-rebase-groom.sh <seq-path> develop
+<plugin-root>/plugins/coding/skills/git/scripts/git-rebase-groom.sh <seq-path> develop
 ```
 
 `GIT_EDITOR="true"` suppresses the commit message editor for `--amend`
@@ -667,10 +697,18 @@ reconstruction loop instead of pushing. See
 [`references/tree-reconstruction.md`](references/tree-reconstruction.md)
 § "Tree-Equality Post-Condition".
 
-```bash
-# Force push with lease (safer than --force)
-git push origin <branch> --force-with-lease
+Push through the MCP wrapper, which applies the protected-branch
+guard and refuses a lease against a stale base (GH-1703):
+
 ```
+mcp__cli__push_safe(
+    args=["--force-with-lease", "origin", "<branch>"])
+```
+
+Treat any payload without `"pushed": false` or an `error` key as
+success, then confirm the remote tip moved: `git log -1 --format=%H
+origin/<branch>` must equal `git log -1 --format=%H HEAD` (a write
+is a request, not a receipt).
 
 **Important:** `--force-with-lease` fails if someone else pushed to the branch, preventing accidental overwrites.
 
@@ -678,6 +716,15 @@ git push origin <branch> --force-with-lease
 the new HEAD. All previous CI results become invalid. The calling
 skill (e.g., `Dev10x:work-on`) MUST re-monitor CI after grooming
 completes — do not declare CI green based on pre-groom results.
+
+**REQUIRED — re-ready a PR the push drafted (GH-958, GH-1731).** A
+force-push resets a published PR to draft, and `pr-draft-on-push.yml`
+drafts it on any push; a draft gets no CI. When an open PR exists,
+read `isDraft` with `mcp__cli__pr_get` before the push
+and again after it. If it was ready before and is a draft now, call
+`mcp__cli__pr_ready(pr_number=<n>)` and confirm
+`isDraft: false` from its payload. A PR that was already a draft stays
+one. Full rule: `.claude/rules/mcp-tools.md` § `pr_ready` after a push.
 
 **REQUIRED — clear a stale review clearance (GH-1008).** A force-push
 invalidates a human sign-off for the same reason it invalidates CI:
@@ -709,7 +756,9 @@ in session 0aa83b83.
 because "the PR will be updated later" — the groom skill owns
 the full rewrite lifecycle including reference updates.
 
-1. Detect open PR: `gh pr view --json number,state`
+1. Detect the PR: `mcp__cli__pr_detect()` returns
+   `pr_number`; read its `state` with
+   `mcp__cli__pr_get(number=<n>)` (GH-1703)
    - If no PR or PR is closed/merged → skip Phase 4, mark done
    - If PR is open → proceed with updates
 2. Get the new commit hash(es): `git log --oneline develop..HEAD`
@@ -1004,10 +1053,10 @@ When calling skill scripts, never wrap arguments in `$()` subshells:
 ```bash
 # BAD — $() changes the effective command prefix, breaking allow rules
 BASE=$(git merge-base develop HEAD)
-<plugin-root>/skills/git/scripts/git-rebase-groom.sh "$BASE"
+<plugin-root>/plugins/coding/skills/git/scripts/git-rebase-groom.sh "$BASE"
 
 # GOOD — pass branch name directly, script resolves merge-base internally
-<plugin-root>/skills/git/scripts/git-rebase-groom.sh develop
+<plugin-root>/plugins/coding/skills/git/scripts/git-rebase-groom.sh develop
 ```
 
 **Symptom:** Every invocation prompts for permission even though the

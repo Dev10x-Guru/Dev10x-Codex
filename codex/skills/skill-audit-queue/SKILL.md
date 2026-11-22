@@ -2,12 +2,12 @@
 name: skill-audit-queue
 description: 'Queue a skill-audit invocation for later by appending a tracker task to the end of the current task list. Use mid-session when you notice friction but do not want to interrupt in-flight work — the audit runs when the supervisor reaches the queued task. Also captures lightweight friction/skill-improvement notes as annotations on the queued task, so the full audit has prior context. TRIGGER when: friction noticed mid-session, but interrupting current work is not desirable; supervisor wants the audit deferred until the active task completes. DO NOT TRIGGER when: supervisor wants the audit to run NOW (use Dev10x:skill-audit directly), or no friction has been observed.'
 metadata:
-  upstream: skills/skill-audit-queue/SKILL.md
+  upstream: plugins/teach/skills/skill-audit-queue/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/skill-audit-queue/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/teach/skills/skill-audit-queue/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/skill-audit-queue/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/teach/skills/skill-audit-queue/`.
 > **Not supported in Codex yet**: this skill depends on Claude Code features Codex lacks (Dev10x-Codex#17). Use it from Claude Code; Codex runs it only when invoked by name.
 
 # Skill Audit Queue

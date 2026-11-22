@@ -13,7 +13,7 @@ Mark completed when done: `TaskUpdate(taskId, status="completed")`
 
 ## Overview
 
-Pre-merge validation gate that checks 9 conditions before
+Pre-merge validation gate that checks 12 conditions before
 executing `gh pr merge`. Prevents premature merges like PR #633
 (merged with 7 unaddressed review comments) and PRs #690-692
 (merged with unaddressed top-level automated review comments).
@@ -25,9 +25,8 @@ The merge strategy is resolved using the config resolution order
 
 1. **Global with repo matching** — read
    `<Dev10x config>/settings-pr-merge.yaml`, match the current repo's
-   `org/repo` against `projects[].match_repo` globs (`match:` is a
-   deprecated alias, ADR-0026, until removal in `0.112.0` per the
-   deprecation register — GH-1375, ADR-0028). With no `origin`
+   `org/repo` against `projects[].match_repo` globs (`match:` is no
+   longer read here — ADR-0026, GH-1771). With no `origin`
    remote there is no `org/repo` to match, so the list is not
    evaluated at all and the default applies.
 2. **Default** — `rebase`
@@ -75,15 +74,15 @@ All fields are optional. Defaults:
 based on a single `gh pr view` JSON read — that is the regression this
 check exists to catch (GH-112).
 
-**The nine subtask RECORDS are not load-bearing; running and
-reporting the nine checks is** (GH-971 F2). What the gate is
+**The twelve subtask RECORDS are not load-bearing; running and
+reporting the twelve checks is** (GH-971 F2). What the gate is
 defending is that each check was actually *performed against live
-state* before the merge — nine `TaskCreate` round-trips are ceremony
+state* before the merge — twelve `TaskCreate` round-trips are ceremony
 that costs a call each and proves nothing the report does not. So
 this step is satisfied by BOTH of:
 
 1. The `TaskList` call above, made in THIS invocation.
-2. A reported nine-item checklist in which every check names the
+2. A reported twelve-item checklist in which every check names the
    **observed value** it was decided on — `isDraft: false`,
    `mergeable: MERGEABLE`, `verdict: green`, `unresolved threads: 0`,
    and so on. A bare "✓ passed" per line does not satisfy it: an
@@ -106,20 +105,20 @@ on the agent's recollection that "the checks just passed" — those
 checks belong to a sibling skill's context, not this one.
 
 **Re-invocation contract:** Every invocation of `Dev10x:gh-pr-merge`
-re-runs the full skill body from Step 1, including all 9 pre-merge
+re-runs the full skill body from Step 1, including all 12 pre-merge
 checks. Check results from a prior `Dev10x:gh-pr-monitor` phase,
 prior `Dev10x:verify-acc-dod` run, or earlier invocation of this
 same skill are NOT reusable. CI state, review comments, draft
 toggles, and force-push state can drift between invocations — the
-9 checks exist precisely to detect that drift.
+12 checks exist precisely to detect that drift.
 
 ### Subagent handoff exception (GH-1093)
 
 The re-invocation contract has ONE bounded exception. A worker
-subagent that ran the 9 checks and could not fire an `ALWAYS_ASK`
+subagent that ran the 12 checks and could not fire an `ALWAYS_ASK`
 gate — `AskUserQuestion` is not exposed to background subagents —
 hands its report to the orchestrator holding the standing
-authorization. Re-running all 9 there validated every merge twice
+authorization. Re-running all 12 there validated every merge twice
 for ~3–4× duplicated tool traffic per PR.
 
 The exception applies ONLY when ALL of these hold:
@@ -130,8 +129,9 @@ The exception applies ONLY when ALL of these hold:
 2. A fresh `pr_get` shows the PR still open with a head SHA
    identical to the reported one.
 3. The orchestrator re-runs the time-sensitive checks itself:
-   Check 2 (CI) and Checks 1 / 1b / 1c (comments — the GH-462 F3
-   late-comment race). Checks 2b / 3 / 4 / 7 ride along on the
+   Check 2 (CI), Checks 1 / 1b / 1c (comments — the GH-462 F3
+   late-comment race) and Check 1e (bot review state, which moves
+   whenever a bot reviews or the head is pushed). Checks 2b / 3 / 4 / 7 ride along on the
    same fresh `pr_get` from step 2, so they are never inherited.
 
 Only Checks 1d, 5 and 6 may then be accepted from the report:
@@ -149,17 +149,25 @@ bl-zebra evidence:
 **Audit the report before inheriting anything (GH-1380).** The
 three conditions above were prose the orchestrator applied by eye,
 and a report that narrates the pipeline reads exactly like one that
-reports it. Write the report and the fresh `pr_get` response to
-files (`mcp__cli__mktmp`) and run:
+reports it.
+
+**Primary (MCP tool):** Call
+`mcp__cli__audit_handoff_report` with `report=<the
+report as a JSON object>` and `pr_state=<the fresh pr_get response>`.
+It is read-only and never prompts for approval.
+
+**Fallback (script):** Only when the MCP server is unavailable, write
+both objects to files (`/tmp/Dev10x/bin/mktmp.sh`) and run:
 
 ```bash
-<plugin-root>/skills/gh-pr-merge/scripts/audit-handoff-report.py \
+<plugin-root>/plugins/coding/skills/gh-pr-merge/scripts/audit-handoff-report.py \
   --report-file <report.json> --pr-state-file <pr-get.json>
 ```
 
-It prints a JSON verdict on stdout and exits non-zero unless the
-verdict is `accept`. **Exit non-zero forbids the exception** — run
-all 9 checks yourself. The `already_merged` verdict is the GH-1380
+Both return the same JSON verdict; the script also exits non-zero
+unless the verdict is `accept`.
+**Anything but `accepted: true` forbids the exception** — run all 12
+checks yourself. The `already_merged` verdict is the GH-1380
 case: the PR merged before the report could gate it, so the report
 describes someone else's work. Attribute the merge per Check 2b
 rather than asking the worker for a better report; there is no
@@ -170,19 +178,21 @@ report that can authorize a merge that already happened.
 more", or any equivalent phrasing, treat that as a fresh invocation
 starting from Step 1 of this body — NOT as "resume from the last
 unfinished step" or "skip to the merge command". The full skill
-body, including all 9 checks, runs every time.
+body, including all 12 checks, runs every time.
 
 Session policy does NOT waive this skill body. Whatever
 `resolve_gate(gate="merge")` returns at Step 5 governs only the
 final ask/auto-advance/skip decision immediately before
-executing the merge; the 9 checks below still run
+executing the merge; the 12 checks below still run
 unconditionally on every invocation. See
 `references/friction-levels.md` § "The baseline does not waive
 skill bodies".
 
 ## Pre-Merge Validation Checks
 
-Run ALL 9 checks before merging. Report results as a checklist.
+Run ALL 12 checks before merging. Report results as a checklist.
+The twelve are Checks 1, 1b, 1c, 1d, 1e, 2, 2b, 3, 4, 5, 6 and 7 —
+a sub-check is a check, so it counts (GH-1857).
 If ANY check fails, refuse to merge and report which failed.
 
 ### Check 1: No unresolved review threads
@@ -232,7 +242,7 @@ query. Automated reviewers (claude-review, hygiene-review)
 post findings as top-level comments with severity markers.
 
 ```bash
-<plugin-root>/skills/gh-pr-merge/scripts/check-top-level-comments.sh \
+<plugin-root>/plugins/coding/skills/gh-pr-merge/scripts/check-top-level-comments.sh \
   OWNER REPO NUMBER
 ```
 
@@ -349,29 +359,36 @@ for the easy case — and the easy case is what shipped wrong. PR
 #1228 declared six links and carried commits for five; GH-1221
 closed with no commit behind it at all. A link with *no* commit
 mentioning its ticket needs no reasoning, so decide it
-mechanically before spending judgment on the rest:
+mechanically before spending judgment on the rest.
+
+**Primary (MCP tool):** Call
+`mcp__cli__reconcile_fixes_links` with `body=<PR body
+text>`, `base="origin/<base>"` and `repo_dir=<absolute PR checkout>`.
+It is read-only and never prompts for approval.
+
+**Fallback (script):** Only when the MCP server is unavailable, write
+the PR body to a file (`/tmp/Dev10x/bin/mktmp.sh`) and run:
 
 ```bash
-<plugin-root>/skills/gh-pr-merge/scripts/reconcile-fixes-links.py \
+<plugin-root>/plugins/coding/skills/gh-pr-merge/scripts/reconcile-fixes-links.py \
   --body-file <pr-body.txt> --base origin/<base> --repo-dir <pr-checkout>
 ```
 
-Write the PR body to a file via `mcp__cli__mktmp`
-first. Pass `--repo-dir` whenever the PR's branch is checked out
-somewhere other than your CWD — an orchestrator merging a worktree
-child's PR from the main checkout otherwise reads an empty
+Pass `repo_dir` (`--repo-dir`) whenever the PR's branch is checked
+out somewhere other than your CWD — an orchestrator merging a
+worktree child's PR from the main checkout otherwise reads an empty
 `base..HEAD` and gets a false `unbacked` (GH-1464). A verdict with
 `commits_read: 0` carries a `hint` naming that cause; treat it as a
 wrong-checkout read to re-run, not as a missing commit.
 
-The script prints a JSON verdict on stdout and exits
-non-zero when any link is unbacked; `unbacked` names the specific
-issues. **Exit 1 blocks the merge** — the link would close an
-issue this PR never touched.
+Both return a JSON verdict; `unbacked` names the specific issues,
+and the script also exits non-zero when any link is unbacked.
+**`ok: false` (script exit 1) blocks the merge** — the link would
+close an issue this PR never touched.
 
 For a link deliberately kept without a commit of its own (an
 issue delivered by a commit that names a sibling), pass
-`--acknowledge <number>`. That is an explicit argument rather
+`acknowledge=[<number>]` (`--acknowledge <number>`). That is an explicit argument rather
 than an inferred exception so a human records the decision;
 never widen the regex or drop the link to make the check pass.
 
@@ -395,6 +412,41 @@ undelivered scope, or split the undelivered scope into a tracked
 follow-up issue **before** merge and keep the link. This mirrors
 the disposition requirement of Checks 1b/1c — an under-delivered
 scope must not merge silently.
+
+### Check 1e: Blocking review bots reviewed the head (GH-1832)
+
+Checks 1–1d read comment and PR-body text. Empty text is not a clean review:
+bots skip drafts, some put every finding in inline comments under an
+empty review body, some post an issue comment instead of a review,
+and a review of an earlier push says nothing about the head. Compare
+each bot's reviewed commit with the head:
+
+```
+mcp__cli__bot_review_status(pr_number=NUMBER, repo="OWNER/REPO")
+```
+
+Which bots count is per-repo: `blocking_bots` login globs in
+`<Dev10x config>/settings-pr-merge.yaml` (top-level default, a
+matching `projects[].match_repo` entry overrides it). With none
+configured, nothing blocks and `ready` is `true`; when that was not
+a stated choice (`config_found: false`, or no `projects:` entry
+matched), `notes` says so — report it in the checklist line rather
+than reading the pass as "a bot reviewed the head" (GH-1857).
+
+- `ready: false` → block merge and report each line of `reasons`:
+  a blocking bot with no activity (on a draft the reason says so —
+  mark the PR ready and wait), a review that is not at
+  `head_sha`, or open inline comments from a blocking bot.
+- A stale blocking bot after a force-push is not a failure to
+  override: return to `Dev10x:gh-pr-monitor` and wait for the bot
+  to review the new head.
+- For a bot with `kind: comment`, `at_head` rests on time, not a
+  SHA (`at_head_basis: timestamp`): it spoke no earlier than
+  `head_pushed_at`, the head's push time where GitHub reveals it.
+  `at_head: null` means it cannot be told — treat it as not at head.
+- `empty_body_with_inline: true` on any bot means its findings live
+  in inline comments; Check 1 covers them, so never read that
+  bot's empty review body as a sign-off.
 
 ### Check 2: CI checks passing
 
@@ -477,6 +529,16 @@ fire the user-confirmation gate. Signals include:
   that differs from the default branch, so no commit can clear it
   before merge (`references/pr-merge-policy.md` § Reading Review
   Signals). Say in the question that no bot reviewed the PR
+- "Token exchange failed with status 401" from `claude-code-action`
+  (the federation rule rejects the job's OIDC token, #1748). The
+  standing remedy is the GH-1756 switch, not a fixup: set
+  `CLAUDE_REVIEW_ENABLED=false` until auth is fixed
+
+A `skipped` `claude-review` / `hygiene-review` is not a failure and
+never reaches this gate: when `ci_check_status` lists it in
+`disabled_checks` (switch off or `skip-claude-review` label, named by
+`review_disabled_reason`, GH-1764) it reads as "Claude review disabled"
+(`references/pr-merge-policy.md` § Reading Review Signals).
 
 Never auto-classify without evidence — if uncertain whether
 the failure is code or infra, default to the auto-fix loop
@@ -534,7 +596,7 @@ from the same response before evaluating Checks 3/4/7:
    that the merge already happened; the remaining checks are moot.
 
    **Report `ALREADY MERGED`, never the checklist (GH-1380).** The
-   Step 4 nine-item checklist is a claim that those nine checks ran in
+   Step 4 twelve-item checklist is a claim that those twelve checks ran in
    THIS invocation. They did not — the merge preceded them. Emitting it
    here is how two workers came to report a gate the orchestrator had
    run by hand for them. Report instead:
@@ -575,7 +637,7 @@ outside the plugin — a repo-level setting or a manual `gh pr merge
 required status checks.** With no required checks, GitHub merges the
 instant CI settles, which can land between "mark ready" and this
 gate — in the run behind this finding, a PR merged before the child
-invoked the skill at all, so none of the 9 validations ran for it.
+invoked the skill at all, so none of the 12 validations ran for it.
 Check 2b then correctly short-circuits to post-merge verification,
 but the merge is already done.
 
@@ -597,7 +659,7 @@ judgement, so check for one before reporting:
 - **Answered, rule not yet applied, or answered as
   deliberately-advisory** — the repo carries an ADR or equivalent
   recording the decision (in this repo,
-  [ADR-0024](../../../docs/adr/0024-required-status-checks-on-develop.md)).
+  [ADR-0024](../../docs/adr/0024-required-status-checks-on-develop.md)).
   Cite it in the post-merge report and move on. Re-raising a recorded
   decision as a fresh finding is the failure mode this paragraph
   exists to stop — it cost a slot in three consecutive bundles.
@@ -685,16 +747,16 @@ Read the per-project config file. If it does not exist, use
 defaults (`strategy: rebase`, `delete_branch: true`,
 `solo_maintainer: false`).
 
-### Step 3: Run all 9 validation checks
+### Step 3: Run all 12 validation checks
 
 **Comment-check ordering (GH-462 F3):** Checks 1, 1b, 1c,
-and 1d fetch comment/PR-body state that is time-sensitive —
+1d and 1e fetch comment/PR-body state that is time-sensitive —
 automated review bots continue posting comments during the CI
 window, and the `Fixes:`/`Closes:` links Check 1d reads can be
 edited then too, so state read before CI settles is stale. Run
 Checks 2–7 first (CI, draft, mergeable, working copy,
 fixup, approval). Only after Check 2 confirms CI is green
-(all checks `pass`) re-fetch and run Checks 1, 1b, 1c, and 1d
+(all checks `pass`) re-fetch and run Checks 1, 1b, 1c, 1d and 1e
 as a final gate immediately before Step 5 merge. This
 eliminates the race where a bot posts a REQUIRED finding
 after the comment check but before the merge.
@@ -716,8 +778,11 @@ Present results as a checklist:
 
 - [x] No unresolved review threads (0 unresolved)
 - [x] No unaddressed automated review comments (0 found)
+- [x] No unaddressed inline review comments (0 found)
 - [x] Fixes-linked issue scope delivered (2/2 links)
+- [x] Blocking review bots at head (claude @ 1a2b3c4, 0 open inline)
 - [x] CI checks passing (12/12 green)
+- [x] Not already merged; auto-merge handled per Check 2b (state: OPEN, autoMergeRequest: null)
 - [x] PR is not in draft
 - [x] No merge conflicts (MERGEABLE)
 - [x] Working copy is clean
@@ -735,7 +800,7 @@ If any check fails, show `[ ]` with failure details:
 
 **Any check fails:** Do NOT merge — skip straight to the "Any
 check fails" table below. The merge gate below only applies once
-all 9 checks pass.
+all 12 checks pass.
 
 **All checks pass — resolve the merge gate (ADR-0016, GH-757):**
 Call `mcp__cli__resolve_gate(gate="merge",
@@ -745,7 +810,7 @@ here — the resolver reads session policy (preset + overlays,
 including the solo-maintainer overlay) itself.
 
 1. `effect == "ask"` → Fire `AskUserQuestion`:
-   - Question: "All 9 pre-merge checks passed for PR #NUMBER.
+   - Question: "All 12 pre-merge checks passed for PR #NUMBER.
      Merge now via STRATEGY?"
    - Options: **Merge now (Recommended)** — proceed to the
      `merge_pr` call below / **Abort** — leave the PR open.
@@ -782,9 +847,6 @@ subprocess, so the PreToolUse hook that blocks raw `gh pr
 merge` Bash invocations does not apply. This is the only
 authorized way to execute the merge — do NOT fall back to a
 raw `gh pr merge` invocation or any caller-level env-bypass.
-Hook overrides for transient MCP unavailability live in the
-hook layer (see `.claude/rules/hook-patterns.md`), not at the
-skill caller.
 
 The tool returns `{pr_number, url, strategy, branch_deleted,
 admin, auto, repo}` on success and `{error: "..."}` on failure.
@@ -797,9 +859,21 @@ checked out in another worktree.
 
 **MCP unavailable fallback:** If the MCP server is
 disconnected (`merge_pr` listed as "no longer available" in
-system-reminders), STOP and ask the user to reconnect via
-`/mcp` or restart the session. Raw `gh pr merge` is blocked
-and the SKIP env-var prefix is not the documented contract.
+system-reminders), do not retry `merge_pr` and do not reach
+for raw `gh pr merge` (blocked) or the SKIP env-var prefix
+(not a sanctioned outage path). Then:
+
+- **Attended:** STOP and ask the user to reconnect via `/mcp`
+  or restart the session.
+- **Unattended:** leave the PR as it is, record the blocker
+  (status file, PR comment, or issue comment as the run
+  allows), and end the chunk.
+- **After a reconnect:** re-read the PR with
+  `mcp__cli__pr_get` (`state`, `mergedAt`)
+  before calling `merge_pr` again. A merge is a write, and a
+  dropped call may have landed without a reply (GH-1099).
+
+Full contract: `references/mcp-unavailable-escape-hatch.md`.
 
 **Required-review block override (GH-733, ALWAYS_ASK):** When
 Checks 1–7 pass but the merge cannot land because the PR is
@@ -848,7 +922,7 @@ Never set `admin=true` or `auto=true` autonomously — only the
 user may authorize either path through this gate. The flags
 exist so the sanctioned MCP path can complete the merge
 instead of forcing a raw `gh api .../merge` admin bypass that
-skips the entire 9-check gate.
+skips the entire 12-check gate.
 
 **Any check fails:** Do NOT merge. Report which checks failed
 and what action is needed to resolve each one. Suggest the
@@ -900,7 +974,7 @@ auto-fix loop is exhausted. See `references/friction-levels.md`
 
 ## Important Notes
 
-- Never merge without running ALL 9 checks first
+- Never merge without running ALL 12 checks first
 - Never bypass checks even if "it looks fine" — any `PENDING`,
   `IN_PROGRESS`, or `FAILURE` (required or not) blocks the
   merge. Check 2 handles these by delegating to
@@ -910,8 +984,8 @@ auto-fix loop is exhausted. See `references/friction-levels.md`
   failure is clearly infrastructure-related. All
   "Merge anyway" overrides require explicit user
   confirmation via `AskUserQuestion` with a recorded reason.
-- The solo-maintainer override only skips check 8 (approval),
-  not the other 7 checks
+- The solo-maintainer override only skips Check 7 (approval),
+  not the other 11 checks
 - This skill must NOT be called from background agents
   (`Dev10x:gh-pr-monitor` explicitly forbids merge operations)
 - Always use `gh pr merge` (not `git merge`) to ensure GitHub

@@ -2,12 +2,12 @@
 name: qa-publish
 description: 'Publish a finished QA run to the ticket and the PR as a readable verdict with a watchable video and inline screenshots — instead of raw files left in a temp directory, a ticket comment that never reaches Jira watchers, or evidence that silently claims coverage the run never had. TRIGGER when: a QA run has produced screenshots and a screen recording and the results need to reach a ticket and a PR. DO NOT TRIGGER when: executing the QA test cases (use Dev10x:qa-self), analyzing a PR for QA needs (use Dev10x:qa-scope), or publishing a single video with no ticket write-up (use Dev10x:yt-upload directly).'
 metadata:
-  upstream: skills/qa-publish/SKILL.md
+  upstream: plugins/qa/skills/qa-publish/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/qa-publish/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/qa/skills/qa-publish/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/qa-publish/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/qa/skills/qa-publish/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:qa-publish — QA evidence to the ticket and the PR
@@ -76,7 +76,7 @@ it may become world-readable.
 ### 2. Resolve the one video to publish
 
 ```bash
-<plugin-root>/skills/yt-upload/scripts/upload-video.py \
+<plugin-root>/plugins/qa/skills/yt-upload/scripts/upload-video.py \
   resolve-video --run-dir <RUN_DIR>
 ```
 

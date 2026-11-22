@@ -2,12 +2,12 @@
 name: aws-vault
 description: 'Retrieve application secrets from AWS Secrets Manager and run strictly READ-ONLY kubectl commands via aws-vault. Handles environment-specific profiles and secret naming conventions resolved through a user-maintained service registry. TRIGGER when: fetching API keys, credentials, or any secret stored in AWS Secrets Manager; running read-only kubectl operations (get, describe, logs, top, events, etc.) against an aws-vault-protected cluster. DO NOT TRIGGER when: secrets are available in the local environment, the target is not an AWS-backed service, or you need to MUTATE cluster state (apply, create, delete, scale, exec, port-forward, etc.) — those run only under direct supervisor control in a separate terminal.'
 metadata:
-  upstream: skills/aws-vault/SKILL.md
+  upstream: plugins/infra/skills/aws-vault/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/aws-vault/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/infra/skills/aws-vault/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/aws-vault/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/infra/skills/aws-vault/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # AWS Vault Secret Retrieval
@@ -35,14 +35,14 @@ secret in `<env>` — is that OK?" Only proceed after the user
 approves. This applies even to read-only discovery lookups.
 
 **Never call `aws secretsmanager` directly.** Use
-`<plugin-root>/skills/aws-vault/scripts/secrets.sh` instead.
+`<plugin-root>/plugins/infra/skills/aws-vault/scripts/secrets.sh` instead.
 
 **Never call `kubectl` or `aws-vault exec ... kubectl` directly.**
-Use `<plugin-root>/skills/aws-vault/scripts/kubectl.sh`
+Use `<plugin-root>/plugins/infra/skills/aws-vault/scripts/kubectl.sh`
 instead.
 
 **Never call `aws` or `aws-vault exec ... aws` directly.** Use
-`<plugin-root>/skills/aws-vault/scripts/aws.sh` instead. It
+`<plugin-root>/plugins/infra/skills/aws-vault/scripts/aws.sh` instead. It
 is strictly read-only: only `describe-*`, `list-*`, `get-*`,
 `lookup-*`, `search-*`, `head-*`, `batch-get-*`, `view-*`, and
 `estimate-*` operations pass through. Secret-exfil reads
@@ -54,9 +54,9 @@ even though their verb is "get" — fetch secrets through
 
 **The kubectl wrapper is strictly read-only.** Only the verbs
 listed under "When to Use" pass through; mutating verbs
-(`apply`, `create`, `delete`, `patch`, `scale`, `rollout`,
-`exec`, `port-forward`, `proxy`, `cp`, `debug`, `set`,
-`label`, `annotate`, `taint`, `drain`, `cordon`, `run`,
+(`apply`, `create`, `delete`, `patch`, `scale`, `rollout
+undo|restart|pause|resume`, `exec`, `port-forward`, `proxy`,
+`cp`, `debug`, `set`, `label`, `annotate`, `taint`, `drain`, `cordon`, `run`,
 `expose`, `autoscale`, ...) are denied. Privilege-escalation
 and cluster-redirection flags (`--as`, `--as-group`,
 `--token`, `--server`, `--kubeconfig`,
@@ -86,7 +86,7 @@ The registry maps:
 - Common key names → `secret_keys.<key_name>` (informational)
 
 If the file is missing, copy the example from
-`<plugin-root>/skills/aws-vault/references/service-registry.example.yaml`
+`<plugin-root>/plugins/infra/skills/aws-vault/references/service-registry.example.yaml`
 to the path above and edit it for your environments.
 
 ## Workflow: Retrieve a Secret
@@ -105,15 +105,15 @@ Discover Secrets workflow first, then update the registry.
 ### Step 2: Retrieve the secret via wrapper
 
 ```bash
-<plugin-root>/skills/aws-vault/scripts/secrets.sh <env> <service> --key <KEY_NAME>
+<plugin-root>/plugins/infra/skills/aws-vault/scripts/secrets.sh <env> <service> --key <KEY_NAME>
 ```
 
 Examples (replace `<env>` and `<service>` with values from your
 registry):
 
 ```bash
-<plugin-root>/skills/aws-vault/scripts/secrets.sh staging api --key DATABASE_URL
-<plugin-root>/skills/aws-vault/scripts/secrets.sh production worker
+<plugin-root>/plugins/infra/skills/aws-vault/scripts/secrets.sh staging api --key DATABASE_URL
+<plugin-root>/plugins/infra/skills/aws-vault/scripts/secrets.sh production worker
 ```
 
 ### Step 3: Use the secret
@@ -129,7 +129,7 @@ When the secret ID or key name is unknown:
 2. Run without `--key` to retrieve the full JSON blob:
 
    ```bash
-   <plugin-root>/skills/aws-vault/scripts/secrets.sh staging api
+   <plugin-root>/plugins/infra/skills/aws-vault/scripts/secrets.sh staging api
    ```
 
 3. Pipe through `jq 'keys'` (in a separate command) to list available
@@ -141,7 +141,7 @@ When the secret ID or key name is unknown:
 ## Workflow: kubectl Operations (read-only)
 
 ```bash
-<plugin-root>/skills/aws-vault/scripts/kubectl.sh <env> <verb> [args...]
+<plugin-root>/plugins/infra/skills/aws-vault/scripts/kubectl.sh <env> <verb> [args...]
 ```
 
 The wrapper resolves `context` and `namespace` from the registry per
@@ -151,11 +151,11 @@ invoking `aws-vault exec ... -- kubectl ...`.
 Examples (all read-only):
 
 ```bash
-<plugin-root>/skills/aws-vault/scripts/kubectl.sh staging get pods
-<plugin-root>/skills/aws-vault/scripts/kubectl.sh staging logs deploy/<svc> --tail=100
-<plugin-root>/skills/aws-vault/scripts/kubectl.sh production describe pod/<name>
-<plugin-root>/skills/aws-vault/scripts/kubectl.sh staging top pod
-<plugin-root>/skills/aws-vault/scripts/kubectl.sh production auth can-i get pods
+<plugin-root>/plugins/infra/skills/aws-vault/scripts/kubectl.sh staging get pods
+<plugin-root>/plugins/infra/skills/aws-vault/scripts/kubectl.sh staging logs deploy/<svc> --tail=100
+<plugin-root>/plugins/infra/skills/aws-vault/scripts/kubectl.sh production describe pod/<name>
+<plugin-root>/plugins/infra/skills/aws-vault/scripts/kubectl.sh staging top pod
+<plugin-root>/plugins/infra/skills/aws-vault/scripts/kubectl.sh production auth can-i get pods
 ```
 
 ### What is allowed
@@ -174,11 +174,13 @@ Examples (all read-only):
 | `auth` | `auth can-i` and read-only auth probes |
 | `wait` | Block until a resource condition is met |
 | `diff` | Compare a local manifest to live state (no mutation) |
+| `rollout status`, `rollout history` | Watch or list a rollout (read-only sub-verbs) |
 
 ### What is denied
 
 Mutating verbs (`apply`, `create`, `delete`, `patch`, `scale`,
-`rollout`, `exec`, `port-forward`, `proxy`, `cp`, `debug`,
+`rollout undo|restart|pause|resume` and any other `rollout`
+sub-verb, `exec`, `port-forward`, `proxy`, `cp`, `debug`,
 `set`, `label`, `annotate`, `taint`, `drain`, `cordon`, `run`,
 `expose`, `autoscale`, ...) exit non-zero with a snippet for
 manual execution.
@@ -205,7 +207,7 @@ invocation.
 ## Workflow: AWS CLI Operations (read-only)
 
 ```bash
-<plugin-root>/skills/aws-vault/scripts/aws.sh <env> <service> <operation> [args...]
+<plugin-root>/plugins/infra/skills/aws-vault/scripts/aws.sh <env> <service> <operation> [args...]
 ```
 
 The wrapper resolves the `aws_vault_profile` from the registry per
@@ -215,10 +217,10 @@ denylist, then invokes `aws-vault exec ... -- aws ...`.
 Examples (all read-only):
 
 ```bash
-<plugin-root>/skills/aws-vault/scripts/aws.sh staging ec2 describe-instances
-<plugin-root>/skills/aws-vault/scripts/aws.sh production s3api list-buckets
-<plugin-root>/skills/aws-vault/scripts/aws.sh staging logs describe-log-groups
-<plugin-root>/skills/aws-vault/scripts/aws.sh production sts get-caller-identity
+<plugin-root>/plugins/infra/skills/aws-vault/scripts/aws.sh staging ec2 describe-instances
+<plugin-root>/plugins/infra/skills/aws-vault/scripts/aws.sh production s3api list-buckets
+<plugin-root>/plugins/infra/skills/aws-vault/scripts/aws.sh staging logs describe-log-groups
+<plugin-root>/plugins/infra/skills/aws-vault/scripts/aws.sh production sts get-caller-identity
 ```
 
 Denied (exit non-zero with a copy-pasteable snippet): any mutating

@@ -56,7 +56,7 @@ This skill is playbook-powered. The workflow steps are defined in
 2. `~/.config/Dev10x/playbooks/gh-pr-respond.yaml` (global + repo match);
    fall back to `~/.claude/memory/Dev10x/playbooks/gh-pr-respond.yaml`
    for backwards compatibility when the XDG path is absent.
-3. `<plugin-root>/skills/gh-pr-respond/references/playbook.yaml`
+3. `<plugin-root>/plugins/coding/skills/gh-pr-respond/references/playbook.yaml`
 
 Customize with `$Dev10x:playbook edit gh-pr-respond <play>`.
 
@@ -456,7 +456,7 @@ is in use.
 
 ```python
 from pathlib import Path
-from dev10x.spec import detect_drift, DriftKind
+from dev10x.core.spec import detect_drift, DriftKind
 
 ticket_id = "<extracted from PR branch>"
 spec_path = Path(f"docs/specs/{ticket_id}.md")

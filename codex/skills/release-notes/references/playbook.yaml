@@ -1,5 +1,5 @@
 # release-notes playbook — plays for generating release notes
-# Default location: <plugin-root>/skills/release-notes/references/playbook.yaml
+# Default location: <plugin-root>/plugins/coding/skills/release-notes/references/playbook.yaml
 # User overrides (see references/config-resolution.md):
 #   1. .claude/Dev10x/playbooks/release-notes.yaml (project-local)
 #   2. ~/.config/Dev10x/playbooks/release-notes.yaml (global + repo match)
