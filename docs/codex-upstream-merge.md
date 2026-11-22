@@ -39,27 +39,45 @@ Fork-only files: `.codex-plugin/`, `.agents/plugins/`, `.gitattributes`,
 `.github/workflows/codex-ci.yml`, `AGENTS.md`, `codex/references/`,
 `docs/codex*.md`,
 `hooks/codex-hooks.json`, `hooks/scripts/session-guidance-codex.md`,
-`src/dev10x/harness.py`, `src/dev10x/hooks/apply_patch_payload.py`,
-`src/dev10x/hooks/session_codex.py`, `src/dev10x/mcp/tool_annotations.py`,
+`src/dev10x/core/harness.py`, `src/dev10x/core/hooks/apply_patch_payload.py`,
+`src/dev10x/core/hooks/session_codex.py`, `src/dev10x/mcp/tool_annotations.py`,
 `src/dev10x/skills/codex/`, `src/dev10x/core/skills/permission/codex_rules.py`,
 `src/dev10x/core/validators/codex_messages.py`, and their tests.
 
 ### Upstream module moves (ADR-0034)
 
-Upstream moves modules into plugin namespaces (`dev10x.core`,
-`dev10x.coding`, `dev10x.tasks`, …) and keeps the old dotted path as an
-alias.
-A fork-only module at an old path keeps working only when that old
-package uses `alias_submodules` (it falls through to the old folder for a
-name the new package lacks, as `dev10x.hooks` does).
-A package switched to `alias_package` hides the old folder: move the
-fork module next to its upstream siblings with `git mv` (as
-`codex_rules.py` and `codex_messages.py` moved in `v0.108.0+codex.1`) —
-old imports keep resolving through the alias.
-A `ModuleNotFoundError` from a `dev10x skill codex-*` or
-`dev10x permission codex-rules` run is the symptom.
-Upstream's planned Stage B removes the aliases; every fork module at an
-old path moves then.
+Upstream moved its modules into plugin namespaces (`dev10x.core`,
+`dev10x.coding`, `dev10x.tasks`, …) and, since v0.111.0 (GH-1573),
+no longer keeps the old dotted paths as aliases.
+A fork module or import still at an old path fails with
+`ModuleNotFoundError` — usually first from `dev10x skill codex-*` or
+`dev10x permission codex-rules`.
+Move the fork module next to its upstream siblings with `git mv` and
+rewrite the fork's imports; leave upstream files alone.
+Two traps from `v0.116.0+codex.1`:
+
+- A moved module that computes a path from `__file__` (`parents[N]`)
+  points one folder too shallow after moving one level deeper.
+  `session_codex._default_plugin_root()` failed silently because its
+  caller checks `exists()`.
+- A test that patches a dotted path as a string (`patch("dev10x.plan…")`)
+  survives an import rewrite and errors only at run time.
+  `rg '"dev10x\.' tests/` after the rewrite.
+
+### Upstream ships several plugins; Codex ships one
+
+Since v0.116.0 upstream is nine plugins: `dev10x` (core, `skills/`,
+`agents/`) and satellites under `plugins/<key>/` with their own
+`skills/` and `agents/`.
+The Codex build stays **one** plugin with `Dev10x:<skill>` names (#55);
+whether to split is #56.
+The generators walk `skills/` and every `plugins/*/skills/` (and the same
+for `agents/`), and refuse a skill or agent name that two plugins share.
+Inside a satellite skill `${CLAUDE_PLUGIN_ROOT}` means `plugins/<key>/`,
+so it becomes `<plugin-root>/plugins/<key>` in the generated text.
+`to_codex_casing()` maps the satellite prefixes (`dev10x-coding:` …) to
+`Dev10x:` too; add a new upstream plugin key to
+`UPSTREAM_SATELLITE_PLUGINS` in `src/dev10x/skills/codex/catalog.py`.
 
 ### Upstream renames the plugin prefix
 
@@ -73,13 +91,19 @@ After regenerating, `rg 'Skill\(.?dev10x:|mcp__plugin_dev10x_' codex/`
 must list only literal Claude permission patterns such as
 `Skill(dev10x:*)`.
 
-Upstream files the fork patched (as of `v0.110.0+codex.1`; refresh with
+Upstream files the fork patched (as of `v0.116.0+codex.1`; refresh with
 `git diff --name-only --diff-filter=M v<previous> HEAD`):
 
 - `hooks/scripts/session-start.py`, `src/dev10x/core/hooks/session_place.py`,
   `src/dev10x/core/hooks/hook_transport.py`,
   `src/dev10x/core/hooks/edit_validator.py` — Codex payloads and the Codex
-  SessionStart briefing
+  SessionStart briefing.
+  `_emit_codex` follows upstream's decision rules (GH-1795): only a
+  deciding `HookAllow(decides=True)` sends `permissionDecision: "allow"`;
+  an advisory allow or a `HookHint` sends `additionalContext` only.
+  A new upstream SessionStart feature that needs a Claude-only event
+  (PreCompact, Stop, the task mirror) goes in
+  `CODEX_SUPPRESSED_FEATURES`.
 - `src/dev10x/mcp/server_cli.py`, `src/dev10x/db/mcp/server_db.py` — MCP
   tool annotations, applied once every namespace has registered
 - `src/dev10x/core/validators/skill_redirect.py` — Codex block messages
@@ -93,7 +117,6 @@ Upstream files the fork patched (as of `v0.110.0+codex.1`; refresh with
 - `tests/fixtures/permission_catalog/catalog_lists_pre_split.json` — the
   same three command spellings in upstream's catalog snapshot; copy the
   string `tests/skills/permission/test_catalog_fragments.py` reports
-- `src/dev10x/core/namespaces.yaml` — the `dev10x.harness: core` entry
 - `tests/fixtures/skill_reference_inventory.json` — upstream's counts plus
   the `$Dev10x:<skill>` references in `docs/codex*.md`; take upstream's file,
   run `tests/core/test_skill_references.py`, and paste the counts its failure
