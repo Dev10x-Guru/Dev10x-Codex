@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dev10x.domain.common.result import Result, ok
-from dev10x.harness import is_codex
-from dev10x.mcp._app import mcp_tool
+from dev10x.core.domain.common.result import Result, ok
+from dev10x.core.harness import is_codex
+from dev10x.core.mcp._app import mcp_tool
 
 CODEX_SKIP_REASON = "plan-sync is not supported in Codex yet (see #13)"
 

@@ -38,20 +38,20 @@ def pre_split_entries() -> set[HookEntry]:
             _wrapped(name="validate-edit-write", script="validate-edit-write.py"),
             5,
         ),
+        (
+            "PreToolUse",
+            "Agent",
+            _wrapped(name="validate-agent-brief", script="validate-agent-brief.py"),
+            5,
+        ),
         ("PreToolUse", "TaskUpdate", _wrapped(name="task-guard", script="task-guard.py"), 5),
         (
             "PreToolUse",
             "AskUserQuestion",
-            _wrapped(name="supervisor-decision", script="supervisor-decision.py"),
-            3,
+            _wrapped(name="overwatch-decision", script="overwatch-decision.py"),
+            600,
         ),
         ("Stop", "*", _wrapped(name="session-stop", script="session-stop.py"), 10),
-        (
-            "PreCompact",
-            "manual|auto",
-            _wrapped(name="precompact-context", script="precompact-context.py"),
-            5,
-        ),
         (
             "PermissionDenied",
             "*",
@@ -60,6 +60,13 @@ def pre_split_entries() -> set[HookEntry]:
         ),
         ("PostToolUse", "Skill", _wrapped(name="skill-post", script="skill-post.py"), 3),
         ("PostToolUse", "Edit|Write", _wrapped(name="ruff-format", script="ruff-format.py"), 15),
+        (
+            "PreToolUse",
+            "mcp__plugin_dev10x_cli__merge_pr|mcp__plugin_dev10x_cli__pr_ready"
+            "|mcp__plugin_dev10x_cli__request_review",
+            _wrapped(name="validate-ship-gate", script="validate-ship-gate.py"),
+            60,
+        ),
         (
             "PostToolUse",
             "TaskCreate|TaskUpdate",

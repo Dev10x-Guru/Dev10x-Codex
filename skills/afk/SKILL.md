@@ -12,7 +12,7 @@ description: >
   bundle work, fanout swarm, overnight implementation), or user says
   "walk away" / "afk" / "headless" / "no more questions".
   DO NOT TRIGGER when: actively pair-programming, scoping a new
-  ticket (use dev10x:ticket-scope), or session is already complete.
+  ticket (use dev10x-scoping:ticket-scope), or session is already complete.
 user-invocable: true
 invocation-name: dev10x:afk
 allowed-tools:
@@ -86,8 +86,8 @@ because the policy already matches).
 Invoke this skill at the start of a session where the supervisor
 will be unavailable for hours. Typical entry points:
 
-- `dev10x:afk` then `dev10x:work-on bundle <milestone-url>`
-- `dev10x:afk` then `dev10x:fanout` over a queue of tickets
+- `dev10x:afk` then `dev10x-coding:work-on bundle <milestone-url>`
+- `dev10x:afk` then `dev10x-coding:fanout` over a queue of tickets
 - Resuming an unattended run after compaction — the policy survives
   in `friction.yaml` and is re-read on the next Phase 0
 

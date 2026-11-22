@@ -1,12 +1,12 @@
 """Write the permission catalog into settings files — the ``ensure_*`` fixers (GH-1432).
 
 Every function here mutates a settings file, and every mutation goes
-through :func:`dev10x.skills.permission.backup.backed_up_write` (GH-1429)
+through :func:`dev10x.core.skills.permission.backup.backed_up_write` (GH-1429)
 and — at the operation level — through :func:`partition_writable`, the
 GH-1136/GH-1155/GH-1686 guard that keeps a git-tracked settings file out
 of a maintenance run. The rules being written are computed in
-:mod:`dev10x.skills.permission.catalog_rules`; the catalog they come from
-is loaded by :mod:`dev10x.skills.permission.catalog_load`. Split out of
+:mod:`dev10x.core.skills.permission.catalog_rules`; the catalog they come from
+is loaded by :mod:`dev10x.core.skills.permission.catalog_load`. Split out of
 ``update_paths.py`` by GH-1432.
 """
 
@@ -15,16 +15,17 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from dev10x.domain.claude_paths import ClaudeDir
-from dev10x.domain.common.result import Result, err, ok
-from dev10x.domain.file_locks import atomic_write_text, file_lock
-from dev10x.skills.permission.backup import backed_up_write
-from dev10x.skills.permission.catalog_load import detect_latest_version
-from dev10x.skills.permission.catalog_merge import CatalogDrift
-from dev10x.skills.permission.catalog_result import _result
-from dev10x.skills.permission.catalog_rules import (
+from dev10x.core.domain.claude_paths import ClaudeDir
+from dev10x.core.domain.common.result import Result, err, ok
+from dev10x.core.domain.file_locks import atomic_write_text, file_lock
+from dev10x.core.plugin_map import PluginMap, load_plugin_map
+from dev10x.core.skills.permission.backup import backed_up_write
+from dev10x.core.skills.permission.catalog_load import detect_latest_version
+from dev10x.core.skills.permission.catalog_merge import CatalogDrift
+from dev10x.core.skills.permission.catalog_result import _result
+from dev10x.core.skills.permission.catalog_rules import (
+    ScriptRoot,
     _expand_stale_wildcards,
-    _generalizations,
     _is_nonfunctional_mcp_wildcard,
     build_marketplaces_read_rules,
     build_marketplaces_script_rules,
@@ -34,14 +35,16 @@ from dev10x.skills.permission.catalog_rules import (
     collapse_legacy_upgrade_cleanup_rule,
     is_dead_glob_script_rule,
     partition_unmatchable_rules,
+    plan_generalizations,
+    satellite_script_roots,
     scan_plugin_scripts,
     scan_user_skill_scripts,
     verify_read_coverage,
     verify_script_coverage,
 )
-from dev10x.skills.permission.policy_catalog_migration import migrate_flat_config
-from dev10x.skills.permission.policy_renderer import render_permissions
-from dev10x.skills.permission.settings_discovery import linked_worktree_roots
+from dev10x.core.skills.permission.policy_catalog_migration import migrate_flat_config
+from dev10x.core.skills.permission.policy_renderer import render_permissions
+from dev10x.core.skills.permission.settings_discovery import linked_worktree_roots
 
 
 def ensure_base_permissions(
@@ -237,7 +240,7 @@ def ensure_read_rules(
     """Append missing Read rules to ``settings_path``.
 
     Idempotent — only appends rules not already present. Backed up
-    via :mod:`dev10x.skills.permission.backup`.
+    via :mod:`dev10x.core.skills.permission.backup`.
     """
     if not missing_rules:
         return 0, []
@@ -292,7 +295,10 @@ def collapse_legacy_upgrade_cleanup_rules(
     except (OSError, json.JSONDecodeError) as exc:
         return 0, [f"  SKIP (unreadable JSON): {exc}"]
 
-    allow_list: list[str] = data.get("permissions", {}).get("allow", [])
+    permissions = data.get("permissions", {}) if isinstance(data, dict) else None
+    if not isinstance(permissions, dict):
+        return 0, []
+    allow_list: list[str] = permissions.get("allow", [])
     if not allow_list:
         return 0, []
 
@@ -328,6 +334,7 @@ def generalize_permissions(
     path: Path,
     *,
     dry_run: bool = False,
+    exclude: tuple[str, ...] = (),
 ) -> tuple[int, list[str]]:
     content = path.read_text()
     try:
@@ -339,8 +346,12 @@ def generalize_permissions(
     if not allow_list:
         return 0, []
 
-    replacements, refused = _generalizations(allow_list)
-    refusal_messages = [f"  REFUSED (would emit a malformed rule): {entry}" for entry in refused]
+    plan = plan_generalizations(allow_list, exclude=exclude)
+    replacements = plan.replacements
+    refusal_messages = [
+        f"  REFUSED (would emit a malformed rule): {entry}" for entry in plan.refused
+    ]
+    refusal_messages.extend(f"  HELD ({reason}): {entry}" for entry, reason in plan.held)
 
     if not replacements:
         return 0, refusal_messages
@@ -348,8 +359,8 @@ def generalize_permissions(
     if not dry_run:
         with backed_up_write(path=path) as live_data:
             live_allow = live_data.get("permissions", {}).get("allow", [])
-            live_replacements, _live_refused = _generalizations(live_allow)
-            for old, new in live_replacements:
+            live_plan = plan_generalizations(live_allow, exclude=exclude)
+            for old, new in live_plan.replacements:
                 live_allow[live_allow.index(old)] = new
 
     messages = [f"  {old} → {new}" for old, new in replacements]
@@ -370,7 +381,7 @@ def _is_git_tracked(path: Path) -> bool | None:
     False. A missing binary, a timeout or any other git failure answers
     None, because "could not ask" is not evidence that a write is safe.
     """
-    from dev10x import subprocess_utils
+    from dev10x.core import subprocess_utils
 
     try:
         completed = subprocess_utils.run(
@@ -670,13 +681,13 @@ def _apply_tracker_block(
     catalog to merge from — an unresolvable plugin root — where passing
     through untouched remains the right answer.
     """
-    from dev10x.domain.common.tracker_choice import (
+    from dev10x.core.domain.common.tracker_choice import (
         TRACKER_ALLOW_KEY,
         TRACKER_DENY_KEY,
         apply_tracker_selection,
     )
-    from dev10x.domain.git_context import GitContext
-    from dev10x.skills.permission.tracker_resolve import resolve_tracker, tracker_source
+    from dev10x.core.domain.git_context import GitContext
+    from dev10x.core.skills.permission.tracker_resolve import resolve_tracker, tracker_source
 
     if not isinstance(config.get(TRACKER_ALLOW_KEY), dict) and not isinstance(
         config.get(TRACKER_DENY_KEY), dict
@@ -716,14 +727,14 @@ def _apply_ide_block(
     every seeding run in every repo without an IDE server would be noise
     about a non-event.
     """
-    from dev10x.domain.common.ide_choice import (
+    from dev10x.core.domain.common.ide_choice import (
         IDE_ALLOW_KEY,
         IDE_DENY_KEY,
         Ide,
         apply_ide_selection,
     )
-    from dev10x.domain.git_context import GitContext
-    from dev10x.skills.permission.ide_resolve import ide_source, resolve_ide
+    from dev10x.core.domain.git_context import GitContext
+    from dev10x.core.skills.permission.ide_resolve import ide_source, resolve_ide
 
     if not isinstance(config.get(IDE_ALLOW_KEY), dict) and not isinstance(
         config.get(IDE_DENY_KEY), dict
@@ -863,10 +874,21 @@ def ensure_base(
     # whether the catalog itself has anything left to add, per the
     # issue's acceptance criterion. Additive only; an invalid existing
     # value is left for `dev10x permission doctor safety-keys` to flag.
-    from dev10x.skills.permission.safety_keys import write_safety_keys_to_file
+    # GH-1856: only the keys safety-keys.yaml still enforces are seeded;
+    # the catalog rules and created files below are unaffected.
+    from dev10x.core.skills.permission.safety_keys import (
+        load_safety_key_policy,
+        write_safety_keys_to_file,
+    )
 
+    safety_policy = load_safety_key_policy()
+    messages.extend(safety_policy.messages())
     for path in writable_files:
-        count, file_messages = write_safety_keys_to_file(path, dry_run=dry_run)
+        count, file_messages = write_safety_keys_to_file(
+            path,
+            keys=safety_policy.keys,
+            dry_run=dry_run,
+        )
         if count == 0:
             continue
         if not quiet:
@@ -908,7 +930,7 @@ def ensure_base(
             files_changed=len(changed_files),
         )
 
-    from dev10x.skills.permission.enumerate_mcp import discover_mcp_tools
+    from dev10x.core.skills.permission.enumerate_mcp import discover_mcp_tools
 
     mcp_catalog = discover_mcp_tools()
 
@@ -1054,7 +1076,7 @@ def _residual_gap_errors(
     if dry_run:
         return []
 
-    from dev10x.skills.permission.catalog_gap import compute_gap
+    from dev10x.core.skills.permission.catalog_gap import compute_gap
 
     errors: list[str] = []
     for path in settings_files:
@@ -1093,7 +1115,7 @@ def catalog_gap(
     git (GH-1626). They are checked like any other file, and also listed
     on their own so a location missing from ``roots`` is visible.
     """
-    from dev10x.skills.permission.catalog_gap import compute_gap, format_gap_report
+    from dev10x.core.skills.permission.catalog_gap import compute_gap, format_gap_report
 
     catalog = render_catalog(config=config, toplevel=toplevel, quiet=quiet)
     messages = list(catalog.messages)
@@ -1144,7 +1166,7 @@ def _would_seed_count(*, settings: Path, config: dict, toplevel: str) -> int:
     said "Would seed 0 rule(s)" for a worktree that had no settings at all.
     A missing file lacks every rendered rule; an existing one lacks its gap.
     """
-    from dev10x.skills.permission.catalog_gap import compute_gap
+    from dev10x.core.skills.permission.catalog_gap import compute_gap
 
     catalog = render_catalog(config=config, toplevel=toplevel, quiet=True)
     if not settings.exists():
@@ -1256,6 +1278,7 @@ def generalize(
     dry_run: bool,
     quiet: bool = False,
     allow_tracked: bool = False,
+    exclude: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Replace session-specific permission args with wildcards. Returns result dict."""
     messages: list[str] = []
@@ -1279,7 +1302,7 @@ def generalize(
     files_changed = 0
 
     for path in writable_files:
-        count, file_messages = generalize_permissions(path, dry_run=dry_run)
+        count, file_messages = generalize_permissions(path, dry_run=dry_run, exclude=exclude)
         if count > 0:
             if not quiet:
                 messages.append(f"\n{path}")
@@ -1288,7 +1311,7 @@ def generalize(
             files_changed += 1
         elif file_messages and not quiet:
             # A zero count with messages means every candidate rule was
-            # REFUSED as malformed (GH-1150). Dropping those messages here
+            # REFUSED as malformed (GH-1150) or HELD (GH-1868). Dropping those messages here
             # would restore the silence that issue exists to remove — the
             # file looks untouched and nothing says a rule was skipped.
             messages.append(f"\n{path}")
@@ -1316,6 +1339,7 @@ def ensure_scripts(
     dry_run: bool,
     quiet: bool = False,
     allow_tracked: bool = False,
+    plugin_map: PluginMap | None = None,
 ) -> dict[str, object]:
     """Add missing per-script allow rules for plugin scripts. Returns result dict."""
     messages: list[str] = []
@@ -1328,28 +1352,41 @@ def ensure_scripts(
         return _result(exit_code=1, messages=messages, errors=errors)
 
     plugin_root = cache_dir / target_version
-    scripts = scan_plugin_scripts(plugin_root)
-    if not scripts:
+    # GH-1807: a skill that moved to a satellite plugin (ADR-0034 Stage B)
+    # dispatches from the satellite's own cache and marketplace trees, so
+    # every installed satellite is scanned beside core.
+    roots = [ScriptRoot(plugin_root=plugin_root)]
+    roots += satellite_script_roots(
+        cache_dir=cache_dir,
+        plugin_map=plugin_map or load_plugin_map(),
+    )
+    scripts_found = 0
+    expected_rules: list[str] = []
+    for root in roots:
+        scripts = scan_plugin_scripts(root.plugin_root)
+        scripts_found += len(scripts)
+        expected_rules += build_script_allow_rules(
+            scripts,
+            plugin_root=root.plugin_root,
+        )
+        # GH-704: also seed the unversioned marketplace-root twins so a
+        # grant matches whichever root family (cache vs marketplaces)
+        # dispatches the script.
+        expected_rules += build_marketplaces_script_rules(
+            scripts,
+            plugin_root=root.plugin_root,
+            plugin_cache=config["plugin_cache"],
+            user_home=Path.home(),
+            marketplace_subdir=root.marketplace_subdir,
+        )
+    if not scripts_found:
         messages.append(f"No callable scripts found in {plugin_root}")
         return _result(exit_code=0, messages=messages, errors=errors)
 
-    expected_rules = build_script_allow_rules(
-        scripts,
-        plugin_root=plugin_root,
-    )
-    # GH-704: also seed the unversioned marketplace-root twins so a grant
-    # matches whichever root family (cache vs marketplaces) dispatches the
-    # script.
-    expected_rules += build_marketplaces_script_rules(
-        scripts,
-        plugin_root=plugin_root,
-        plugin_cache=config["plugin_cache"],
-        user_home=Path.home(),
-    )
-
     if not quiet:
-        messages.append(f"Plugin root: {plugin_root}")
-        messages.append(f"Scripts found: {len(scripts)}")
+        for root in roots:
+            messages.append(f"Plugin root: {root.plugin_root}")
+        messages.append(f"Scripts found: {scripts_found}")
         if dry_run:
             messages.append("(dry run — no files will be modified)\n")
 
@@ -1512,6 +1549,7 @@ def ensure_reads(
     dry_run: bool,
     quiet: bool = False,
     allow_tracked: bool = False,
+    plugin_map: PluginMap | None = None,
 ) -> dict[str, object]:
     """Emit per-skill folder Read rules with ~/ + /home/<user>/ twins. Returns result dict."""
     messages: list[str] = []
@@ -1528,6 +1566,16 @@ def ensure_reads(
         plugin_root=plugin_root,
         user_home=Path.home(),
     )
+    # GH-1807: a satellite's skills are read from its own versioned cache
+    # tree; the unversioned marketplace rule below already spans the
+    # publisher tree, satellites included.
+    for root in satellite_script_roots(
+        cache_dir=cache_dir,
+        plugin_map=plugin_map or load_plugin_map(),
+    ):
+        expected_rules.extend(
+            build_read_allow_rules(plugin_root=root.plugin_root, user_home=Path.home())
+        )
     # GH-254: emit unversioned marketplaces Read rules alongside the
     # versioned cache rules. The runtime reads skills from the
     # marketplaces tree, which is unversioned — pinning to cache

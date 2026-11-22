@@ -1,19 +1,19 @@
 """PR summary and notification capability (ADR-0027).
 
 Dependencies are reached through ``_gateway.<name>`` (ADR-0027 D2), so a
-test patches ``dev10x.github._gateway.<name>`` and intercepts every caller.
+test patches ``dev10x.core.github._gateway.<name>`` and intercepts every caller.
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
+from dev10x.coding.coding_script import coding_script
+from dev10x.core.domain.common.result import Result, err, ok
+from dev10x.core.domain.dead_letter import record_undelivered
 from dev10x.core.github import _gateway
-from dev10x.core.paths import skill_script
-from dev10x.domain.common.result import Result, err, ok
-from dev10x.domain.dead_letter import record_undelivered
+from dev10x.core.subprocess_utils import resolve_script_path
 
 
 async def generate_commit_list(
@@ -26,7 +26,7 @@ async def generate_commit_list(
         args.append(base_branch)
 
     result = await _gateway.async_run_script(
-        skill_script(skill="gh-pr-create", rel="generate-commit-list.sh"),
+        coding_script(skill="gh-pr-create", rel="generate-commit-list.sh"),
         *args,
     )
 
@@ -50,7 +50,7 @@ async def post_summary_comment(
             env_vars["GH_TOKEN"] = bot_env["GH_TOKEN"]
             env_vars["GITHUB_TOKEN"] = bot_env["GITHUB_TOKEN"]
     result = await _gateway.async_run_script(
-        skill_script(skill="gh-pr-create", rel="post-summary-comment.sh"),
+        coding_script(skill="gh-pr-create", rel="post-summary-comment.sh"),
         issue_id,
         summary_text,
         env_vars=env_vars or None,
@@ -75,8 +75,7 @@ async def pr_notify(
     skip_reviewers: bool = False,
     skip_checklist: bool = False,
 ) -> Result[dict[str, Any]]:
-    plugin_root = Path(__file__).parents[3]
-    script_path = plugin_root / "skills" / "gh-pr-monitor" / "scripts" / "pr-notify.py"
+    script_path = resolve_script_path(coding_script(skill="gh-pr-monitor", rel="pr-notify.py"))
 
     if not script_path.exists():
         return err(f"Script not found: {script_path}")

@@ -1,0 +1,451 @@
+---
+name: dev10x-coding:git-fixup
+description: >
+  Create a fixup! commit for a PR review comment or standalone
+  improvement. Enforces one fixup per comment thread when linked to
+  a review.
+  TRIGGER when: creating a fixup! commit for a review finding or
+  standalone improvement.
+  DO NOT TRIGGER when: creating a regular commit (use dev10x-coding:git-commit),
+  or implementing PR fixes with push and reply (use dev10x-coding:gh-pr-fixup).
+user-invocable: true
+invocation-name: dev10x-coding:git-fixup
+allowed-tools:
+  - AskUserQuestion
+  - Bash(/tmp/Dev10x/bin/mktmp.sh:*)
+  - Bash(${CLAUDE_PLUGIN_ROOT}/skills/git-fixup/scripts/:*)
+  - Edit(/tmp/Dev10x/git/**)
+  - mcp__plugin_dev10x_cli__find_fixup_target
+  - mcp__plugin_dev10x_cli__pr_detect
+  - mcp__plugin_dev10x_cli__pr_comments
+  - mcp__plugin_dev10x_cli__push_safe
+---
+
+# Create Fixup Commit
+
+## Orchestration
+
+This skill follows `references/task-orchestration.md` patterns.
+Create a task at invocation, mark completed when done:
+
+**REQUIRED: Create a task at invocation.** Execute at startup:
+
+1. `TaskCreate(subject="Create fixup commit", activeForm="Creating fixup")`
+
+Mark completed when done: `TaskUpdate(taskId, status="completed")`
+
+## Overview
+
+This skill creates properly scoped `fixup!` commits. Two modes:
+
+1. **Review fixup** — addresses a specific PR review comment (one fixup per
+   comment thread, comment link required in body)
+2. **Standalone fixup** — self-initiated improvement not tied to a review
+   comment (marked with `Standalone fixup` in body)
+
+Why fixup commits?
+- Reviewers can verify each fix individually
+- Easy to match "comment → fixup commit"
+- `git rebase -i --autosquash` squashes them into the target commit
+
+## When to Use This Skill
+
+- Called by `dev10x-coding:gh-pr-fixup` when addressing review comments
+- When you need to create a fixup commit for a specific review comment
+- When you need a standalone fixup for a self-initiated improvement
+- **When you fix a bug or anti-pattern that belongs to a prior commit in the branch** — use `dev10x-coding:git-fixup` immediately rather than a standalone commit that would need converting later
+- NOT for general commits (use `dev10x-coding:git-commit` skill instead)
+
+## Input Requirements
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `pr_number` | No | The pull request number (omit for standalone) |
+| `comment_id` | No | The GitHub comment ID being addressed |
+| `repository` | No | Owner/repo (defaults to current repo) |
+
+If neither `pr_number` nor `comment_id` is provided, prompt the user to
+confirm this is a standalone fixup before proceeding.
+
+## Workflow
+
+### Step 0: Verify CWD is the target repository
+
+**REQUIRED: Before any git operation**, verify the working
+directory matches the expected repository:
+
+```bash
+git rev-parse --show-toplevel
+```
+
+Compare the output against the expected repo path. If they
+differ, **STOP** — do not use `git -C` as a workaround. Instead:
+- If in a worktree setup, call `EnterWorktree` to switch to the
+  correct worktree first
+- If the repo is not checked out, inform the caller
+
+This prevents the cascade of `git -C` usage that follows when
+the CWD is wrong. The `git -C` flag is **NEVER permitted** in
+this skill (see Important Notes).
+
+### Step 1: Determine Mode
+
+If a comment ID or PR comment URL was provided → **review fixup** mode.
+
+If the invocation args include a **target commit SHA + description** (e.g.
+`/dev10x-coding:git-fixup abc1234 Fix null handling in phone lookup`), intent is clear —
+proceed directly in **standalone fixup** mode without asking.
+
+Otherwise, **REQUIRED: Call `AskUserQuestion`** (do NOT use plain
+text) to ask:
+
+> "No review comment provided. Create a standalone fixup?"
+
+Options: "Yes, standalone fixup" / "No, use /dev10x-coding:git-commit instead"
+
+If the user confirms → **standalone fixup** mode.
+If the user declines → suggest using `/dev10x-coding:git-commit` instead.
+
+### Step 2: Fetch Comment Details (review fixup only)
+
+Skip this step entirely for standalone fixups.
+
+```
+# Resolve repo from current CWD
+mcp__plugin_dev10x_cli__pr_detect(arg="")
+# → returns {"repo": "owner/repo", "pr_number": ..., "branch": ...}
+
+# Fetch the comment by ID
+mcp__plugin_dev10x_cli__pr_comments(action="get", comment_id=<id>)
+```
+
+Extract from comment:
+- `path` - File the comment is on
+- `line` / `original_line` - Line number context
+- `diff_hunk` - Code context
+- `html_url` - Link to comment thread (for commit body)
+- `body` - The review comment text
+
+### Step 3: Identify Original Commit (line-owning, not topical)
+
+**Resolve the fixup target by blaming the staged hunks** — the target
+is the commit that last touched the lines being changed, not "the
+first commit on the branch". Topical attribution causes cross-commit
+fixups: when autosquash reorders the fixup next to its supposed
+target, a *later* branch commit that owns the touched lines no longer
+applies, producing modify/delete or content conflicts. `git rerere`
+then memoizes the bad resolution and silently re-applies it on the
+next attempt (GH-299).
+
+**Primary (MCP tool):** Call `mcp__plugin_dev10x_cli__find_fixup_target`
+with `cwd=<absolute worktree path>`.
+Pass `base` only to override the auto-detected base branch.
+The tool is read-only and never prompts for approval.
+
+**Fallback (script):** Only when the MCP server is unavailable:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/skills/git-fixup/scripts/find-fixup-target.py
+```
+
+Both read `git diff --cached`, blame every hunk's pre-image line
+range against branch commits (`<base>..HEAD`), and return JSON.
+A resolver failure arrives as an `error` key from the tool and as
+`status: "error"` from the script.
+Branch the SKILL on the `status` field:
+
+| `status` | Meaning | Action |
+|----------|---------|--------|
+| `single` | Exactly one owning branch commit (orphan hunks allowed) | `ORIGINAL_COMMIT=$target`, `ORIGINAL_MESSAGE=$subject` — proceed to Step 4 |
+| `multi`  | Hunks span ≥ 2 owning branch commits | **Abort with the multi-owner guidance below** — do NOT create a cross-commit fixup |
+| `out_of_branch` | All hunks blame to commits outside `<base>..HEAD` | Fall back to `fallback_target` (first branch commit) — new file or untouched region |
+| `no_staged` | Nothing staged | Surface the "No staged changes" error from § Error Handling |
+| `error` | Resolver failed | Print the `error` field and stop |
+
+**Orphan-hunk contract (GH-1042).** An orphan hunk blames outside
+`<base>..HEAD` — a pure addition, or a line owned by base history. The
+status counts **owning branch commits only**; orphans never change the
+classification:
+
+- one owner + any orphans → `single`. The orphans ride along into that
+  fixup. They are listed in the payload's `orphan_hunks` for visibility,
+  not as a signal to abort. Adding an import next to its first usage is
+  the everyday shape here.
+- ≥ 2 owners → `multi`, orphans or not.
+- zero owners → `out_of_branch`, which is exactly "every hunk is an
+  orphan".
+
+`multi` exists to prevent a cross-commit fixup that autosquash cannot
+fold. With a single owner there is nothing to split across, so aborting
+would print multi-owner remediation for a one-element list — an
+unactionable dead end.
+
+**A commit and its own fixups are one owner (GH-1512).** Before
+counting, every `fixup!` / `squash!` / `amend!` owner (nested prefixes
+included) is folded into the branch commit autosquash would target —
+exact subject first, then the oldest subject it prefixes. Re-fixing a
+commit that already has fixups therefore resolves to `single` against
+the original commit. A fixup whose target is not on the branch stays
+its own owner.
+
+**Multi-owner handling** (`status == "multi"`):
+
+Print the owner list returned by the script and stop. Example:
+
+```
+This fix touches lines owned by multiple branch commits — creating
+one fixup against any single target would conflict on autosquash.
+Restage and commit per owning commit:
+
+  abc1234 (♻️ PAY-32 Tighten Square timeout handling)
+    src/payments/service.py:120-128
+    src/payments/service.py:204-210
+
+  def5678 (✅ PAY-32 Add Square timeout regression tests)
+    tests/payments/test_service.py:45-60
+
+Suggested workflow (one fixup per owner):
+
+  git restore --staged .
+  git add -p src/payments/service.py        # stage only abc1234's hunks
+  Skill(dev10x-coding:git-fixup)
+  git add -p tests/payments/test_service.py # stage only def5678's hunks
+  Skill(dev10x-coding:git-fixup)
+
+Each fixup may reference the same review comment URL — the
+"one fixup per comment" rule is a traceability floor, not a hard
+cap. Multiple fixups for one comment are correct when the change
+spans owning commits.
+```
+
+The skill MUST NOT silently pick one owner and create the fixup
+anyway — the whole point of this step is to refuse cross-commit
+fixups that autosquash cannot fold cleanly.
+
+### Step 4: Validate Staged Changes
+
+**Check what's staged:**
+```bash
+git diff --cached --name-only
+```
+
+**Validation rules:**
+1. At least one file must be staged
+2. Staged files should relate to the comment's file path
+3. Warn if staging files unrelated to the comment
+
+**If unrelated files are staged:**
+```
+Warning: The following staged files may be unrelated to comment on {path}:
+- {unrelated_file_1}
+- {unrelated_file_2}
+
+Continue anyway? (y/n)
+```
+
+### Step 5: Build Commit Message
+
+**Review fixup format:**
+```
+fixup! {original_commit_message}
+
+Addresses review comment:
+{comment_html_url}
+```
+
+**Standalone fixup format:**
+```
+fixup! {original_commit_message}
+
+Standalone fixup
+{description of what this fixes and why}
+```
+
+**Review fixup example:**
+```
+fixup! ✅ QA-159 add E2E tests for customer required before payment
+
+Addresses review comment:
+https://github.com/example-org/app-e2e/pull/269#discussion_r2706078039
+```
+
+**Standalone fixup example:**
+```
+fixup! ✨ PAY-518 Return make, model and VIN in trim lookups
+
+Standalone fixup
+Remove duplicate flat attributes and encapsulate data
+in PosSubModelNode for cohesion.
+```
+
+### Step 6: Create the Commit
+
+**IMPORTANT:** Never use `cat <<EOF` or heredoc syntax — the
+`validate-bash-security.py` hook blocks it. Use Write tool + `git commit -F`.
+
+Create a unique temp file via `mktemp` to avoid cross-session collisions:
+```bash
+/tmp/Dev10x/bin/mktmp.sh git fixup-msg .txt
+```
+Store the returned path for subsequent steps.
+
+**Review fixup:**
+```bash
+# 1. Write message to the unique temp file (use Write tool, NOT echo/cat)
+Write "<unique-path>" with:
+  fixup! {ORIGINAL_MESSAGE}
+
+  Addresses review comment:
+  {COMMENT_URL}
+
+# 2. Commit with -F
+git commit -F <unique-path>
+```
+
+**Standalone fixup:**
+```bash
+# 1. Write message to the unique temp file (use Write tool)
+Write "<unique-path>" with:
+  fixup! {ORIGINAL_MESSAGE}
+
+  Standalone fixup
+  {DESCRIPTION}
+
+# 2. Commit with -F
+git commit -F <unique-path>
+```
+
+### Step 7: Verify and Return
+
+```bash
+# Get the new commit hash
+COMMIT_HASH=$(git rev-parse --short HEAD)
+FULL_HASH=$(git rev-parse HEAD)
+
+# Use PR-based URL when PR number is available (review fixup mode).
+# PR-based URLs (pull/NUMBER/commits/HASH) let reviewers comment on
+# the diff within the PR context. Standalone /commit/HASH URLs create
+# comments disconnected from the PR review thread.
+if [ -n "${PR_NUMBER:-}" ]; then
+  COMMIT_URL="https://github.com/${REPO}/pull/${PR_NUMBER}/commits/${FULL_HASH}"
+else
+  COMMIT_URL="https://github.com/${REPO}/commit/${FULL_HASH}"
+fi
+
+echo "Created fixup commit: ${COMMIT_HASH}"
+echo "URL: ${COMMIT_URL}"
+```
+
+**Completion:** Signal completion silently via `TaskUpdate`
+(status="completed"). Do not output "Returning to caller"
+messages — they mislead users in nested skill execution into
+thinking the workflow is done when the parent still has steps.
+
+The caller reads these values from git state:
+- `commit_hash` — `git rev-parse --short HEAD`
+- `commit_url` — constructed from repo + PR number + full hash
+
+## Pre-commit Hook Integration
+
+This skill works with the `check-fixup-comment-link` pre-commit hook which validates:
+
+1. If commit message starts with `fixup!`
+2. Body must contain either:
+   - Exactly ONE GitHub comment thread link, OR
+   - The `Standalone fixup` marker
+3. Link format: `https://github.com/{owner}/{repo}/pull/{pr}#discussion_r{id}`
+
+The hook will **reject** fixup commits that:
+- Have neither a comment link nor a `Standalone fixup` marker
+- Have multiple comment links (violates one-fixup-per-comment rule)
+
+## Error Handling
+
+### No Staged Changes
+```
+Error: No changes staged for commit.
+Stage changes first with: git add {file}
+```
+
+### Comment Not Found
+```
+Error: Could not fetch comment {comment_id}.
+Verify the comment ID and repository.
+```
+
+### Pre-commit Hook Rejection
+```
+Error: Fixup commit must reference exactly one comment thread.
+
+Your commit body should contain a line like:
+https://github.com/owner/repo/pull/123#discussion_r456789
+
+This links the fixup to the specific review comment it addresses.
+```
+
+## Integration with dev10x-coding:gh-pr-fixup
+
+The `dev10x-coding:gh-pr-fixup` skill calls this skill instead of creating commits
+directly:
+
+```
+dev10x-coding:gh-pr-fixup workflow:
+1. Analyze comment
+2. Implement fix
+3. Stage changes: git add {file}
+4. Call dev10x-coding:git-fixup with (pr_number, comment_id)  <-- uses this skill
+5. Push: mcp__plugin_dev10x_cli__push_safe
+6. Reply to comment with commit reference
+```
+
+## Important Notes
+
+- **One fixup per comment** — enforced by pre-commit hook (review mode)
+- **Comment link or standalone marker required** — enables traceability
+- **Scoped changes** — warns about unrelated files (review mode)
+- **Works with autosquash** — `git rebase -i --autosquash` will squash these
+- **Prompt before standalone** — use `AskUserQuestion` to confirm; never
+  silently proceed in standalone mode
+- **Always use plain `git`** — NEVER use `git -C <path>`. The session CWD is
+  already the repo. `git -C` creates duplicate allow-rules in settings.local.json
+  and will require permission prompts after a fresh start.
+
+## Example Usage
+
+### Review fixup (called by dev10x-coding:gh-pr-fixup)
+
+```bash
+# Stage the fix
+git add tests/pages/crm.py
+
+# Create fixup — skill fetches comment and builds message
+# Input: comment URL or PR 269, comment 2706078039
+```
+
+**Result:**
+```
+fixup! ✅ QA-159 add E2E tests for customer required before payment
+
+Addresses review comment:
+https://github.com/example-org/app-e2e/pull/269#discussion_r2706078039
+```
+
+### Standalone fixup (self-initiated improvement)
+
+```bash
+# Stage the fix
+git add src/app_pos/motor/api/nodes.py
+
+# Invoke /dev10x-coding:git-fixup with no comment argument
+# Claude asks: "No review comment provided. Create a standalone fixup?"
+# User confirms → standalone mode
+```
+
+**Result:**
+```
+fixup! ✨ PAY-518 Return make, model and VIN in trim lookups
+
+Standalone fixup
+Remove duplicate flat attributes and encapsulate data
+in PosSubModelNode for cohesion.
+```

@@ -2,11 +2,16 @@
 script/Read rule builders, coverage checks, generalization, and stale-MCP-
 wildcard expansion. No writes happen here (GH-1432, GH-1449)."""
 
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from dev10x.skills.permission.catalog_rules import (
+
+from dev10x.core.plugin_map import PluginMap
+from dev10x.core.skills.permission.catalog_rules import (
+    GeneralizationPlan,
+    ScriptRoot,
     _expand_stale_wildcards,
     _generalizations,
     _unescaped_parens_balance,
@@ -16,8 +21,11 @@ from dev10x.skills.permission.catalog_rules import (
     generalize_permission,
     is_dead_glob_script_rule,
     is_well_formed_rule,
+    plan_generalizations,
+    satellite_script_roots,
     scan_plugin_scripts,
     verify_script_coverage,
+    widening_hold_reason,
 )
 
 
@@ -148,6 +156,131 @@ class TestBuildMarketplacesScriptRules:
             )
             == []
         )
+
+    def test_satellite_twins_carry_plugins_key_infix(self, tmp_path: Path) -> None:
+        # GH-1807: a satellite lives under marketplaces/<pub>/plugins/<key>/,
+        # not at the marketplace root core occupies.
+        plugin_root = tmp_path / "Dev10x-Guru" / "dev10x-qa" / "0.115.0"
+        (plugin_root / "skills" / "tts" / "scripts").mkdir(parents=True)
+        script = plugin_root / "skills" / "tts" / "scripts" / "say.py"
+        script.write_text("")
+        home = tmp_path / "home"
+        home.mkdir()
+        rules = build_marketplaces_script_rules(
+            [script],
+            plugin_root=plugin_root,
+            plugin_cache="~/.claude/plugins/cache/Dev10x-Guru/dev10x",
+            user_home=home,
+            marketplace_subdir="plugins/qa",
+        )
+        rel = ".claude/plugins/marketplaces/Dev10x-Guru/plugins/qa/skills/tts/scripts/say.py"
+        assert rules == [f"Bash(~/{rel}:*)", f"Bash({home}/{rel}:*)"]
+
+
+def _satellite_root(*, cache_dir: Path, key: str) -> ScriptRoot:
+    return ScriptRoot(
+        plugin_root=cache_dir.parent / f"dev10x-{key}" / "0.115.0",
+        marketplace_subdir=f"plugins/{key}",
+    )
+
+
+class TestSatelliteScriptRoots:
+    @pytest.fixture()
+    def cache_dir(self, make_plugin_cache: Callable[..., Path]) -> Path:
+        return make_plugin_cache(plugin_name="dev10x", version="0.115.0").parent
+
+    @pytest.fixture()
+    def qa_plugin_map(self, make_plugin_map: Callable[..., PluginMap]) -> PluginMap:
+        return make_plugin_map(plugins={"qa": ["skill"]}, plugin_names={"qa": "dev10x-qa"})
+
+    def test_installed_satellite_resolves_beside_core(
+        self,
+        cache_dir: Path,
+        qa_plugin_map: PluginMap,
+        make_plugin_cache: Callable[..., Path],
+    ) -> None:
+        make_plugin_cache(plugin_name="dev10x-qa", version="0.115.0")
+
+        roots = satellite_script_roots(cache_dir=cache_dir, plugin_map=qa_plugin_map)
+
+        assert roots == [_satellite_root(cache_dir=cache_dir, key="qa")]
+
+    def test_only_installed_satellite_resolves(
+        self,
+        cache_dir: Path,
+        make_plugin_map: Callable[..., PluginMap],
+        make_plugin_cache: Callable[..., Path],
+    ) -> None:
+        plugin_map = make_plugin_map(
+            plugins={"qa": ["skill"], "infra": ["skill"]},
+            plugin_names={"qa": "dev10x-qa", "infra": "dev10x-infra"},
+        )
+        make_plugin_cache(plugin_name="dev10x-infra", version="0.115.0")
+
+        roots = satellite_script_roots(cache_dir=cache_dir, plugin_map=plugin_map)
+
+        assert roots == [_satellite_root(cache_dir=cache_dir, key="infra")]
+
+    def test_empty_satellite_cache_dir_is_skipped(
+        self,
+        cache_dir: Path,
+        qa_plugin_map: PluginMap,
+    ) -> None:
+        (cache_dir.parent / "dev10x-qa").mkdir()
+
+        assert satellite_script_roots(cache_dir=cache_dir, plugin_map=qa_plugin_map) == []
+
+    def test_latest_satellite_version_wins(
+        self,
+        cache_dir: Path,
+        qa_plugin_map: PluginMap,
+        make_plugin_cache: Callable[..., Path],
+    ) -> None:
+        for version in ("0.114.0", "0.115.0", "0.99.0"):
+            make_plugin_cache(plugin_name="dev10x-qa", version=version)
+
+        roots = satellite_script_roots(cache_dir=cache_dir, plugin_map=qa_plugin_map)
+
+        assert roots == [_satellite_root(cache_dir=cache_dir, key="qa")]
+
+    def test_lagging_satellite_uses_its_own_version(
+        self,
+        cache_dir: Path,
+        qa_plugin_map: PluginMap,
+        make_plugin_cache: Callable[..., Path],
+    ) -> None:
+        make_plugin_cache(plugin_name="dev10x-qa", version="0.114.0")
+
+        roots = satellite_script_roots(cache_dir=cache_dir, plugin_map=qa_plugin_map)
+
+        assert roots == [
+            ScriptRoot(
+                plugin_root=cache_dir.parent / "dev10x-qa" / "0.114.0",
+                marketplace_subdir="plugins/qa",
+            )
+        ]
+
+    def test_unnamed_key_falls_back_to_scheme_name(
+        self,
+        cache_dir: Path,
+        make_plugin_map: Callable[..., PluginMap],
+        make_plugin_cache: Callable[..., Path],
+    ) -> None:
+        make_plugin_cache(plugin_name="dev10x-db", version="0.115.0")
+        plugin_map = make_plugin_map(plugins={"db": ["skill"]})
+
+        roots = satellite_script_roots(cache_dir=cache_dir, plugin_map=plugin_map)
+
+        assert roots == [_satellite_root(cache_dir=cache_dir, key="db")]
+
+    def test_no_extracted_keys_yields_no_roots(
+        self,
+        cache_dir: Path,
+        make_plugin_map: Callable[..., PluginMap],
+    ) -> None:
+        plugin_map = make_plugin_map(plugins={})
+
+        assert satellite_script_roots(cache_dir=cache_dir, plugin_map=plugin_map) == []
 
 
 class TestIsDeadGlobScriptRule:
@@ -319,12 +452,81 @@ class TestGeneralizations:
         # A hand-crafted entry whose generalized form comes out malformed
         # must be refused, not silently written (GH-1150).
         with patch(
-            "dev10x.skills.permission.catalog_rules.generalize_permission",
+            "dev10x.core.skills.permission.catalog_rules.generalize_permission",
             return_value="not-a-well-formed-rule",
         ):
             replacements, refused = _generalizations(["Bash(/p/foo.sh arg1:*)"])
         assert replacements == []
         assert refused == ["Bash(/p/foo.sh arg1:*)"]
+
+
+class TestWideningHoldReason:
+    """GH-1868: generalize never widens env-pinned or secret-handling rules."""
+
+    @pytest.mark.parametrize(
+        "entry,reason",
+        [
+            (
+                "Bash(env PLANTUML_SECURITY_PROFILE=UNSECURE bash skills/x/render.sh a.puml)",
+                "env-assignment prefix",
+            ),
+            ("Bash(FOO=bar ./run.sh arg)", "env-assignment prefix"),
+            (
+                "Bash(~/.claude/skills/s/scripts/secrets.sh get key)",
+                "names secret or credential handling",
+            ),
+            (
+                "Bash(/p/skills/aws-vault/scripts/aws.sh sts get-caller-identity)",
+                "names secret or credential handling",
+            ),
+            ("Bash(/p/get-token.py prod)", "names secret or credential handling"),
+        ],
+    )
+    def test_holds_sensitive_rules(self, entry: str, reason: str) -> None:
+        assert widening_hold_reason(entry) == reason
+
+    @pytest.mark.parametrize(
+        "entry",
+        ["Bash(/p/foo.sh arg1:*)", "Bash(/p/draws.sh 1)", "Write(/tmp/Dev10x/git/msg.AbCd.txt)"],
+    )
+    def test_lets_ordinary_rules_widen(self, entry: str) -> None:
+        assert widening_hold_reason(entry) is None
+
+    @pytest.mark.parametrize(
+        "pattern",
+        ["flux-capacitor-toggle.py", "Bash(~/.claude/tools/flux-*)"],
+    )
+    def test_exclude_matches_substring_or_glob(self, pattern: str) -> None:
+        entry = "Bash(~/.claude/tools/flux-capacitor-toggle.py on)"
+
+        assert widening_hold_reason(entry, exclude=(pattern,)) == (
+            f"excluded by --exclude {pattern!r}"
+        )
+
+
+class TestPlanGeneralizations:
+    @pytest.fixture
+    def plan(self) -> GeneralizationPlan:
+        return plan_generalizations(
+            [
+                "Bash(/p/foo.sh arg1:*)",
+                "Bash(/p/secrets.sh read:*)",
+                "Bash(/p/toggle.py on)",
+            ],
+            exclude=("toggle.py",),
+        )
+
+    def test_rewrites_only_the_ordinary_rule(self, plan: GeneralizationPlan) -> None:
+        assert plan.replacements == [("Bash(/p/foo.sh arg1:*)", "Bash(/p/foo.sh:*)")]
+
+    def test_lists_held_rules_with_reasons(self, plan: GeneralizationPlan) -> None:
+        assert plan.held == [
+            ("Bash(/p/secrets.sh read:*)", "names secret or credential handling"),
+            ("Bash(/p/toggle.py on)", "excluded by --exclude 'toggle.py'"),
+        ]
+
+    def test_refuses_nothing(self, plan: GeneralizationPlan) -> None:
+        assert plan.refused == []
 
 
 class TestExpandStaleWildcards:
@@ -356,7 +558,7 @@ class TestExpandStaleWildcards:
     def test_expands_wildcard_into_catalog_tools_not_already_present(self) -> None:
         catalog = {"cli": ["mcp__plugin_dev10x_cli__issue_get", "mcp__plugin_dev10x_cli__pr_get"]}
         with patch(
-            "dev10x.skills.permission.enumerate_mcp._matches_wildcard",
+            "dev10x.core.skills.permission.enumerate_mcp._matches_wildcard",
             return_value=["mcp__plugin_dev10x_cli__issue_get", "mcp__plugin_dev10x_cli__pr_get"],
         ):
             expanded = _expand_stale_wildcards(
@@ -381,11 +583,11 @@ class TestExpandStaleWildcards:
     def test_discovers_catalog_when_not_passed(self) -> None:
         with (
             patch(
-                "dev10x.skills.permission.enumerate_mcp.discover_mcp_tools",
+                "dev10x.core.skills.permission.enumerate_mcp.discover_mcp_tools",
                 return_value={"cli": ["mcp__plugin_dev10x_cli__issue_get"]},
             ),
             patch(
-                "dev10x.skills.permission.enumerate_mcp._matches_wildcard",
+                "dev10x.core.skills.permission.enumerate_mcp._matches_wildcard",
                 return_value=["mcp__plugin_dev10x_cli__issue_get"],
             ),
         ):

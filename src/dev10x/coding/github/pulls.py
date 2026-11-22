@@ -2,7 +2,7 @@
 
 Dependencies are reached through ``_gateway.<name>`` and sibling
 capabilities through ``<module>.<name>`` (ADR-0027 D2), so a test patches
-``dev10x.github._gateway.<name>`` / ``dev10x.github.pulls.pr_get`` and
+``dev10x.core.github._gateway.<name>`` / ``dev10x.coding.github.pulls.pr_get`` and
 intercepts every caller — including ``merge``'s read-back.
 """
 
@@ -12,17 +12,19 @@ import asyncio
 import json
 from typing import Any
 
+from dev10x.coding.coding_script import coding_script
 from dev10x.coding.github import milestones
-from dev10x.core.github import _gateway
-from dev10x.core.paths import skill_script
-from dev10x.domain.common.result import ErrorResult, Result, err, ok
-from dev10x.domain.pr_body import (
+from dev10x.core.domain.common.result import ErrorResult, Result, err, ok
+from dev10x.core.domain.pr_body import (
+    built_trailer_error,
     fixes_references,
-    has_fixes_trailer,
+    fixes_trailer_error,
     job_story_error,
     normalize_pr_body,
 )
-from dev10x.subprocess_utils import parse_key_value_output
+from dev10x.core.github import _gateway
+from dev10x.core.paths import skill_script
+from dev10x.core.subprocess_utils import parse_key_value_output
 
 # Branch names that are never a legitimate PR head — HEAD on one of these
 # when opening a PR signals a wrong/unbound working directory (GH-873 F1).
@@ -107,7 +109,7 @@ async def create_pr(
     # cause instead of silently pushing the wrong branch. GitContext resolves
     # through the effective-CWD seam, so an explicit `cwd=` (bound by the MCP
     # wrapper's use_cwd) is honoured here.
-    from dev10x.domain.git_context import GitContext
+    from dev10x.core.domain.git_context import GitContext
 
     # The Job Story markers are checked on whatever text actually
     # becomes the PR body (GH-1073): with `body=` the caller supplies
@@ -149,12 +151,22 @@ async def create_pr(
             "branch, not the base."
         )
 
-    args = [title, job_story, issue_id]
-    args.append(
+    references = (
         ""
         if body is not None
         else fixes_references(issue_id=issue_id, fixes_url=fixes_url, closes=closes)
     )
+    # GH-1873, GH-1935
+    trailer_error = (
+        fixes_trailer_error(body=normalize_pr_body(body=body))
+        if body is not None
+        else built_trailer_error(job_story=job_story, references=references)
+    )
+    if trailer_error:
+        return err(f"create_pr: {trailer_error}")
+
+    args = [title, job_story, issue_id]
+    args.append(references)
     args.append(base_branch or "")
     args.append(",".join(str(n) for n in closes) if closes else "")
     args.append("true" if draft else "false")
@@ -164,7 +176,7 @@ async def create_pr(
     args.append(repo or "")
 
     result = await _gateway.async_run_script(
-        skill_script(skill="gh-pr-create", rel="create-pr.sh"),
+        coding_script(skill="gh-pr-create", rel="create-pr.sh"),
         *args,
     )
 
@@ -218,13 +230,14 @@ async def create_pr(
         )
         return ok(payload)
 
-    if not has_fixes_trailer(body=str(verified.value.get("body", ""))):
+    trailer_problem = fixes_trailer_error(body=str(verified.value.get("body", "")))
+    if trailer_problem:
         # Named like the milestone failure above: the PR is already open,
         # so an error that does not identify it strands it.
         return err(
             f"PR #{payload['pr_number']} ({payload['url']}) was created, but its "
-            "body carries no Fixes: trailer — the hygiene bot will reject it and "
-            "no linked issue will close on merge. Add the trailer with update_pr."
+            f"{trailer_problem} — the hygiene bot will reject it and no linked "
+            "issue will close on merge. Fix the trailer with update_pr."
         )
 
     payload["fixes_trailer_verified"] = True

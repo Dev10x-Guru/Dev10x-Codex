@@ -21,19 +21,25 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from dev10x.core.domain.events.hook_input import HookAllow, HookAsk, HookInput, HookResult
-from dev10x.hooks.apply_patch_payload import (
+from dev10x.core.domain.events.hook_input import (
+    HookAllow,
+    HookAsk,
+    HookHint,
+    HookInput,
+    HookResult,
+)
+from dev10x.core.hooks.apply_patch_payload import (
     APPLY_PATCH_TOOL_NAME,
     MalformedPatchError,
     to_edit_write_payloads,
 )
-from dev10x.hooks.hook_transport import emit
-from dev10x.subprocess_utils import effective_cwd
+from dev10x.core.hooks.hook_transport import emit, select_result
+from dev10x.core.subprocess_utils import effective_cwd
 
 if TYPE_CHECKING:
-    from dev10x.domain.rules.rule_engine import RuleEngine
+    from dev10x.core.domain.rules.rule_engine import RuleEngine
 
-HookDecision = HookResult | HookAllow | HookAsk
+HookDecision = HookResult | HookAllow | HookAsk | HookHint
 
 log = logging.getLogger(__name__)
 
@@ -49,10 +55,10 @@ def _cached_engine(yaml_path_str: str, mtime_ns: int) -> RuleEngine:
     file's mtime parses an unchanged config once per process while an
     edit to the YAML (new mtime) transparently yields a fresh engine.
     Mirrors the ``_cached_registry`` pattern in
-    ``dev10x.validators.__init__``.
+    ``dev10x.core.validators.__init__``.
     """
-    from dev10x.config.loader import load_config
-    from dev10x.domain.rules.rule_engine import RuleEngine
+    from dev10x.core.config.loader import load_config
+    from dev10x.core.domain.rules.rule_engine import RuleEngine
 
     config = load_config(yaml_path=Path(yaml_path_str))
     return RuleEngine.from_config(config=config)
@@ -81,14 +87,13 @@ def _first_python_decision(*, data: dict[str, Any], debug: bool = False) -> Hook
     given Edit|Write input.  YAML-rule blocks have already been handled
     before this function is called.
     """
-    from dev10x.validators import get_chain
+    from dev10x.core.validators import get_chain
 
     inp = HookInput.from_dict(data=data)
-    for result in get_chain().run(inp=inp):
-        if debug:
-            print(f"[DEBUG] Python validator blocked: {result}", file=sys.stderr)
-        return result
-    return None
+    result = select_result(get_chain().run(inp=inp))
+    if result is not None and debug:
+        print(f"[DEBUG] Python validator blocked: {result}", file=sys.stderr)
+    return result
 
 
 def _first_decision(
@@ -126,7 +131,7 @@ def _apply_patch_decision(
         )
         return None
 
-    deferred: HookDecision | None = None
+    decisions: list[HookDecision] = []
     for payload in payloads:
         decision = _first_decision(data=payload, engine=engine, debug=debug)
         if decision is None:
@@ -134,8 +139,8 @@ def _apply_patch_decision(
         named = _naming_file(decision, file_path=payload["tool_input"]["file_path"])
         if isinstance(named, HookResult):
             return named
-        deferred = deferred or named
-    return deferred
+        decisions.append(named)
+    return select_result(decisions)
 
 
 def validate_edit_write(

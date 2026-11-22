@@ -9,7 +9,7 @@ notification to Slack.
 
 Subcommands:
     prepare  — Resolve project config, format message, output JSON.
-    send     — Post message via slack-notify.py.
+    send     — Post message via the in-package slack_notify module.
 
 Config: Dev10xConfigDir.slack_review_config_yaml()
 Slack config: Dev10xConfigDir.slack_config_yaml()
@@ -19,15 +19,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 from dev10x.comm.skills.notifications._gh import GhCommandError, gh_json
+from dev10x.comm.skills.notifications.slack_notify import notify_slack
+from dev10x.core.domain.common.repository_ref import RepositoryRef
+from dev10x.core.domain.common.result import ErrorResult
+from dev10x.core.domain.dev10x_paths import Dev10xConfigDir
 from dev10x.core.skills.common.jtbd import extract_jtbd, md_to_slack_bold
-from dev10x.domain.common.repository_ref import RepositoryRef
-from dev10x.domain.dev10x_paths import Dev10xConfigDir
 
 
 def load_yaml(path: Path) -> dict:
@@ -190,23 +191,12 @@ def cmd_send(args: argparse.Namespace) -> None:
         print("❌ --message or --message-file required", file=sys.stderr)
         sys.exit(1)
 
-    slack_notify = Path(__file__).parents[5] / "skills" / "slack" / "slack-notify.py"
-    if not slack_notify.exists():
-        print(f"❌ slack-notify.py not found at {slack_notify}", file=sys.stderr)
+    result = notify_slack(channel=args.channel, message=message)
+    if isinstance(result, ErrorResult):
+        print(f"❌ Slack notification failed: {result.error}", file=sys.stderr)
         sys.exit(1)
 
-    result = subprocess.run(
-        [str(slack_notify), "--channel", args.channel, "--message", message],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-
-    if result.returncode != 0:
-        print(f"❌ Slack notification failed: {result.stderr.strip()}", file=sys.stderr)
-        sys.exit(1)
-
-    print(result.stdout.strip())
+    print(f"✅ Slack message sent successfully! ts={result.value}")
 
 
 def main() -> None:

@@ -1,7 +1,7 @@
 """Review threads and comments capability (ADR-0027).
 
 Dependencies are reached through ``_gateway.<name>`` (ADR-0027 D2), so a
-test patches ``dev10x.github._gateway.<name>`` and intercepts every caller.
+test patches ``dev10x.core.github._gateway.<name>`` and intercepts every caller.
 """
 
 from __future__ import annotations
@@ -10,10 +10,10 @@ import json
 import re
 from typing import Any
 
+from dev10x.coding.coding_script import coding_script
+from dev10x.core.domain.common.repository_ref import RepositoryRef
+from dev10x.core.domain.common.result import ErrorResult, Result, err, ok
 from dev10x.core.github import _gateway
-from dev10x.core.paths import skill_script
-from dev10x.domain.common.repository_ref import RepositoryRef
-from dev10x.domain.common.result import ErrorResult, Result, err, ok
 
 
 async def _pr_comment_get(
@@ -63,7 +63,7 @@ async def _pr_comment_list(
 # Known automated-reviewer login pattern. Kept in sync with the `is_bot`
 # login branch in skills/gh-pr-merge/scripts/top-level-comments.jq so the
 # Python thread classifier and the jq top-level-comment classifier agree
-# on which accounts are bots (GH-858 F1, hook-patterns.md dual-impl parity).
+# on which accounts are bots (GH-858 F1, hook-dispatch-patterns.md dual-impl parity).
 _BOT_LOGIN_RE = re.compile(
     r"claude|github-actions|coderabbit|sourcery|openai|codex|copilot",
     re.IGNORECASE,
@@ -79,6 +79,22 @@ def is_bot_login(login: str | None) -> bool:
     cannot confidently classify as a bot resolves to human.
     """
     return bool(login) and bool(_BOT_LOGIN_RE.search(login or ""))
+
+
+def is_bot_author(author: dict[str, Any] | None) -> bool:
+    """True when a GraphQL ``author`` is a bot account (GH-1857).
+
+    The account type is authoritative whenever the query asked for it:
+    the login regex alone let a human such as ``claude-fan`` read as a
+    bot, and a bot-authored thread is one AFK may resolve without the
+    supervisor. The regex remains the fallback for a payload that does
+    not carry ``__typename``.
+    """
+    author = author or {}
+    typename = author.get("__typename")
+    if typename:
+        return typename == "Bot"
+    return is_bot_login(author.get("login"))
 
 
 async def _list_unresolved_threads(
@@ -100,37 +116,26 @@ async def _list_unresolved_threads(
         "id isResolved isOutdated "
         "comments(first: 1) { nodes { "
         "databaseId body path line "
-        "author { login } "
+        "author { __typename login } "
         "pullRequestReview { databaseId } "
         "reactionGroups { content users { totalCount } } "
         "} } "
         "} } } } }"
     )
-    result = await _gateway._gh_api_raw("graphql", fields={"query": query})
-    if result.returncode != 0:
-        return err(result.stderr.strip())
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return err(f"Invalid JSON from GitHub API: {result.stdout[:200]}")
-    threads = (
-        data.get("data", {})
-        .get("repository", {})
-        .get("pullRequest", {})
-        .get("reviewThreads", {})
-        .get("nodes", [])
-    )
+    fetched = await _gateway._graphql_pull_request(query, ref=repo_ref, pr_number=pr_number)
+    if isinstance(fetched, ErrorResult):
+        return fetched
+    threads = (fetched.value.get("reviewThreads") or {}).get("nodes") or []
     unresolved: list[dict[str, Any]] = []
     for thread in threads:
         if thread.get("isResolved"):
             continue
         comments = thread.get("comments", {}).get("nodes", [])
         first = comments[0] if comments else {}
-        first_author_login = (first.get("author") or {}).get("login")
         normalized = {
             "thread_id": thread.get("id"),
             "is_outdated": thread.get("isOutdated"),
-            "author_type": "bot" if is_bot_login(first_author_login) else "human",
+            "author_type": "bot" if is_bot_author(first.get("author")) else "human",
             **first,
         }
         reaction_groups = normalized.pop("reactionGroups", None)
@@ -263,37 +268,15 @@ async def _pr_comment_resolve(
         "} }"
         for i, cid in enumerate(ids_to_resolve)
     )
-    query_result = await _gateway._gh_api_raw(
-        "graphql",
-        fields={"query": f"{{ {node_fragments} }}"},
-    )
-    if query_result.returncode != 0:
-        return err(query_result.stderr.strip())
+    looked_up = await _gateway._graphql(f"{{ {node_fragments} }}", tolerate_not_found=True)
+    if isinstance(looked_up, ErrorResult):
+        return looked_up
 
-    try:
-        query_data = json.loads(query_result.stdout)
-    except json.JSONDecodeError:
-        return err(f"Invalid JSON from GitHub API: {query_result.stdout[:200]}")
     thread_ids: list[str] = []
     errors: list[str] = []
     for i, cid in enumerate(ids_to_resolve):
-        node = query_data.get("data", {}).get(f"n{i}")
-        if node is None:
-            errors.append(
-                f"Could not find thread for comment {cid}. "
-                "The resolve action requires a GraphQL node_id, not a REST "
-                "integer ID. Use the node_id field from a comment response."
-            )
-            continue
-        comment_db_id = node.get("databaseId")
-        threads = node.get("pullRequest", {}).get("reviewThreads", {}).get("nodes", [])
-        matched_thread_id: str | None = None
-        for thread in threads:
-            first_comments = thread.get("comments", {}).get("nodes", [])
-            if first_comments and first_comments[0].get("databaseId") == comment_db_id:
-                matched_thread_id = thread.get("id")
-                break
-        if matched_thread_id and matched_thread_id.startswith("PRRT_"):
+        matched_thread_id = _thread_of_comment(node=looked_up.value.get(f"n{i}"))
+        if matched_thread_id:
             thread_ids.append(matched_thread_id)
         else:
             errors.append(
@@ -305,26 +288,74 @@ async def _pr_comment_resolve(
     if not thread_ids:
         return err("; ".join(errors))
 
+    resolved = await _resolve_threads(thread_ids=thread_ids)
+    if isinstance(resolved, ErrorResult) or not errors:
+        return resolved
+    return ok({**resolved.value, "warnings": [*resolved.value.get("warnings", []), *errors]})
+
+
+def _thread_of_comment(*, node: Any) -> str | None:
+    """The ``PRRT_`` thread whose first comment is ``node``, if any."""
+    if not isinstance(node, dict):
+        return None
+    comment_db_id = node.get("databaseId")
+    threads = ((node.get("pullRequest") or {}).get("reviewThreads") or {}).get("nodes") or []
+    for thread in threads:
+        first_comments = (thread.get("comments") or {}).get("nodes") or []
+        if first_comments and first_comments[0].get("databaseId") == comment_db_id:
+            thread_id = thread.get("id")
+            return (
+                thread_id if isinstance(thread_id, str) and thread_id.startswith("PRRT_") else None
+            )
+    return None
+
+
+async def _resolve_threads(*, thread_ids: list[str]) -> Result[dict[str, Any]]:
     resolve_fragments = " ".join(
         f"r{i}: resolveReviewThread(input: {{threadId: {json.dumps(tid)}}}) "
         f"{{ thread {{ id isResolved }} }}"
         for i, tid in enumerate(thread_ids)
     )
-    result = await _gateway._gh_api_raw(
-        "graphql",
-        fields={"query": f"mutation {{ {resolve_fragments} }}"},
+    response = await _gateway._graphql_response(f"mutation {{ {resolve_fragments} }}")
+    if isinstance(response, ErrorResult):
+        return response
+    data = response.value.data or {}
+    errors = response.value.errors
+    resolved_ids = [
+        tid for i, tid in enumerate(thread_ids) if _alias_resolved(node=data.get(f"r{i}"))
+    ]
+    if errors and not resolved_ids:
+        message = _gateway.graphql_error_message(entry=errors[0])
+        return err(f"GitHub GraphQL error: {message}")
+    if not errors:
+        return ok({"data": data, "resolved": resolved_ids})
+    failed = [tid for tid in thread_ids if tid not in resolved_ids]
+    return ok(
+        {
+            "data": data,
+            "resolved": resolved_ids,
+            "failed": failed,
+            "warnings": [
+                _alias_error_warning(entry=entry, thread_ids=thread_ids) for entry in errors
+            ],
+        }
     )
 
-    if result.returncode != 0:
-        return err(result.stderr.strip())
 
-    try:
-        response: dict[str, Any] = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return err(f"Invalid JSON from GitHub API: {result.stdout[:200]}")
-    if errors:
-        response["warnings"] = errors
-    return ok(response)
+def _alias_resolved(*, node: Any) -> bool:
+    thread = node.get("thread") if isinstance(node, dict) else None
+    return isinstance(thread, dict) and thread.get("isResolved") is True
+
+
+def _alias_error_warning(*, entry: Any, thread_ids: list[str]) -> str:
+    """Name the thread a per-alias mutation error belongs to (GH-1913)."""
+    message = _gateway.graphql_error_message(entry=entry)
+    path = entry.get("path") if isinstance(entry, dict) else None
+    alias = path[0] if isinstance(path, list) and path else None
+    index = int(alias[1:]) if isinstance(alias, str) and alias[1:].isdigit() else None
+    if index is None or index >= len(thread_ids):
+        return f"GitHub GraphQL error: {message}"
+    return f"Could not resolve {thread_ids[index]}: {message}"
 
 
 _PR_COMMENT_ACTIONS: dict[str, Any] = {
@@ -387,21 +418,7 @@ async def resolve_review_thread(
                 f"Invalid thread IDs (must start with PRRT_): {invalid}. "
                 "Use comment_ids for GraphQL node IDs that need thread lookup."
             )
-        resolve_fragments = " ".join(
-            f"r{i}: resolveReviewThread(input: {{threadId: {json.dumps(tid)}}}) "
-            f"{{ thread {{ id isResolved }} }}"
-            for i, tid in enumerate(thread_ids)
-        )
-        result = await _gateway._gh_api_raw(
-            "graphql",
-            fields={"query": f"mutation {{ {resolve_fragments} }}"},
-        )
-        if result.returncode != 0:
-            return err(result.stderr.strip())
-        try:
-            return ok(json.loads(result.stdout))
-        except json.JSONDecodeError:
-            return err(f"Invalid JSON from GitHub API: {result.stdout[:200]}")
+        return await _resolve_threads(thread_ids=thread_ids)
 
     if comment_ids:
         repo_result = await _gateway._resolve_repo(repo)
@@ -620,7 +637,7 @@ async def check_top_level_comments(
         return repo_result
     ref = repo_result.value
     result = await _gateway.async_run_script(
-        skill_script(skill="gh-pr-merge", rel="check-top-level-comments.sh"),
+        coding_script(skill="gh-pr-merge", rel="check-top-level-comments.sh"),
         ref.owner,
         ref.name,
         str(pr_number),
@@ -668,7 +685,7 @@ async def unresolved_threads(
             pr_number=pr_number,
         )
     result = await _gateway.async_run_script(
-        skill_script(skill="gh-pr-doctor", rel="gh-unresolved-threads.py"),
+        coding_script(skill="gh-pr-doctor", rel="gh-unresolved-threads.py"),
         "--repo",
         resolved_repo,
         "--limit",

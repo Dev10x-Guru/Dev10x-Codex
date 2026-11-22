@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from dev10x.hooks.apply_patch_payload import (
+from dev10x.core.hooks.apply_patch_payload import (
     MalformedPatchError,
     PatchOperation,
     PatchOperationKind,

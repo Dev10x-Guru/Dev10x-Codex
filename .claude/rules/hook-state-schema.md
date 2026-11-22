@@ -1,3 +1,9 @@
+---
+paths:
+  - "hooks/**"
+  - "src/dev10x/*/hooks/**"
+---
+
 # Hook State Schemas
 
 Pattern for documenting and validating JSON state written by hooks for

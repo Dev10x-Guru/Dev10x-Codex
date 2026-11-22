@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from dev10x.validators.inline_linter import INLINE_LINTER_MSG, InlineLinterValidator
 
+from dev10x.core.validators.inline_linter import INLINE_LINTER_MSG, InlineLinterValidator
 from tests.fakers import BashHookInputFaker
 
 
@@ -142,6 +142,10 @@ class TestAllowsSearchPatterns:
             "git log --grep ruff",
             'rg -n "black|prettier" .',
             "grep -r 'eslint|prettier' src/",
+            "echo ';' mypy",
+            "ls # ; ruff check .",
+            "git commit -F - <<EOF\nruff check .\nEOF",
+            "git commit -F - <<'EOF'\nFix mypy; don't run ruff\nEOF",
         ],
     )
     def test_allows(self, validator: InlineLinterValidator, command: str) -> None:
@@ -176,6 +180,15 @@ class TestSegmentsOnEveryCommandSeparator:
             "cd src && ruff check .",
             "echo hi; mypy src",
             "make build || black --check .",
+            "true;ruff check .",
+            "true & ruff check .",
+            "true\nruff check .",
+            "(ruff check .)",
+            "echo $(ruff check .)",
+            "sudo ruff check .",
+            "timeout 5; ruff check .",
+            "sudo -u dev uv run mypy src",
+            "git ls-files | xargs ruff check",
         ],
     )
     def test_blocks(self, validator: InlineLinterValidator, command: str) -> None:
@@ -199,6 +212,8 @@ class TestSeesPastShellKeywords:
             "{ ruff check .; }",
             "time ruff format src",
             "command eslint .",
+            "time -f %e ruff check .",
+            "do timeout 5 mypy src",
         ],
     )
     def test_blocks(self, validator: InlineLinterValidator, command: str) -> None:
@@ -213,6 +228,22 @@ class TestEdgeCases:
         result = validator.validate(inp=_make_input(command="FORCE_COLOR=1 ruff check ."))
         assert result is not None
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "timeout 60 ruff check .",
+            "env -i ruff check .",
+            "nice -n 5 pnpm lint",
+            "stdbuf -o L uv run mypy src",
+        ],
+    )
+    def test_process_wrappers_stripped_before_match(
+        self, validator: InlineLinterValidator, command: str
+    ) -> None:
+        # GH-1733 (c): the shared canonicalizer unwraps what DX003 unwraps.
+        result = validator.validate(inp=_make_input(command=command))
+        assert result is not None
+
     def test_unbalanced_quote_is_ignored(self, validator: InlineLinterValidator) -> None:
         # shlex raises on an unterminated quote — the segment is skipped, not blocked.
         assert validator.validate(inp=_make_input(command="ruff check 'oops")) is None
@@ -225,7 +256,7 @@ class TestEdgeCases:
 
 class TestMetadata:
     def test_rule_id_and_profile(self, validator: InlineLinterValidator) -> None:
-        from dev10x.domain.profile_tier import ProfileTier
+        from dev10x.core.domain.profile_tier import ProfileTier
 
         assert validator.rule_id == "DX016"
         assert validator.profile is ProfileTier.STANDARD

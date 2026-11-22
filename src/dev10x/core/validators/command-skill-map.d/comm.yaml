@@ -12,7 +12,7 @@ rules:
     hook_block: false
     compensations:
       - type: use-skill
-        skill: dev10x:slack
+        skill: dev10x-comm:slack
     reason: >
       Direct Slack API calls bypass token management and
       structured message formatting.
@@ -25,9 +25,11 @@ rules:
       - "gog --version"
       - "gog --help"
     # Advisory: a leading flag is not unsafe, it only stops the catalogued
-    # read rules from matching. permission_triage and diag-friction read
-    # advisory rules; the hook never sees them.
+    # read rules from matching, so the hook must not deny or ask. It
+    # steers live instead (GH-1725): the compensation below reaches the
+    # agent as additionalContext before the permission prompt fires.
     hook_block: false
+    live_hint: true
     compensations:
       - type: use-alternative
         description: >
@@ -42,5 +44,5 @@ rules:
       rule matches, and the harness offers "don't ask again for `gog *`",
       which would also allow send, share and delete (GH-1667).
     related:
-      - dev10x:gog
+      - dev10x-comm:gog
       - dev10x:diag-friction

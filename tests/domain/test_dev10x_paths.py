@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from dev10x.domain.claude_paths import CLAUDE_HOME_ENV_VAR, ClaudeDir
-from dev10x.domain.dev10x_paths import (
+
+from dev10x.core.domain.claude_paths import CLAUDE_HOME_ENV_VAR, ClaudeDir
+from dev10x.core.domain.dev10x_paths import (
     CONFIG_HOME_ENV_VAR,
     Dev10xConfigDir,
     migrate_all,
@@ -150,7 +151,7 @@ def test_migrate_path_rechecks_inside_lock_when_current_appears(
         current.write_text("winner")
         yield
 
-    monkeypatch.setattr("dev10x.domain.dev10x_paths.file_lock", racing_lock)
+    monkeypatch.setattr("dev10x.core.domain.dev10x_paths.file_lock", racing_lock)
     assert migrate_path(legacy=legacy, current=current) is False
     assert current.read_text() == "winner"
 
@@ -228,6 +229,7 @@ def test_migrate_all_includes_memory_dev10x_files(
         "gitmoji_yaml",
         "github_reviewers_config_yaml",
         "settings_pr_merge_yaml",
+        "dod_acceptance_criteria_yaml",
     ):
         legacy = getattr(ClaudeDir, accessor)()
         legacy.parent.mkdir(parents=True, exist_ok=True)
@@ -236,6 +238,45 @@ def test_migrate_all_includes_memory_dev10x_files(
     assert "gitmoji.yaml" in migrated_names
     assert "github-reviewers-config.yaml" in migrated_names
     assert "settings-pr-merge.yaml" in migrated_names
+    assert "dod-acceptance-criteria.yaml" in migrated_names
+
+
+def test_migrate_all_sweeps_a_same_name_file_nobody_listed(
+    isolated_dirs: tuple[Path, Path],
+) -> None:
+    """GH-1785: a new memory/Dev10x config needs no hand-kept pair."""
+    legacy = ClaudeDir.memory_dev10x_dir() / "future-prefs.yml"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("payload: future")
+    (legacy.parent / "notes.md").write_text("not config")
+
+    migrated = migrate_all()
+
+    assert Dev10xConfigDir._resolve("future-prefs.yml") in migrated
+    assert Dev10xConfigDir._resolve("future-prefs.yml").read_text() == "payload: future"
+    assert not Dev10xConfigDir._resolve("notes.md").exists()
+    assert legacy in stale_legacy_paths()
+
+
+def test_every_memory_dev10x_accessor_is_swept(isolated_dirs: tuple[Path, Path]) -> None:
+    """Guard: each ClaudeDir file under memory/Dev10x reaches migrate_all."""
+    legacy_dir = ClaudeDir.memory_dev10x_dir()
+    accessors = [
+        name for name in dir(ClaudeDir) if name.endswith("_yaml") and not name.startswith("_")
+    ]
+    under_memory = [
+        path
+        for path in (getattr(ClaudeDir, name)() for name in accessors)
+        if path.parent == legacy_dir
+    ]
+    for path in under_memory:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("payload")
+
+    migrated_names = {p.name for p in migrate_all()}
+
+    assert under_memory
+    assert {path.name for path in under_memory} <= migrated_names
 
 
 def test_migrate_all_is_idempotent(isolated_dirs: tuple[Path, Path]) -> None:

@@ -22,13 +22,13 @@ test that patches a re-export on this facade while package code looks the
 name up elsewhere.
 
 This module only re-exports: production callers (``coding/mcp/github_tools.py``,
-``core/mcp/gate_query.py``, ``comm/skills/notifications/_gh.py``) keep
-importing from ``dev10x.github``, which is this package under its
-pre-ADR-0034 name (GH-1546).
+``core/mcp/gate_query.py``, ``comm/skills/notifications/_gh.py``) import
+from ``dev10x.coding.github`` directly.
 """
 
 from __future__ import annotations
 
+from dev10x.coding.github.bot_reviews import bot_review_status
 from dev10x.coding.github.bulk import (
     _bulk_execute,
     issues_bulk_create,
@@ -89,6 +89,7 @@ from dev10x.coding.github.pulls import (
     pr_ready,
     update_pr,
 )
+from dev10x.coding.github.review_readiness import review_readiness_audit
 from dev10x.coding.github.reviews import (
     _BOT_LOGIN_RE,
     _MINIMIZE_CLASSIFIERS,
@@ -102,6 +103,7 @@ from dev10x.coding.github.reviews import (
     _pr_comment_reply,
     _pr_comment_resolve,
     check_top_level_comments,
+    is_bot_author,
     is_bot_login,
     minimize_comments,
     pr_comment_edit,
@@ -134,6 +136,8 @@ __all__ = [
     "_parse_gh_api_result",
     "_resolve_repo",
     "_run_and_parse",
+    # bot_reviews
+    "bot_review_status",
     # ci_rerun
     "ci_rerun",
     # detection
@@ -142,6 +146,8 @@ __all__ = [
     "pr_detect",
     "pre_pr_checks",
     "verify_pr_state",
+    # review_readiness
+    "review_readiness_audit",
     # reviews
     "_BOT_LOGIN_RE",
     "_MINIMIZE_CLASSIFIERS",
@@ -155,6 +161,7 @@ __all__ = [
     "_pr_comment_reply",
     "_pr_comment_resolve",
     "check_top_level_comments",
+    "is_bot_author",
     "is_bot_login",
     "minimize_comments",
     "pr_comment_edit",

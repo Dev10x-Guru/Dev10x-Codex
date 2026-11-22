@@ -229,11 +229,11 @@ reinforcement mechanism:
 - **`dev10x:diag-friction`** — handles CLI-to-skill
   redirects and permission-friction diagnosis; `dev10x:ask`
   handles plain-text-to-widget redirects
-- **`dev10x:work-on`** — can invoke `dev10x:ask reinforce` if
+- **`dev10x-coding:work-on`** — can invoke `dev10x:ask reinforce` if
   an agent within the work-on pipeline uses plain text for a
   decision point, or `dev10x:ask --loops` before the Verify-AC
   gate to catch loops that never reached the task list
-- **`dev10x:session-wrap-up`** — run `--loops` first so nothing
+- **`dev10x-tasks:session-wrap-up`** — run `--loops` first so nothing
   open is lost at session close
 - **Skill authors** — reference this skill in SKILL.md when
   documenting decision gates as a fallback enforcement mechanism

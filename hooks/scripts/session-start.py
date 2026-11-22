@@ -33,16 +33,14 @@ def _load_stdin() -> dict:
 
 def _import_session_modules() -> tuple:
     try:
-        from dev10x.hooks.audit_emit import audit_hook
-
-        from dev10x.hooks import session as s
+        from dev10x.core.hooks import session as s
+        from dev10x.core.hooks.audit_emit import audit_hook
     except ImportError:
         from pathlib import Path
 
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
-        from dev10x.hooks.audit_emit import audit_hook
-
-        from dev10x.hooks import session as s
+        from dev10x.core.hooks import session as s
+        from dev10x.core.hooks.audit_emit import audit_hook
 
     return s, audit_hook
 
@@ -132,15 +130,21 @@ def capture_feature(
     return SessionFeature(name=name, fn=fn, run=_run)
 
 
-def build_feature(*, name: str, fn: Callable[..., Any]) -> SessionFeature:
+def build_feature(
+    *,
+    name: str,
+    fn: Callable[..., Any],
+    pass_data: bool = False,
+) -> SessionFeature:
     """Return a ``SessionFeature`` that calls ``fn`` directly and uses the returned string.
 
     Used for features that return their context string rather than printing it.
+    When ``pass_data`` is True, the stdin ``data`` dict is forwarded to ``fn``.
     """
 
     def _run(data: dict, audit_hook) -> str:  # noqa: ARG001
         try:
-            return fn() or ""
+            return (fn(data=data) if pass_data else fn()) or ""
         except Exception:
             traceback.print_exc(file=sys.stderr)
             return ""
@@ -182,16 +186,21 @@ def build_features(s) -> list[SessionFeature]:
         build_feature(name="session-hook-version-drift", fn=s.build_hook_version_drift_context),
         capture_feature(name="session-migrate-permissions", fn=s.session_migrate_permissions),
         build_feature(name="session-reload", fn=s.build_reload_context),
+        build_feature(
+            name="session-compaction",
+            fn=s.build_compaction_context,
+            pass_data=True,
+        ),
     ]
 
 
 def select_harness_features(*, features: list[SessionFeature]) -> list[SessionFeature]:
-    from dev10x.harness import is_codex
+    from dev10x.core.harness import is_codex
 
     if not is_codex():
         return features
 
-    from dev10x.hooks import session_codex
+    from dev10x.core.hooks import session_codex
 
     replacements = {
         "session-git-aliases": capture_feature(

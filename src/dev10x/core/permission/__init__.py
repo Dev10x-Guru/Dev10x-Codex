@@ -4,7 +4,7 @@ Wraps permission sub-commands as an MCP tool so skills can update
 plugin permission settings without Bash allow-rule friction.
 
 Calls the public ``ensure_*`` / ``generalize`` helpers in
-``dev10x.skills.permission.update_paths``, which return structured
+``dev10x.core.skills.permission.update_paths``, which return structured
 result dicts (``exit_code``, ``messages``, ``errors``, stats). No
 ``redirect_stdout`` capture — the helpers do not print to stdout.
 """
@@ -16,8 +16,8 @@ import os
 from pathlib import Path
 from typing import Any, cast
 
-from dev10x.domain.common.result import ErrorResult, Result, err, ok
-from dev10x.permission.service import load_permission_context
+from dev10x.core.domain.common.result import ErrorResult, Result, err, ok
+from dev10x.core.permission.service import load_permission_context
 
 
 async def catalog_gap(*, verbose: bool = False) -> Result[dict[str, Any]]:
@@ -89,12 +89,14 @@ async def grant(
     rule: str,
     working_dirs: list[str] | None = None,
     dry_run: bool = False,
+    remember: bool = False,
 ) -> Result[dict[str, Any]]:
     """Grant the triaged rule to every settings file that lacks it (GH-1676).
 
     Refuses unless triage returns ``grant`` and derives exactly ``rule``,
     so a better fix is never skipped and the approved rule is the one
-    written. Writes through the backup + git-tracked guard.
+    written. Writes through the backup + git-tracked guard. ``remember``
+    also records the rule for checkouts created later (GH-1677).
     """
     return await asyncio.to_thread(
         _run_grant,
@@ -102,19 +104,20 @@ async def grant(
         rule=rule,
         working_dirs=working_dirs,
         dry_run=dry_run,
+        remember=remember,
     )
 
 
 def catalog_denies(*, config: dict[str, Any]) -> list[str]:
     """Every deny the catalog would seed, tracker and IDE blocks included."""
-    from dev10x.skills.permission.catalog_write import render_catalog
+    from dev10x.core.skills.permission.catalog_write import render_catalog
 
     rendered = render_catalog(config=config, toplevel=None, quiet=True)
     return [*config.get("base_denies", []), *rendered.deny]
 
 
 def _resolve_working_dirs(*, working_dirs: list[str] | None) -> Result[list[Path]]:
-    from dev10x.subprocess_utils import effective_cwd
+    from dev10x.core.subprocess_utils import effective_cwd
 
     if not working_dirs:
         return ok([Path(effective_cwd() or os.getcwd())])
@@ -126,7 +129,7 @@ def _resolve_working_dirs(*, working_dirs: list[str] | None) -> Result[list[Path
 
 
 def _run_triage(*, target: str, working_dirs: list[str] | None) -> Result[dict[str, Any]]:
-    from dev10x.skills.permission.grant import triage as run_triage
+    from dev10x.core.skills.permission.grant import triage as run_triage
 
     ctx = load_permission_context()
     if isinstance(ctx, ErrorResult):
@@ -149,8 +152,9 @@ def _run_grant(
     rule: str,
     working_dirs: list[str] | None,
     dry_run: bool,
+    remember: bool = False,
 ) -> Result[dict[str, Any]]:
-    from dev10x.skills.permission.grant import grant_everywhere
+    from dev10x.core.skills.permission.grant import grant_everywhere
 
     ctx = load_permission_context()
     if isinstance(ctx, ErrorResult):
@@ -167,6 +171,7 @@ def _run_grant(
         base_denies=catalog_denies(config=ctx.value.config),
         dry_run=dry_run,
         confirmed_rule=rule,
+        remember=remember,
     )
 
 

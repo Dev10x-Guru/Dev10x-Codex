@@ -11,19 +11,29 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
+from dev10x.core.domain.common.result import ErrorResult, Result, err, ok
+from dev10x.core.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.core.domain.file_locks import locked_json_update
 from dev10x.core.github import _gateway
-from dev10x.domain.common.result import ErrorResult, Result, err, ok
 
 #: Actions runs at or past this ``run_attempt`` are refused. The counter
 #: lives on GitHub, so the cap is stateless and survives across sessions
-#: and worktrees without a local store.
+#: and worktrees without a local store. Third-party suites have no such
+#: counter, so theirs is kept in :func:`attempts_path` (GH-1724).
 MAX_RUN_ATTEMPTS = 3
 
 #: Upper bound on re-runs issued by one call, so a PR with dozens of
 #: failing suites cannot fan out into a burst of POSTs.
 MAX_RETRIES_PER_CALL = 10
+
+#: Re-exported from the Gateway, which owns paging (GH-1852).
+PAGE_SIZE = _gateway.PAGE_SIZE
+MAX_LISTING_PAGES = _gateway.MAX_LISTING_PAGES
+
+_ATTEMPTS_FILENAME = "ci-rerun-attempts.json"
 
 _FAILED_CONCLUSIONS = frozenset(
     {"failure", "timed_out", "cancelled", "action_required", "startup_failure"}
@@ -32,15 +42,39 @@ _ACTIONS_APP_SLUG = "github-actions"
 _SHA_PATTERN = re.compile(r"[0-9a-f]{7,40}", re.IGNORECASE)
 
 
-def _items(*, raw: str, key: str) -> Result[list[dict[str, Any]]]:
+def attempts_path() -> Path:
+    """Where third-party suite re-request counts persist across calls."""
+    return Dev10xConfigDir.home() / _ATTEMPTS_FILENAME
+
+
+def _attempt_key(*, repo: str, pr_number: int | None, sha: str) -> str:
+    return f"{repo}#{pr_number}" if pr_number is not None else f"{repo}@{sha}"
+
+
+def _third_party_attempts(*, key: str) -> dict[str, int]:
+    path = attempts_path()
+    if not path.exists():
+        return {}
     try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return err(f"could not parse the '{key}' listing as JSON")
-    items = payload.get(key) if isinstance(payload, dict) else None
-    if not isinstance(items, list):
-        return err(f"unexpected '{key}' listing shape from GitHub")
-    return ok([item for item in items if isinstance(item, dict)])
+        counts = json.loads(path.read_text()).get(key, {})
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return counts if isinstance(counts, dict) else {}
+
+
+def _record_third_party_attempt(*, key: str, suite_id: int) -> str | None:
+    """Count one re-request; return why it could not be stored, or None.
+
+    The POST already went out, so a store failure is reported rather than
+    turned into an error for a re-run that did happen.
+    """
+    try:
+        with locked_json_update(attempts_path()) as data:
+            counts = data.setdefault(key, {})
+            counts[str(suite_id)] = int(counts.get(str(suite_id), 0)) + 1
+    except (OSError, ValueError, AttributeError) as exc:
+        return f"could not record the attempt in {attempts_path()}: {exc}"
+    return None
 
 
 async def _head_sha(*, repo: str, pr_number: int) -> Result[str]:
@@ -78,8 +112,11 @@ async def ci_rerun(
     Bounds: the repository is the caller's (never inferred from a URL),
     an Actions run whose ``run_attempt`` is already ``MAX_RUN_ATTEMPTS``
     is skipped, and one call issues at most ``MAX_RETRIES_PER_CALL``
-    re-runs. A third-party suite exposes no attempt counter, so only the
-    per-call bound applies to it.
+    re-runs. A third-party suite exposes no attempt counter, so its
+    re-requests are counted in :func:`attempts_path`, keyed by repo and PR
+    (or head SHA), and it stops at the same cap (GH-1724). Both listings
+    are paginated up to ``MAX_LISTING_PAGES``; hitting that ceiling sets
+    ``truncated`` instead of silently dropping checks.
 
     Args:
         pr_number: PR whose head SHA is targeted. Exactly one of
@@ -92,11 +129,12 @@ async def ci_rerun(
         repo: Repository (owner/repo). Auto-detected if omitted.
 
     Returns:
-        ``{"repo", "head_sha", "failed_only", "max_attempts", "retried":
-        [{"kind", "id", "name", "attempt_before", "endpoint"}],
-        "skipped": [{"name", "reason"}], "failed": [{"name",
-        "error"}]}``. An error is returned only when nothing was
-        retried and at least one re-run was refused by GitHub.
+        ``{"repo", "head_sha", "failed_only", "max_attempts",
+        "truncated", "retried": [{"kind", "id", "name",
+        "attempt_before", "endpoint"}], "skipped": [{"name", "reason"}],
+        "failed": [{"name", "error"}], "warnings": [str]}``. An error is
+        returned only when nothing was retried and at least one re-run
+        was refused by GitHub.
     """
     if (pr_number is None) == (head_sha is None):
         return err("pass exactly one of 'pr_number' or 'head_sha'")
@@ -120,31 +158,35 @@ async def ci_rerun(
     if not _SHA_PATTERN.fullmatch(sha):
         return err(f"head_sha must be 7-40 hex characters, got {sha!r}")
 
-    suites_result = await _gateway._gh_api_raw(
-        f"repos/{resolved_repo}/commits/{sha}/check-suites?per_page=100", repo=resolved_repo
+    suites = await _gateway._gh_api_paginated(
+        f"repos/{resolved_repo}/commits/{sha}/check-suites",
+        key="check_suites",
+        label="'check_suites' listing",
+        repo=resolved_repo,
     )
-    if suites_result.returncode != 0:
-        return err(suites_result.stderr.strip())
-    runs_result = await _gateway._gh_api_raw(
-        f"repos/{resolved_repo}/actions/runs?head_sha={sha}&per_page=100", repo=resolved_repo
-    )
-    if runs_result.returncode != 0:
-        return err(runs_result.stderr.strip())
-
-    runs = _items(raw=runs_result.stdout, key="workflow_runs")
-    if isinstance(runs, ErrorResult):
-        return runs
-    suites = _items(raw=suites_result.stdout, key="check_suites")
     if isinstance(suites, ErrorResult):
         return suites
+    runs = await _gateway._gh_api_paginated(
+        f"repos/{resolved_repo}/actions/runs?head_sha={sha}",
+        key="workflow_runs",
+        label="'workflow_runs' listing",
+        repo=resolved_repo,
+    )
+    if isinstance(runs, ErrorResult):
+        return runs
+    suite_list, suites_truncated = list(suites.value.items), suites.value.truncated
+    run_list, runs_truncated = list(runs.value.items), runs.value.truncated
 
-    runs_by_suite = {run.get("check_suite_id"): run for run in runs.value}
+    runs_by_suite = {run.get("check_suite_id"): run for run in run_list}
+    attempt_key = _attempt_key(repo=resolved_repo, pr_number=pr_number, sha=sha)
+    third_party_attempts = _third_party_attempts(key=attempt_key)
 
     retried: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     failed: list[dict[str, str]] = []
+    warnings: list[str] = []
 
-    for suite in suites.value:
+    for suite in suite_list:
         app = suite.get("app") or {}
         run = runs_by_suite.get(suite.get("id"))
         is_actions = app.get("slug") == _ACTIONS_APP_SLUG
@@ -160,8 +202,11 @@ async def ci_rerun(
         if is_actions and run is None:
             skipped.append({"name": name, "reason": "no workflow run found for suite"})
             continue
-        attempt = int((run or {}).get("run_attempt") or 0)
-        if is_actions and attempt >= MAX_RUN_ATTEMPTS:
+        if is_actions:
+            attempt = int((run or {}).get("run_attempt") or 0)
+        else:
+            attempt = 1 + int(third_party_attempts.get(str(suite.get("id")), 0))
+        if attempt >= MAX_RUN_ATTEMPTS:
             skipped.append({"name": name, "reason": f"retry cap reached (attempt {attempt})"})
             continue
         if len(retried) >= MAX_RETRIES_PER_CALL:
@@ -180,12 +225,16 @@ async def ci_rerun(
         if post.returncode != 0:
             failed.append({"name": name, "error": post.stderr.strip()})
             continue
+        if not is_actions:
+            warning = _record_third_party_attempt(key=attempt_key, suite_id=suite["id"])
+            if warning:
+                warnings.append(warning)
         retried.append(
             {
                 "kind": kind,
                 "id": target_id,
                 "name": name,
-                "attempt_before": attempt if is_actions else None,
+                "attempt_before": attempt,
                 "endpoint": endpoint,
             }
         )
@@ -198,8 +247,10 @@ async def ci_rerun(
             "head_sha": sha,
             "failed_only": failed_only,
             "max_attempts": MAX_RUN_ATTEMPTS,
+            "truncated": suites_truncated or runs_truncated,
             "retried": retried,
             "skipped": skipped,
             "failed": failed,
+            "warnings": warnings,
         }
     )

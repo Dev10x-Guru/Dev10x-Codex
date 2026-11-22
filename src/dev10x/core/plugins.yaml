@@ -21,7 +21,15 @@
 # `soft_dependencies` are mutual `Skill()` edges that degrade when the
 # other plugin is absent (ADR-0034: coding<->scoping, QA->coding).
 marketplace: Dev10x-Guru
-extracted: []
+extracted:
+  - qa
+  - infra
+  - db
+  - comm
+  - teach
+  - tasks
+  - scoping
+  - coding
 dependencies:
   coding:
     - tasks
@@ -61,10 +69,10 @@ plugins:
     - bus
     - gchat
     - gog
+    - overwatch
     - slack
     - slack-setup
-    - supervisor
-    - voice-supervisor
+    - voice-channel
   teach:
     - audit-file
     - context-audit
@@ -79,12 +87,17 @@ plugins:
     - park-remind
     - park-todo
     - plan-sync
+    - reflect
     - session-tasks
     - session-wrap-up
   scoping:
     - adr
     - adr-evaluate
+    - artifact
     - ddd
+    - diagram-bpmn
+    - diagram-c4
+    - diagram-sequence
     - estimate
     - jira
     - jtbd
@@ -134,6 +147,7 @@ plugins:
     - git
     - git-alias-setup
     - git-branch-prune
+    - git-worktree-prune
     - git-commit
     - git-commit-split
     - git-fixup
@@ -142,6 +156,7 @@ plugins:
     - git-worktree
     - ide-normalize
     - investigate
+    - py-mockito
     - py-test
     - py-test-flaky
     - py-uv

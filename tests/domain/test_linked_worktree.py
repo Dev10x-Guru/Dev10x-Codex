@@ -1,11 +1,12 @@
-"""Tests for dev10x.domain.linked_worktree (GH-1493)."""
+"""Tests for dev10x.core.domain.linked_worktree (GH-1493)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
-from dev10x.domain.linked_worktree import main_checkout
+
+from dev10x.core.domain.linked_worktree import main_checkout
 
 
 @pytest.fixture
@@ -29,6 +30,18 @@ def test_linked_worktree_resolves_to_main_checkout(worktree: Path, gitdir: str) 
 
     assert resolved is not None
     assert resolved.resolve() == (worktree / gitdir).resolve().parent.parent.parent
+
+
+def test_relative_gitdir_is_returned_normalised(tmp_path: Path, worktree: Path) -> None:
+    # GH-1733 (b): callers compare this path against a checkout root, so a
+    # surviving `..` segment would miss the match even though it names the
+    # same directory. The result must already be normalised.
+    (worktree / ".git").write_text("gitdir: ../repo/.git/worktrees/wt\n")
+
+    resolved = main_checkout(worktree)
+
+    assert resolved == (tmp_path / "repo").resolve()
+    assert ".." not in resolved.parts
 
 
 def test_main_checkout_with_git_directory_is_not_linked(worktree: Path) -> None:

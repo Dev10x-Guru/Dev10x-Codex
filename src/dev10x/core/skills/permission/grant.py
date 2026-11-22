@@ -28,19 +28,29 @@ from pathlib import Path
 from typing import Any
 
 from dev10x.core import validators as _validators
-from dev10x.domain.common.allow_rule import AllowRule
-from dev10x.domain.common.bash_tokens import (
+from dev10x.core.domain.common.allow_rule import AllowRule
+from dev10x.core.domain.common.bash_tokens import (
     ANY_CASE_ENV_VAR_RE,
     split_tokens,
     strip_quoted_spans,
 )
-from dev10x.domain.common.mcp_tool_name import McpToolName
-from dev10x.domain.common.result import Result, err, ok
-from dev10x.domain.rules.validation_rule import Compensation, MatchingRule
-from dev10x.domain.sensitivity import SensitivityClassifier, name_is_sensitive, operand_tokens
-from dev10x.skills.permission.backup import backed_up_write
-from dev10x.skills.permission.catalog_write import partition_writable
-from dev10x.skills.permission.generalize import generalize_rule_shape
+from dev10x.core.domain.common.exec_capable import exec_flag, is_interpreter
+from dev10x.core.domain.common.mcp_tool_name import McpToolName
+from dev10x.core.domain.common.result import ErrorResult, Result, err, ok
+from dev10x.core.domain.rules.validation_rule import Compensation, MatchingRule
+from dev10x.core.domain.sensitivity import SensitivityClassifier, name_is_sensitive, operand_tokens
+from dev10x.core.skills.permission.backup import backed_up_write
+from dev10x.core.skills.permission.catalog_write import partition_writable
+from dev10x.core.skills.permission.generalize import generalize_rule_shape
+from dev10x.core.skills.permission.granted_catalog import granted_path, remember_granted_rule
+from dev10x.core.skills.permission.rule_risk import (
+    RULE_WILDCARD_SUFFIX_RE,
+    SENSITIVE_ROOT_RE,
+    UNGRANTABLE_EXECUTABLES,
+    UNGRANTABLE_PREFIXES,
+    bash_prefix,
+    blanket_problem,
+)
 
 SKILL_MAP_PATH = Path(_validators.__file__).parent / "command-skill-map.yaml"
 
@@ -66,77 +76,6 @@ _SUBCOMMAND_DEPTH: dict[str, int] = {
 }
 _SUBCOMMAND_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
-# Executables whose allow rule is an arbitrary-code, privilege, egress or
-# destruction primitive. `Bash(bash:*)` lets `bash -c "rm -rf /"` past a
-# `Bash(rm -rf:*)` deny, because a deny matches only its literal prefix.
-_UNGRANTABLE_EXECUTABLES = frozenset(
-    {
-        "awk",
-        "bash",
-        "builtin",
-        "bun",
-        "chmod",
-        "chown",
-        "chrt",
-        "command",
-        "curl",
-        "dash",
-        "dd",
-        "deno",
-        "doas",
-        "env",
-        "eval",
-        "exec",
-        "find",
-        "fish",
-        "ionice",
-        "nc",
-        "ncat",
-        "nice",
-        "node",
-        "nohup",
-        "npx",
-        "perl",
-        "php",
-        "pkexec",
-        "python",
-        "python3",
-        "rm",
-        "ruby",
-        "scp",
-        "sed",
-        "sh",
-        "source",
-        "ssh",
-        "stdbuf",
-        "su",
-        "sudo",
-        "taskset",
-        "time",
-        "timeout",
-        "uvx",
-        "watch",
-        "wget",
-        "xargs",
-        "zsh",
-    }
-)
-_UNGRANTABLE_PREFIXES = frozenset(
-    {
-        ("docker", "exec"),
-        ("docker", "run"),
-        ("gh", "api"),
-        ("git", "push"),
-        ("kubectl", "apply"),
-        ("kubectl", "delete"),
-        ("kubectl", "exec"),
-        ("npm", "exec"),
-        ("pnpm", "dlx"),
-        ("pnpm", "exec"),
-        ("uv", "run"),
-        ("yarn", "dlx"),
-    }
-)
 # GH-1687: a denylist misses every interpreter nobody thought to list
 # (`deno`, `lua`, `watch`), so a whole-executable grant is refused unless
 # the tool is known safe at that depth. Seeded from the bare rules the
@@ -189,9 +128,8 @@ _BARE_GRANTABLE_EXECUTABLES = frozenset(
     }
 )
 _VETTED_EXECUTABLES = (
-    _BARE_GRANTABLE_EXECUTABLES | _UNGRANTABLE_EXECUTABLES | frozenset(_SUBCOMMAND_DEPTH)
+    _BARE_GRANTABLE_EXECUTABLES | UNGRANTABLE_EXECUTABLES | frozenset(_SUBCOMMAND_DEPTH)
 )
-_RULE_WILDCARD_SUFFIX_RE = re.compile(r"(?::\*| \*)$")
 _PATH_ROOT_RE = re.compile(r"^(?://|/|~/|\./)?")
 
 # Verbs whose path operands the harness checks against the working
@@ -222,16 +160,6 @@ _READ_VERBS = frozenset(
 
 _CHAINING_RE = re.compile(r"&&|\|\||;|\||\n")
 _EXPANSION_RE = re.compile(r"\$\{|\$\(|\$[A-Za-z_]|`")
-# Credential and secret stores named by their directory or file, with or
-# without a trailing slash or glob. The DX014 operand patterns need an
-# exact filename, so `rg x ~/.ssh` and `Read(~/.aws/**)` slipped past them.
-# Kept local on purpose: widening DX014 itself would prompt on a plain
-# `ls ~/.ssh`, which hook-patterns.md requires to stay silent. Granting a
-# rule is the stricter question, so it gets the stricter list.
-_SENSITIVE_ROOT_RE = re.compile(
-    r"(?:(?:^|/|~)\.(?:ssh|aws|gnupg|kube|docker|netrc|pgpass|git-credentials|env)"
-    r"|\.config/gh)(?![\w-])"
-)
 _OBFUSCATION_RE = re.compile(r"\\[\"']|\"\"|''")
 _REDIRECT_RE = re.compile(r"<<|>")
 _STRUCTURED_RULE_RE = re.compile(r"^[A-Za-z]+\(.*\)$", re.DOTALL)
@@ -298,14 +226,6 @@ def derive_rule(*, command: str) -> str:
     return generalize_rule_shape(f"Bash({' '.join(words)}:*)")
 
 
-def bash_prefix(*, rule: str) -> str | None:
-    """The literal command prefix a ``Bash(...)`` rule allows, or None."""
-    parsed = AllowRule.parse(rule)
-    if parsed.tool != "Bash":
-        return None
-    return _RULE_WILDCARD_SUFFIX_RE.sub("", parsed.inner).strip()
-
-
 def breadth_problem(*, rule: str) -> str | None:
     """Why ``rule`` would grant far more than one approved command, or None."""
     if not rule:
@@ -319,9 +239,12 @@ def breadth_problem(*, rule: str) -> str | None:
     words = prefix.split()
     if not words or "*" in prefix:
         return "The command prefix is a wildcard."
-    if Path(words[0]).name in _UNGRANTABLE_EXECUTABLES:
+    if Path(words[0]).name in UNGRANTABLE_EXECUTABLES:
         return f"`{words[0]}` runs arbitrary code, escalates or deletes; approve each use."
-    if tuple(words[:2]) in _UNGRANTABLE_PREFIXES:
+    exec_problem = _exec_problem(words=words)
+    if exec_problem:
+        return exec_problem
+    if tuple(words[:2]) in UNGRANTABLE_PREFIXES:
         return f"`{' '.join(words[:2])}` can write or run anything; approve each use."
     if len(words) <= _SUBCOMMAND_DEPTH.get(words[0], 0):
         return f"`{prefix}` grants every `{words[0]}` subcommand, destructive ones included."
@@ -334,13 +257,26 @@ def breadth_problem(*, rule: str) -> str | None:
     return None
 
 
+def _exec_problem(*, words: list[str]) -> str | None:
+    """Why ``words`` would let a granted rule run another program (GH-1723)."""
+    if is_interpreter(executable=words[0]):
+        return (
+            f"`{words[0]}` is an interpreter; a rule for it runs any script it is handed. "
+            "Approve each use, or wrap the script and grant the wrapper."
+        )
+    flag = exec_flag(words=words)
+    if flag:
+        return f"`{words[0]} {flag}` executes another program; approve each use."
+    return None
+
+
 def _unknown_bare_executable(*, rule: str) -> str | None:
     """The executable a wildcard rule grants whole without being vetted."""
     if not rule or McpToolName.is_mcp(rule):
         return None
     parsed = AllowRule.parse(rule)
     prefix = bash_prefix(rule=rule)
-    if not prefix or not _RULE_WILDCARD_SUFFIX_RE.search(parsed.inner):
+    if not prefix or not RULE_WILDCARD_SUFFIX_RE.search(parsed.inner):
         return None
     words = prefix.split()
     if len(words) != 1 or "*" in prefix or words[0] in _VETTED_EXECUTABLES:
@@ -362,7 +298,7 @@ def load_skill_map_rules(*, yaml_path: Path = SKILL_MAP_PATH) -> list[MatchingRu
     The hook only loads ``hook_block`` rules, but an advisory route is
     still an alternative worth taking before granting a raw command.
     """
-    from dev10x.config.loader import load_config
+    from dev10x.core.config.loader import load_config
 
     return [rule for rule in load_config(yaml_path=yaml_path).rules if rule.matcher == "Bash"]
 
@@ -472,9 +408,7 @@ def _sensitive(*, target: str) -> list[str]:
         return [target] if name_is_sensitive(target) else []
     command = AllowRule.parse(target).inner if is_rule(target) else target
     matches = [match.matched_text for match in SensitivityClassifier().classify(command=command)]
-    roots = [
-        token for token in operand_tokens(command=command) if _SENSITIVE_ROOT_RE.search(token)
-    ]
+    roots = [token for token in operand_tokens(command=command) if SENSITIVE_ROOT_RE.search(token)]
     return list(dict.fromkeys([*matches, *roots]))
 
 
@@ -540,20 +474,22 @@ def triage(
             None,
         )
 
-    too_broad = breadth_problem(rule=rule)
+    command_words = split_tokens(command=command) if command else []
+    # GH-1723: derive_rule drops the flags, so check the command itself.
+    runs_programs = _exec_problem(words=command_words) if command_words else None
+    too_broad = breadth_problem(rule=rule) or runs_programs
     if too_broad:
         # GH-1667
         rerouted = route()
         if rerouted is not None:
             return routed_verdict(routed=rerouted)
-        return verdict(
-            kind=Verdict.TOO_BROAD,
-            reason=too_broad,
-            advice=[
-                "Keep approving it per use, or grant a narrower rule naming the exact "
-                f"subcommand, e.g. {_narrower_example(rule=rule)}."
-            ],
+        narrower = (
+            "Keep approving it per use, or put the command in a script or MCP tool and grant that."
+            if runs_programs
+            else "Keep approving it per use, or grant a narrower rule naming the exact "
+            f"subcommand, e.g. {_narrower_example(rule=rule)}."
         )
+        return verdict(kind=Verdict.TOO_BROAD, reason=too_broad, advice=[narrower])
 
     loaded = {path: _permissions(path=path) for path in settings_files}
     readable = {path: block for path, block in loaded.items() if block is not None}
@@ -600,6 +536,16 @@ def triage(
                     *(f"Or use the Read tool with {_read_rule(path=path)}" for path in outside),
                 ],
             )
+
+    # GH-1799: the last word before a grant is the spread guard's own list, so
+    # no caller (Overwatch pre-approve included) can write a shape it holds back.
+    blanket = blanket_problem(rule=rule)
+    if blanket:
+        return verdict(
+            kind=Verdict.TOO_BROAD,
+            reason=blanket,
+            advice=["Keep approving it per use; this shape is never granted whole."],
+        )
 
     missing = [
         path
@@ -660,6 +606,7 @@ def grant_everywhere(
     dry_run: bool = False,
     confirmed_rule: str | None = None,
     skill_map_rules: list[MatchingRule] | None = None,
+    remember: bool = False,
 ) -> Result[dict[str, Any]]:
     """Grant ``target``'s rule to every settings file that lacks it.
 
@@ -676,6 +623,11 @@ def grant_everywhere(
     rule overlaps is a decision the grant must not route around (GH-972).
     One file failing to write does not stop the others; the call then
     returns an error naming each failure so the partial grant is visible.
+
+    ``remember`` also appends the rule to ``granted-permissions.yaml`` so
+    checkouts created later are seeded with it (GH-1677). It accepts an
+    ``already-allowed`` verdict too, since that verdict passed every gate a
+    grant does and only means today's files need no write.
     """
     result = triage(
         target=target,
@@ -684,7 +636,8 @@ def grant_everywhere(
         base_denies=base_denies,
         skill_map_rules=skill_map_rules,
     )
-    if result.verdict is not Verdict.GRANT:
+    accepted = (Verdict.GRANT, Verdict.ALREADY_ALLOWED) if remember else (Verdict.GRANT,)
+    if result.verdict not in accepted:
         return err(
             f"Not granted ({result.verdict}): {result.reason}",
             triage=result.to_dict(),
@@ -717,6 +670,7 @@ def grant_everywhere(
         "granted": granted,
         "failed": failed,
         "dry_run": dry_run,
+        "remembered": None,
         "messages": messages,
         "triage": result.to_dict(),
     }
@@ -725,6 +679,23 @@ def grant_everywhere(
             f"Granted {result.rule} in {len(granted)} file(s); {len(failed)} failed.",
             **payload,
         )
+    if remember:
+        return _remember(rule=result.rule, dry_run=dry_run, payload=payload)
+    return ok(payload)
+
+
+def _remember(*, rule: str, dry_run: bool, payload: dict[str, Any]) -> Result[dict[str, Any]]:
+    target = granted_path()
+    if dry_run:
+        payload["messages"].append(f"  would remember {rule}  {target}")
+        return ok(payload)
+    remembered = remember_granted_rule(rule=rule)
+    if isinstance(remembered, ErrorResult):
+        lead = f"Granted {rule}, but not remembered" if payload["granted"] else "Not remembered"
+        return err(f"{lead}: {remembered.error}", **payload)
+    payload["remembered"] = remembered.value
+    verb = "remembered" if remembered.value["added"] else "already remembered"
+    payload["messages"].append(f"  {verb} {rule}  {target}")
     return ok(payload)
 
 
@@ -733,6 +704,7 @@ __all__ = [
     "Triage",
     "Verdict",
     "bash_prefix",
+    "blanket_problem",
     "breadth_problem",
     "derive_rule",
     "grant_everywhere",

@@ -9,13 +9,14 @@ worktree now receives exactly what a checkout receives.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from dev10x.domain.common.result import ErrorResult, SuccessResult
 
-from dev10x.skills.permission import catalog_write as mod
-from dev10x.skills.permission import enumerate_mcp
+from dev10x.core.domain.common.result import ErrorResult, SuccessResult
+from dev10x.core.skills.permission import catalog_write as mod
+from dev10x.core.skills.permission import enumerate_mcp
 
 
 @pytest.fixture
@@ -85,7 +86,7 @@ def test_seeds_tilde_rule_with_home_twin(tmp_path: Path, monkeypatch: pytest.Mon
     """Routing through render_permissions now emits the GH-47 /home/<user>/
     twin alongside every ~/ rule (the one intended diff vs the flat shim)."""
     monkeypatch.setattr(
-        "dev10x.skills.permission.catalog_write.Path.home",
+        "dev10x.core.skills.permission.catalog_write.Path.home",
         lambda: Path("/home/tester"),
     )
     config = {"base_permissions": ["Read(~/.claude/memory/**)"], "base_denies": []}
@@ -123,6 +124,23 @@ class TestConvergedOnEnsureBase:
         data = _settings(tmp_path)
         assert data["disableAutoMode"] == "disable"
         assert data["disableBypassPermissionsMode"] == "disable"
+
+    def test_honours_the_disable_auto_mode_opt_out(
+        self,
+        tmp_path: Path,
+        config: dict,
+        write_safety_key_policy: Callable[[str], Path],
+    ) -> None:
+        # GH-1856: a new worktree must not switch auto mode back off.
+        write_safety_key_policy("safety_keys: [disableBypassPermissionsMode]\n")
+        worktree = tmp_path / "worktree"
+
+        result = mod.seed_worktree(worktree_root=worktree, config=config)
+
+        data = _settings(worktree)
+        assert "disableAutoMode" not in data
+        assert data["disableBypassPermissionsMode"] == "disable"
+        assert result.value["added"] == 4  # 2 allow + 1 deny + 1 safety key
 
     def test_seeds_ide_denies_without_a_pinned_ide(self, tmp_path: Path):
         # GH-1261: the shell-equivalent denies are unconditional, so they

@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from dev10x.domain.common.result import ErrorResult, Result, SuccessResult, err, ok
 
 from dev10x.comm.skills.bus.maildir import (
     Envelope,
@@ -26,6 +25,7 @@ from dev10x.comm.skills.notifications.gchat_watch import (
     WatchConfig,
     WatchEvent,
 )
+from dev10x.core.domain.common.result import ErrorResult, Result, SuccessResult, err, ok
 
 SPACE = "spaces/S"
 THREAD = "spaces/S/threads/T"
@@ -270,6 +270,18 @@ class TestGogReader:
                 THREAD,
             ]
         ]
+
+    def test_raw_listing_keeps_every_field_for_the_bus(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        raw = {"resource": f"{SPACE}/messages/1", "createTime": "2026-10-30", "x": 1}
+        monkeypatch.setattr(
+            mod.subprocess_utils, "run", FakeRun(stdout=json.dumps({"messages": [raw, "junk"]}))
+        )
+
+        result = mod.gog_list_messages(space=SPACE, thread=None, max_results=7)
+
+        assert value(result) == [raw]
 
     def test_a_space_watch_passes_no_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = FakeRun(stdout="")

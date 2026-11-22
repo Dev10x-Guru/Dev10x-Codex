@@ -38,6 +38,8 @@ policy plus overlays, resolved by `resolve_gate`.
 | `cautious` | Extra verification, confirm destructive ops | No current equivalent |
 | `pair-review` | Human review at implementation checkpoints | No current equivalent |
 | `auto-plan` | Auto-approve the plan gate only; downstream gates follow baseline policy | Unreachable friction cell (GH-678) |
+| `qa-off` | Drop the self-QA video and review-pack step | No current equivalent (GH-1827) |
+| `qa-record-only` | Record the self-QA video, publish nothing | No current equivalent (GH-1827) |
 
 ### Gate-flipping modes (the `solo-maintainer` / `auto-plan` exception)
 
@@ -50,7 +52,7 @@ everything else). `auto-plan` flips
 *only* the plan gate; it never touches downstream gate pacing.
 
 **ADR-0016 (GH-760):** the actual gate resolution now runs through
-`resolve_gate` (`dev10x.domain.gate_policy`), not the former
+`resolve_gate` (`dev10x.core.domain.gate_policy`), not the former
 `session_rules.plan_gate_auto_approves()` predicate. The
 `solo-maintainer` effect lives in the `solo-maintainer` overlay
 (`presets/friction/overlays/solo-maintainer.yaml`:
@@ -115,7 +117,7 @@ Steps declare how they adapt under each mode:
 ```yaml
 - subject: Draft Job Story
   type: detailed
-  skills: [dev10x:jtbd]
+  skills: [dev10x-scoping:jtbd]
   prompt: >
     Accept what the skill produces and auto-advance.
     No approval needed.
@@ -127,7 +129,7 @@ Steps declare how they adapt under each mode:
 
 - subject: Request review
   type: detailed
-  skills: [dev10x:gh-pr-request-review]
+  skills: [dev10x-coding:gh-pr-request-review]
   prompt: >
     Auto-assign reviewers from CODEOWNERS. No
     AskUserQuestion for reviewer selection.

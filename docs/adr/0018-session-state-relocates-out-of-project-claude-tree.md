@@ -26,7 +26,7 @@ would happen on the hot path. That design was incomplete:
   *regardless of allow rules on disk*. GH-812 observed this twice in one
   day, with exact-path `Read/Write/Edit(.claude/Dev10x/session.yaml)`
   rules verified present. No `base_permissions` entry can suppress it.
-- **RC-B — skills still runtime-write the files.** `dev10x:work-on`
+- **RC-B — skills still runtime-write the files.** `dev10x-coding:work-on`
   Phase 0 still `Write`/`Edit`s `session.yaml` (branch/tickets identity)
   and `config.yaml` (friction choice) whenever the adoption gate reports
   `session_stale` or the friction choice changes. The provisioning hook
@@ -88,7 +88,7 @@ fallback.
 D2 deleted `session.yaml` in its *durable prefs / gate identity* roles, but
 the same path carried a second, unrelated payload: the park family's index of
 deferred work (`tasks`, `continuation_prompt`, `insights`, and the GH-782
-freshness stamp), written by `dev10x:session-wrap-up`, `dev10x:park`,
+freshness stamp), written by `dev10x-tasks:session-wrap-up`, `dev10x-tasks:park`,
 `park-todo`, `park-remind`, and `gh-pr-bookmark`, and read by
 `park-discover`. GH-1001 repointed only the durable readers and left the
 index in place as a documented exception.

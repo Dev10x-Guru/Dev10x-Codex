@@ -9,13 +9,19 @@ import click
 from dev10x.core.domain.common.result import ErrorResult
 
 if TYPE_CHECKING:  # pragma: no cover
+    from datetime import datetime
+
     from dev10x.comm.skills.notifications.gchat_notify import PostedMessage
     from dev10x.comm.skills.notifications.gchat_watch import Watch
+    from dev10x.tasks.reflect import VaultConfig
 
 
 @click.group()
 def skill() -> None:
-    """Skill script commands (audit, notify, permission, release-notes, rename)."""
+    """Skill script commands (audit, notify, permission, reflect, release-notes, rename)."""
+    from dev10x.core.diagnostic_log import configure_diagnostic_log
+
+    configure_diagnostic_log(component="skill")
 
 
 @skill.group()
@@ -24,8 +30,8 @@ def notify() -> None:
 
     Exposes the slack-review-request prepare/send flow and the generic
     slack-notify send call as version-stable `dev10x` subcommands so the
-    `dev10x:slack-review-request` and `dev10x:slack` skills do not need
-    to embed plugin-cache paths in their documented invocations.
+    `dev10x-coding:slack-review-request` and `dev10x-comm:slack` skills do
+    not need to embed plugin-cache paths in their documented invocations.
     """
 
 
@@ -605,6 +611,113 @@ def gchat_review_prepare(*, pr: int, repo: str) -> None:
         sys.exit(1)
 
 
+@skill.group()
+def reflect() -> None:
+    """Knowledge-vault access for dev10x-tasks:reflect (GH-1822).
+
+    Every command prints one JSON object. `config` resolves the vault for
+    this checkout; `index-add` and `log-add` write the shared folder notes
+    under a lock so concurrent reflections do not lose each other's lines.
+    """
+
+
+def _vault_config_or_fail() -> VaultConfig:
+    from dev10x.core.session.repo_address import resolve_name_with_owner
+    from dev10x.tasks.reflect import resolve_vault_config
+
+    address = resolve_name_with_owner()
+    if isinstance(address, ErrorResult):
+        resolved = resolve_vault_config(repo=None, repo_reason=address.error)
+    else:
+        resolved = resolve_vault_config(repo=address.value)
+    if isinstance(resolved, ErrorResult):
+        from dev10x.commands.json_output import fail_json
+
+        fail_json(error=resolved)
+    return resolved.value
+
+
+def _echo_unconfigured_skip(*, config: VaultConfig) -> None:
+    """No vault is an answer, not an error: same exit 0 as `config` (GH-1826)."""
+    import json
+
+    click.echo(json.dumps({"path": None, "action": "skipped", "reason": config.reason}))
+
+
+@reflect.command(name="config")
+def reflect_config() -> None:
+    """Print the resolved vault, or `configured: false` with the reason."""
+    import json
+
+    click.echo(json.dumps(_vault_config_or_fail().to_dict(), indent=2))
+
+
+@reflect.command(name="index-add")
+@click.option("--folder", required=True, help="Vault-relative folder whose index to update")
+@click.option("--line", "line", required=True, help="Markdown line to add, e.g. '- [[Note]] — …'")
+@click.option(
+    "--seed-listing",
+    is_flag=True,
+    default=False,
+    help="When the index does not exist yet, list every note already in the folder",
+)
+def reflect_index_add(*, folder: str, line: str, seed_listing: bool) -> None:
+    """Add one line to a folder's index note (idempotent, locked)."""
+    import json
+
+    from dev10x.commands.json_output import fail_json
+    from dev10x.tasks.reflect import add_index_line
+
+    config = _vault_config_or_fail()
+    if not config.configured:
+        _echo_unconfigured_skip(config=config)
+        return
+    result = add_index_line(config=config, folder=folder, line=line, seed_listing=seed_listing)
+    if isinstance(result, ErrorResult):
+        fail_json(error=result)
+    click.echo(json.dumps(result.value.to_dict()))
+
+
+@reflect.command(name="log-add")
+@click.option("--folder", required=True, help="Vault-relative folder whose log to update")
+@click.option("--entry", required=True, help="Log entry text (one line)")
+@click.option(
+    "--date",
+    "day",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Day heading to file under (default: today)",
+)
+@click.option(
+    "--create",
+    is_flag=True,
+    default=False,
+    help="Start a log note when the folder has none",
+)
+def reflect_log_add(*, folder: str, entry: str, day: datetime | None, create: bool) -> None:
+    """Add one dated entry to a folder's log note (idempotent, locked)."""
+    import json
+    from datetime import date
+
+    from dev10x.commands.json_output import fail_json
+    from dev10x.tasks.reflect import add_log_entry
+
+    config = _vault_config_or_fail()
+    if not config.configured:
+        _echo_unconfigured_skip(config=config)
+        return
+    result = add_log_entry(
+        config=config,
+        folder=folder,
+        entry=entry,
+        day=day.date() if day else date.today(),
+        create=create,
+    )
+    if isinstance(result, ErrorResult):
+        fail_json(error=result)
+    click.echo(json.dumps(result.value.to_dict()))
+
+
 @skill.command(name="rename")
 @click.argument("old")
 @click.argument("new")
@@ -870,7 +983,7 @@ def codex_skills(*, root_path: Path | None, check: bool) -> None:
         translate_skills,
     )
     from dev10x.skills.codex.tree import stale_paths, write_tree
-    from dev10x.skills.permission.enumerate_mcp import plugin_root
+    from dev10x.core.skills.permission.enumerate_mcp import plugin_root
 
     root = root_path or plugin_root()
     try:
@@ -922,7 +1035,7 @@ def codex_agents(*, root_path: Path | None, check: bool) -> None:
     )
     from dev10x.skills.codex.translate import InvalidFrontMatter, InvalidPluginRoot
     from dev10x.skills.codex.tree import stale_paths, write_tree
-    from dev10x.skills.permission.enumerate_mcp import plugin_root
+    from dev10x.core.skills.permission.enumerate_mcp import plugin_root
 
     root = root_path or plugin_root()
     try:

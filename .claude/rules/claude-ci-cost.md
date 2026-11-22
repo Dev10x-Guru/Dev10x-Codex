@@ -139,16 +139,32 @@ things keep a merged head reviewed:
    pushed after a clean round is re-reviewed on the next flip. It acts
    as a GitHub App (`PR_DRAFT_APP_ID` variable,
    `PR_DRAFT_APP_PRIVATE_KEY` secret), because the workflow token cannot
-   convert a PR to draft, and fails loudly until both are set.
+   convert a PR to draft. Until both are set the job skips with a
+   notice and leaves the PR alone, rather than failing on every PR
+   (GH-1739).
 3. The review checklist in the PR body stamps the reviewed `sha`;
    `references/pr-merge-policy.md` § Reading Review Signals compares it
    with HEAD before a merge.
 
 A draft suppresses CI here, so after a push the PR shows no checks
-until it is marked ready again: an agent that pushes a fixup marks the
-PR ready (`pr_ready`) to get CI and the next round. A push made with
+until it is marked ready again: an agent that pushes to a PR that was
+ready before the push marks it ready again (`pr_ready`) to get CI and
+the next round — `dev10x:gh-pr-fixup`, `dev10x:git-groom` and
+`dev10x:gh-pr-monitor` do this, per `.claude/rules/mcp-tools.md`
+§ `pr_ready` after a push (GH-1731). A push made with
 the workflow `GITHUB_TOKEN` fires no `pull_request` event, and a fork
 PR's run gets no secrets, so neither is drafted — flip those by hand.
+
+## Switching the reviews off (GH-1756)
+
+`CLAUDE_REVIEW_ENABLED=false` (Actions variable; repo overrides org)
+skips the code review, hygiene and memory review; the
+`skip-claude-review` label skips them for one PR, read when it is
+opened or flipped ready. `CLAUDE_ASSISTANT_ENABLED=false` turns off
+`claude.yml` alone; unset leaves both on. The guard is job-level so
+the check reads `skipped`: a step-level skip concludes `success` with
+no review behind it (GH-1691). A skipped round leaves no review or
+checklist — disabled, not missing; re-flip ready to review it later.
 
 ## Where each file comes from (GH-1620)
 

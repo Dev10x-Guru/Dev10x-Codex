@@ -28,8 +28,8 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from dev10x.domain.claude_paths import ClaudeDir
-from dev10x.domain.file_locks import atomic_write_text, file_lock
+from dev10x.core.domain.claude_paths import ClaudeDir
+from dev10x.core.domain.file_locks import atomic_write_text, file_lock
 
 CONFIG_HOME_ENV_VAR = "DEV10X_CONFIG_HOME"
 XDG_CONFIG_HOME_ENV_VAR = "XDG_CONFIG_HOME"
@@ -154,6 +154,11 @@ class Dev10xConfigDir:
         return cls._resolve("friction.yaml")
 
     @classmethod
+    def overwatch_yaml(cls) -> Path:
+        """Machine-wide Overwatch preferences, e.g. the dev checkout (GH-1765)."""
+        return cls._resolve("overwatch.yaml")
+
+    @classmethod
     def task_index_yaml(cls, *, repo_name: str) -> Path:
         """Per-repo ephemeral task index for the park family (GH-1009).
 
@@ -161,15 +166,13 @@ class Dev10xConfigDir:
         every writer reached it with the Write/Edit tool, which trips Claude
         Code's self-settings gate on each session regardless of allow rules
         (RC-A). Here it is outside every repo, so the gate cannot fire, and
-        the MCP tools over :mod:`dev10x.session.task_index` are the only
+        the MCP tools over :mod:`dev10x.tasks.session.task_index` are the only
         writers.
 
         Keyed by the repo stem from the git **common dir**, so every worktree
         of a repo shares one index — matching the park family's "resurfaces
         next session in the same project" contract. No lazy migration: the
-        retired per-repo file is a read-only fallback until its removal
-        version in :mod:`dev10x.domain.deprecations`, folded forward on
-        first write rather than copied on path resolution.
+        retired per-repo file is not read at all since 0.112.0 (GH-1771).
         """
         return cls._resolve("task-index", f"{repo_name}.yaml")
 
@@ -208,6 +211,17 @@ class Dev10xConfigDir:
         return cls._resolve("granted-permissions.yaml")
 
     @classmethod
+    def declined_permissions_yaml(cls) -> Path:
+        """Rules the supervisor excluded from worktree permission spread (GH-1790).
+
+        The counterpart to ``granted-permissions.yaml``: a rule removed from
+        a main checkout came straight back on the next ``merge-worktree``
+        run, because every worktree still held it. Written only by
+        ``decline_rules``. No legacy path.
+        """
+        return cls._resolve("declined-permissions.yaml")
+
+    @classmethod
     def accepted_findings_yaml(cls) -> Path:
         """User-owned accepted-by-design auditor findings (GH-1053).
 
@@ -218,6 +232,16 @@ class Dev10xConfigDir:
         after the ``~/.config/Dev10x`` move, so there is no legacy path.
         """
         return cls._resolve("accepted-findings.yaml")
+
+    @classmethod
+    def safety_keys_yaml(cls) -> Path:
+        """Which settings safety keys the permission writers enforce (GH-1856).
+
+        ``safety_keys:`` lists the enforced keys; leaving
+        ``disableAutoMode`` out opts out of that floor. Introduced after
+        the ``~/.config/Dev10x`` move, so there is no legacy path.
+        """
+        return cls._resolve("safety-keys.yaml")
 
     @classmethod
     def skill_prune_yaml(cls) -> Path:
@@ -289,6 +313,35 @@ class Dev10xConfigDir:
     def gchat_watch_json(cls) -> Path:
         """Armed Google Chat watches and their cursors (GH-1682)."""
         return cls._resolve("gchat-watch.json")
+
+    @classmethod
+    def chat_bus_db(cls) -> Path:
+        """SQLite store of the local Google Chat bus (GH-1787, ADR-0035).
+
+        Introduced after the ``~/.config/Dev10x`` move, so there is no
+        legacy path.
+        """
+        return cls._resolve("chat-bus", "bus.sqlite3")
+
+    @classmethod
+    def knowledge_vault_yaml(cls) -> Path:
+        """Where `dev10x-tasks:reflect` files session lessons (GH-1822).
+
+        Repo-addressed: top-level defaults plus `projects[].match_repo`
+        overrides. Introduced after the ``~/.config/Dev10x`` move, so
+        there is no legacy path.
+        """
+        return cls._resolve("knowledge-vault.yaml")
+
+    @classmethod
+    def review_stamps_json(cls) -> Path:
+        """Head SHAs a clean self-review covered, per repo and branch (GH-1830)."""
+        return cls._resolve("review-stamps.json")
+
+    @classmethod
+    def reflect_locks_dir(cls) -> Path:
+        """Lock sidecars for vault notes, kept out of the vault (GH-1822)."""
+        return cls._resolve("locks", "reflect")
 
 
 def _with_lazy_migration(current: Path, legacy_provider: Callable[[], Path]) -> Path:
@@ -383,20 +436,38 @@ _legacy_github_reviewers_config_yaml = ClaudeDir.github_reviewers_config_yaml
 _legacy_settings_pr_merge_yaml = ClaudeDir.settings_pr_merge_yaml
 
 
-def _legacy_plugin_maintenance_prefs_yaml() -> Path:
-    return ClaudeDir.memory_dev10x_dir() / "plugin-maintenance-prefs.yaml"
-
-
 def _legacy_playbooks_dir() -> Path:
     return ClaudeDir.memory_dev10x_dir() / "playbooks"
 
 
 def _migration_pairs() -> list[tuple[Path, Path]]:
-    """Build (legacy, current) pairs without triggering lazy migration."""
+    """Build (legacy, current) pairs without triggering lazy migration.
+
+    A config file that keeps its name moving from ``memory/Dev10x/`` to
+    the config dir needs no entry: the sweep finds it (GH-1785). The
+    hand-kept list missed `dod-acceptance-criteria.yaml` and
+    `plugin-maintenance-prefs.yaml` until each was noticed, so only real
+    renames and relocations from elsewhere are listed by hand.
+    """
+    relocated = _relocated_pairs()
+    listed = {legacy for legacy, _ in relocated}
+    return relocated + [pair for pair in _same_name_pairs() if pair[0] not in listed]
+
+
+def _same_name_pairs() -> list[tuple[Path, Path]]:
+    legacy_dir = ClaudeDir.memory_dev10x_dir()
+    if not legacy_dir.is_dir():
+        return []
+    return [
+        (legacy, Dev10xConfigDir._resolve(legacy.name))
+        for legacy in sorted(legacy_dir.iterdir())
+        if legacy.is_file() and legacy.suffix in {".yaml", ".yml"}
+    ]
+
+
+def _relocated_pairs() -> list[tuple[Path, Path]]:
     return [
         (_legacy_version_yaml(), Dev10xConfigDir._resolve("version.yml")),
-        (_legacy_projects_yaml(), Dev10xConfigDir._resolve("projects.yaml")),
-        (_legacy_platforms_yaml(), Dev10xConfigDir._resolve("platforms.yaml")),
         (_legacy_slack_config_yaml(), Dev10xConfigDir._resolve("slack-config.yaml")),
         (
             _legacy_slack_review_config_yaml(),
@@ -412,19 +483,6 @@ def _migration_pairs() -> list[tuple[Path, Path]]:
             Dev10xConfigDir._resolve("github-bot", "github-app.yaml"),
         ),
         (_legacy_playbooks_dir(), Dev10xConfigDir._resolve("playbooks")),
-        (_legacy_gitmoji_yaml(), Dev10xConfigDir._resolve("gitmoji.yaml")),
-        (
-            _legacy_github_reviewers_config_yaml(),
-            Dev10xConfigDir._resolve("github-reviewers-config.yaml"),
-        ),
-        (
-            _legacy_settings_pr_merge_yaml(),
-            Dev10xConfigDir._resolve("settings-pr-merge.yaml"),
-        ),
-        (
-            _legacy_plugin_maintenance_prefs_yaml(),
-            Dev10xConfigDir._resolve("plugin-maintenance-prefs.yaml"),
-        ),
     ]
 
 

@@ -11,7 +11,7 @@ from types import ModuleType
 import pytest
 
 from dev10x.core.hooks import session as session_module
-from dev10x.hooks.session_codex import (
+from dev10x.core.hooks.session_codex import (
     CODEX_ALIAS_SETUP_HINT,
     CODEX_SUPPRESSED_FEATURES,
     build_codex_guidance_context,
@@ -35,6 +35,7 @@ UPSTREAM_FEATURE_NAMES = [
     "session-hook-version-drift",
     "session-migrate-permissions",
     "session-reload",
+    "session-compaction",
 ]
 
 CODEX_FEATURE_NAMES = [
@@ -129,7 +130,7 @@ class TestAliasHint:
     def test_codex_alias_check_prints_codex_hint_when_aliases_missing(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.setattr("dev10x.hooks.session_place._run_git", lambda *args: "")
+        monkeypatch.setattr("dev10x.core.hooks.session_place._run_git", lambda *args: "")
         session_git_aliases_codex()
         out = capsys.readouterr().out
         assert CODEX_ALIAS_SETUP_HINT in out

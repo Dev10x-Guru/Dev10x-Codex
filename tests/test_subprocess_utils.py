@@ -1,16 +1,21 @@
-"""Tests for dev10x.subprocess_utils."""
+"""Tests for dev10x.core.subprocess_utils."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import signal
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+import pytest_asyncio
 
-from dev10x.subprocess_utils import (
+from dev10x.core.subprocess_utils import (
+    _REAP_GRACE_SECONDS,
+    _reap,
     get_plugin_root,
     parse_key_value_output,
     resolve_script_path,
@@ -101,7 +106,7 @@ class TestRunScript:
         assert "Script not found" in result.stderr
         assert "nonexistent/script.sh" in result.stderr
 
-    @patch("dev10x.subprocess_utils.subprocess.run")
+    @patch("dev10x.core.subprocess_utils.subprocess.run")
     def test_calls_subprocess_with_full_path(
         self,
         mock_run: patch,
@@ -123,7 +128,7 @@ class TestRunScript:
         assert cmd[1] == "arg1"
         assert cmd[2] == "arg2"
 
-    @patch("dev10x.subprocess_utils.subprocess.run")
+    @patch("dev10x.core.subprocess_utils.subprocess.run")
     def test_passes_env_vars(
         self,
         mock_run: patch,
@@ -142,7 +147,7 @@ class TestRunScript:
         env = call_args[1]["env"]
         assert env["MY_VAR"] == "my_value"
 
-    @patch("dev10x.subprocess_utils.subprocess.run")
+    @patch("dev10x.core.subprocess_utils.subprocess.run")
     def test_captures_output_as_text(
         self,
         mock_run: patch,
@@ -166,9 +171,9 @@ class TestRunScript:
 class TestRun:
     """GH-979: the sync run() chokepoint defaults cwd to the effective CWD."""
 
-    @patch("dev10x.subprocess_utils.subprocess.run")
+    @patch("dev10x.core.subprocess_utils.subprocess.run")
     def test_explicit_cwd_wins(self, mock_run: patch) -> None:
-        from dev10x.subprocess_utils import run
+        from dev10x.core.subprocess_utils import run
 
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr=""
@@ -177,9 +182,9 @@ class TestRun:
 
         assert mock_run.call_args[1]["cwd"] == "/explicit"
 
-    @patch("dev10x.subprocess_utils.subprocess.run")
+    @patch("dev10x.core.subprocess_utils.subprocess.run")
     def test_defaults_to_effective_cwd_when_bound(self, mock_run: patch, tmp_path: Path) -> None:
-        from dev10x.subprocess_utils import run, use_cwd
+        from dev10x.core.subprocess_utils import run, use_cwd
 
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr=""
@@ -191,9 +196,9 @@ class TestRun:
 
         assert mock_run.call_args[1]["cwd"] == str(tmp_path)
 
-    @patch("dev10x.subprocess_utils.subprocess.run")
+    @patch("dev10x.core.subprocess_utils.subprocess.run")
     def test_cwd_is_none_when_unbound(self, mock_run: patch) -> None:
-        from dev10x.subprocess_utils import run
+        from dev10x.core.subprocess_utils import run
 
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr=""
@@ -202,9 +207,9 @@ class TestRun:
 
         assert mock_run.call_args[1]["cwd"] is None
 
-    @patch("dev10x.subprocess_utils.subprocess.run")
+    @patch("dev10x.core.subprocess_utils.subprocess.run")
     def test_passes_through_other_kwargs(self, mock_run: patch) -> None:
-        from dev10x.subprocess_utils import run
+        from dev10x.core.subprocess_utils import run
 
         mock_run.return_value = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr=""
@@ -217,7 +222,7 @@ class TestRun:
         assert kwargs["text"] is True
 
     def test_runs_real_command(self) -> None:
-        from dev10x.subprocess_utils import run
+        from dev10x.core.subprocess_utils import run
 
         result = run(["echo", "hi"], capture_output=True, text=True)
 
@@ -272,7 +277,7 @@ class TestParseKeyValueOutput:
 class TestAsyncRun:
     @pytest.fixture
     def sut(self):
-        from dev10x.subprocess_utils import async_run
+        from dev10x.core.subprocess_utils import async_run
 
         return async_run
 
@@ -317,7 +322,7 @@ class TestSpawnBulkhead:
         """Drop cached gates so a test's env override is the one read."""
         from weakref import WeakKeyDictionary
 
-        import dev10x.subprocess_utils as su
+        import dev10x.core.subprocess_utils as su
 
         monkeypatch.setattr(su, "_spawn_gates", WeakKeyDictionary())
 
@@ -334,7 +339,7 @@ class TestSpawnBulkhead:
         ],
     )
     def test_ceiling_resolution(self, monkeypatch, raw, expected) -> None:
-        from dev10x.subprocess_utils import _max_concurrent_subprocesses
+        from dev10x.core.subprocess_utils import _max_concurrent_subprocesses
 
         monkeypatch.setenv("DEV10X_MCP_MAX_SUBPROCESSES", raw)
 
@@ -342,7 +347,7 @@ class TestSpawnBulkhead:
 
     @pytest.mark.asyncio
     async def test_in_flight_children_never_exceed_the_ceiling(self, monkeypatch) -> None:
-        import dev10x.subprocess_utils as su
+        import dev10x.core.subprocess_utils as su
 
         monkeypatch.setenv("DEV10X_MCP_MAX_SUBPROCESSES", "2")
         real = su._spawn_and_communicate
@@ -367,7 +372,7 @@ class TestSpawnBulkhead:
     @pytest.mark.asyncio
     async def test_a_timed_out_child_releases_its_permit(self, monkeypatch) -> None:
         """A permit held for the child's life must survive the child dying."""
-        from dev10x.subprocess_utils import async_run
+        from dev10x.core.subprocess_utils import async_run
 
         monkeypatch.setenv("DEV10X_MCP_MAX_SUBPROCESSES", "1")
 
@@ -378,10 +383,26 @@ class TestSpawnBulkhead:
         assert timed_out.returncode == -1
         assert recovered.stdout.strip() == "ok"
 
+    @pytest.mark.asyncio
+    async def test_the_wait_for_a_permit_counts_against_the_timeout(self, monkeypatch) -> None:
+        """GH-1760: a queued call used to be able to outlive its own timeout."""
+        from dev10x.core.subprocess_utils import async_run
+
+        monkeypatch.setenv("DEV10X_MCP_MAX_SUBPROCESSES", "1")
+        holder = asyncio.create_task(async_run(args=["sleep", "5"], timeout=10))
+        await asyncio.sleep(0.2)
+
+        queued = await asyncio.wait_for(async_run(args=["echo", "ok"], timeout=0.2), timeout=3)
+        holder.cancel()
+        await asyncio.gather(holder, return_exceptions=True)
+
+        assert queued.returncode == -1
+        assert queued.stderr == "Process timed out waiting for a subprocess slot"
+
     def test_each_event_loop_gets_its_own_gate(self) -> None:
         """A gate shared across loops parks waiters on futures the current
         loop will never complete."""
-        from dev10x.subprocess_utils import _spawn_gate
+        from dev10x.core.subprocess_utils import _spawn_gate
 
         async def grab():
             return _spawn_gate()
@@ -403,7 +424,7 @@ class TestAsyncRunReapsTheWholeTree:
 
     @pytest.fixture
     def sut(self):
-        from dev10x.subprocess_utils import async_run
+        from dev10x.core.subprocess_utils import async_run
 
         return async_run
 
@@ -445,6 +466,105 @@ class TestAsyncRunReapsTheWholeTree:
             await call
 
 
+class TestAsyncRunTimeoutIsBounded:
+    """GH-1760: a timed-out call returns on time even when a descendant
+    escaped the process group and still holds the inherited pipes.
+
+    ``Process.wait()`` resolves only once every pipe reaches EOF, so a
+    ``setsid`` descendant that survives ``killpg`` used to hold the
+    timeout verdict back for as long as it lived — an hour, in the field.
+    """
+
+    @pytest.fixture
+    def sut(self):
+        from dev10x.core.subprocess_utils import async_run
+
+        return async_run
+
+    @pytest.fixture
+    def pidfile(self, tmp_path: Path):
+        path = tmp_path / "escaped.pid"
+        yield path
+        with contextlib.suppress(FileNotFoundError, ValueError, ProcessLookupError):
+            os.kill(_recorded_pid(pidfile=path), signal.SIGKILL)
+
+    @pytest_asyncio.fixture
+    async def timed_call(self, sut, pidfile: Path) -> tuple[subprocess.CompletedProcess, float]:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        result = await asyncio.wait_for(
+            sut(args=_spawn_escaped_grandchild(pidfile=pidfile), timeout=0.5),
+            timeout=15,
+        )
+        return result, loop.time() - started
+
+    @pytest.mark.asyncio
+    async def test_returns_within_the_teardown_grace(self, timed_call) -> None:
+        _, elapsed = timed_call
+
+        assert elapsed < 0.5 + _TEARDOWN_ALLOWANCE
+
+    @pytest.mark.asyncio
+    async def test_reports_the_timeout(self, timed_call) -> None:
+        result, _ = timed_call
+
+        assert result.returncode == -1
+        assert "timed out" in result.stderr.lower()
+
+
+class _NeverExits:
+    """A process whose wait never resolves — the escaped-descendant shape."""
+
+    pid = 4242
+
+    def __init__(self, *, transport: object | None) -> None:
+        if transport is not None:
+            self._transport = transport
+
+    async def wait(self) -> int:
+        await asyncio.Event().wait()
+        return -9
+
+
+class TestReap:
+    @pytest.fixture(autouse=True)
+    def _short_grace(self, monkeypatch) -> None:
+        monkeypatch.setattr("dev10x.core.subprocess_utils._REAP_GRACE_SECONDS", 0.01)
+
+    @pytest.mark.asyncio
+    async def test_closes_the_transport_when_the_wait_stalls(self) -> None:
+        transport = MagicMock()
+
+        await _reap(proc=_NeverExits(transport=transport))
+
+        transport.close.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_a_process_without_a_transport_still_returns(self) -> None:
+        assert await _reap(proc=_NeverExits(transport=None)) is None
+
+    @pytest.mark.asyncio
+    async def test_an_unreaped_child_is_logged(self, caplog) -> None:
+        await _reap(proc=_NeverExits(transport=MagicMock()))
+
+        assert "still not reaped" in caplog.text
+
+
+# Both reap waits plus scheduling slack for a loaded CI runner — still far
+# below the 30s the escaped descendant would otherwise hold the call for.
+_TEARDOWN_ALLOWANCE = 2 * _REAP_GRACE_SECONDS + 3.0
+
+
+def _spawn_escaped_grandchild(*, pidfile: Path) -> list[str]:
+    """A shell whose background sleep leaves the process group.
+
+    ``setsid`` gives the sleep a session of its own, so the ``killpg`` that
+    reaps the rest of the tree cannot reach it — and it inherited the
+    shell's stdout and stderr, which is what kept ``Process.wait()`` open.
+    """
+    return ["sh", "-c", f"setsid sleep 30 & echo $! > {pidfile}; sleep 30"]
+
+
 def _spawn_grandchild(*, pidfile: Path) -> list[str]:
     """A shell that backgrounds a long sleep and records the sleep's PID.
 
@@ -483,7 +603,7 @@ async def _reaped(*, pid: int, timeout: float = 5.0) -> bool:
 class TestAsyncRunScript:
     @pytest.fixture
     def sut(self):
-        from dev10x.subprocess_utils import async_run_script
+        from dev10x.core.subprocess_utils import async_run_script
 
         return async_run_script
 
@@ -539,7 +659,7 @@ class TestEffectiveCwd:
         two_repos: tuple[Path, Path],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from dev10x.subprocess_utils import async_run
+        from dev10x.core.subprocess_utils import async_run
 
         main, worktree = two_repos
         monkeypatch.chdir(main)
@@ -557,7 +677,7 @@ class TestEffectiveCwd:
         two_repos: tuple[Path, Path],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from dev10x.subprocess_utils import async_run, use_cwd
+        from dev10x.core.subprocess_utils import async_run, use_cwd
 
         main, worktree = two_repos
         monkeypatch.chdir(main)
@@ -580,7 +700,7 @@ class TestEffectiveCwd:
         every MCP subprocess back at the daemon's own directory, silently
         and only in worktrees.
         """
-        from dev10x.subprocess_utils import effective_cwd, use_cwd
+        from dev10x.core.subprocess_utils import effective_cwd, use_cwd
 
         main, worktree = two_repos
         monkeypatch.chdir(main)
@@ -596,7 +716,7 @@ class TestEffectiveCwd:
         two_repos: tuple[Path, Path],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from dev10x.subprocess_utils import async_run, effective_cwd, use_cwd
+        from dev10x.core.subprocess_utils import async_run, effective_cwd, use_cwd
 
         main, worktree = two_repos
         monkeypatch.chdir(main)
@@ -610,7 +730,7 @@ class TestEffectiveCwd:
         assert result.stdout.strip() == "main-branch"
 
     def test_use_cwd_with_none_is_a_noop(self) -> None:
-        from dev10x.subprocess_utils import effective_cwd, use_cwd
+        from dev10x.core.subprocess_utils import effective_cwd, use_cwd
 
         with use_cwd("/some/path"):
             with use_cwd(None):
@@ -620,9 +740,9 @@ class TestEffectiveCwd:
         self,
         tmp_path: Path,
     ) -> None:
-        from dev10x.subprocess_utils import run_script
+        from dev10x.core.subprocess_utils import run_script
 
-        with patch("dev10x.subprocess_utils.subprocess.run") as mock_run:
+        with patch("dev10x.core.subprocess_utils.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="", stderr=""
             )
@@ -655,7 +775,7 @@ class TestGitContextHonorsCwd:
         two_repos: tuple[Path, Path],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from dev10x.domain.git_context import GitContext
+        from dev10x.core.domain.git_context import GitContext
 
         a, b = two_repos
         monkeypatch.chdir(a)
@@ -670,7 +790,7 @@ class TestGitContextHonorsCwd:
         two_repos: tuple[Path, Path],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from dev10x.domain.git_context import GitContext
+        from dev10x.core.domain.git_context import GitContext
 
         a, b = two_repos
         monkeypatch.chdir(a)
@@ -686,9 +806,8 @@ class TestGitContextHonorsCwd:
         two_repos: tuple[Path, Path],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from dev10x.domain.git_context import GitContext
-
-        from dev10x.subprocess_utils import use_cwd
+        from dev10x.core.domain.git_context import GitContext
+        from dev10x.core.subprocess_utils import use_cwd
 
         a, b = two_repos
         monkeypatch.chdir(a)
@@ -702,12 +821,12 @@ class TestSafeEffectiveCwd:
     """GH-410: safe_effective_cwd() must not return a deleted directory."""
 
     def test_returns_none_when_unbound(self) -> None:
-        from dev10x.subprocess_utils import safe_effective_cwd
+        from dev10x.core.subprocess_utils import safe_effective_cwd
 
         assert safe_effective_cwd() is None
 
     def test_returns_bound_dir_when_it_exists(self, tmp_path: Path) -> None:
-        from dev10x.subprocess_utils import safe_effective_cwd, use_cwd
+        from dev10x.core.subprocess_utils import safe_effective_cwd, use_cwd
 
         with use_cwd(str(tmp_path)):
             result = safe_effective_cwd()
@@ -715,7 +834,7 @@ class TestSafeEffectiveCwd:
         assert result == str(tmp_path)
 
     def test_returns_none_when_bound_dir_is_deleted(self, tmp_path: Path) -> None:
-        from dev10x.subprocess_utils import safe_effective_cwd, use_cwd
+        from dev10x.core.subprocess_utils import safe_effective_cwd, use_cwd
 
         deleted = tmp_path / "gone"
         deleted.mkdir()
@@ -727,7 +846,7 @@ class TestSafeEffectiveCwd:
         assert result is None
 
     def test_returns_none_when_bound_is_a_file_not_dir(self, tmp_path: Path) -> None:
-        from dev10x.subprocess_utils import safe_effective_cwd, use_cwd
+        from dev10x.core.subprocess_utils import safe_effective_cwd, use_cwd
 
         a_file = tmp_path / "file.txt"
         a_file.write_text("x")
@@ -742,7 +861,7 @@ class TestResolveScriptPathWithDeletedCwd:
     """GH-410: resolve_script_path must survive a deleted bound worktree."""
 
     def test_falls_back_to_plugin_root_when_bound_dir_deleted(self, tmp_path: Path) -> None:
-        from dev10x.subprocess_utils import use_cwd
+        from dev10x.core.subprocess_utils import use_cwd
 
         deleted = tmp_path / "gone"
         deleted.mkdir()
@@ -759,7 +878,7 @@ class TestAsyncRunWithDeletedCwd:
 
     @pytest.mark.asyncio
     async def test_falls_back_to_process_cwd_when_bound_dir_deleted(self, tmp_path: Path) -> None:
-        from dev10x.subprocess_utils import async_run, use_cwd
+        from dev10x.core.subprocess_utils import async_run, use_cwd
 
         deleted = tmp_path / "gone"
         deleted.mkdir()
@@ -774,7 +893,7 @@ class TestAsyncRunWithDeletedCwd:
 
     @pytest.mark.asyncio
     async def test_run_with_deleted_bound_cwd_succeeds(self, tmp_path: Path) -> None:
-        from dev10x.subprocess_utils import run, use_cwd
+        from dev10x.core.subprocess_utils import run, use_cwd
 
         deleted = tmp_path / "gone"
         deleted.mkdir()
@@ -791,7 +910,7 @@ class TestRecoverProcessCwd:
     """GH-418: MCP server must recover when its OS-level process CWD is deleted."""
 
     def test_no_op_when_process_cwd_is_valid(self) -> None:
-        from dev10x.subprocess_utils import _recover_process_cwd
+        from dev10x.core.subprocess_utils import _recover_process_cwd
 
         before = os.getcwd()
         _recover_process_cwd()
@@ -804,7 +923,7 @@ class TestRecoverProcessCwd:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from dev10x.subprocess_utils import _recover_process_cwd, get_plugin_root
+        from dev10x.core.subprocess_utils import _recover_process_cwd, get_plugin_root
 
         deleted = tmp_path / "deleted_cwd"
         deleted.mkdir()
@@ -821,7 +940,7 @@ class TestRecoverProcessCwd:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from dev10x.subprocess_utils import get_plugin_root, safe_effective_cwd
+        from dev10x.core.subprocess_utils import get_plugin_root, safe_effective_cwd
 
         deleted = tmp_path / "deleted_cwd"
         deleted.mkdir()
@@ -838,7 +957,7 @@ class TestRecoverProcessCwd:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from dev10x.subprocess_utils import get_plugin_root, safe_effective_cwd, use_cwd
+        from dev10x.core.subprocess_utils import get_plugin_root, safe_effective_cwd, use_cwd
 
         deleted_bound = tmp_path / "deleted_bound"
         deleted_bound.mkdir()
@@ -860,7 +979,7 @@ class TestRecoverProcessCwd:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from dev10x.subprocess_utils import async_run
+        from dev10x.core.subprocess_utils import async_run
 
         deleted = tmp_path / "deleted_cwd"
         deleted.mkdir()

@@ -24,8 +24,8 @@ Everything it writes stays on disk under paths you control:
 | Hook timing & outcome audit records | `/tmp/Dev10x/logs/hooks-YYYY-MM-DD.jsonl` | Debug and performance analysis of hook execution |
 | Temporary working files | `/tmp/Dev10x/` | Short-lived scratch files (commit messages, etc.) |
 | Per-project config (playbooks, session settings) | `.claude/Dev10x/` in your repos | Project-scoped workflow overrides |
-| Supervisor page state (open questions, answers sent, hook token) | `~/.config/Dev10x/supervisor/` | Answer local sessions from `dev10x supervisor serve`; only while you run it |
-| Supervisor lessons | the KB folder you pass to `dev10x supervisor serve` (`wiki/lessons/`) | Notes you or your sessions chose to keep |
+| Overwatch page state (open questions, answers sent, hook token, page settings) | `~/.config/Dev10x/overwatch/` | Answer local sessions from `dev10x overwatch serve`; only while you run it |
+| Overwatch lessons | the KB folder you pass to `dev10x overwatch serve` (`wiki/lessons/`) | Notes you or your sessions chose to keep |
 
 Audit log records contain: tool name, event phase, duration,
 exit code, and a span identifier.
@@ -48,9 +48,15 @@ Audit collection can be disabled by exporting
   calls other than those you explicitly invoke (for example,
   `git push`, `gh pr create`, or an authenticated MCP tool
   request).
+- The `wait_for` MCP tool with `kind="http"` sends a plain `GET` to
+  the one URL its caller passes, and only until the wait ends.
+  It reads the status code; no response body, credentials or local
+  data are sent or kept.
+  It does not follow redirects, and it sends no request to a link-local
+  address such as the 169.254.169.254 cloud metadata service.
 - The `AskUserQuestion` hook sends a session's open questions to
-  the local supervisor page at `127.0.0.1` and nowhere else, and
-  only while you run `dev10x supervisor serve`. The page itself
+  the local Overwatch page at `127.0.0.1` and nowhere else, and
+  only while you run `dev10x overwatch serve`. The page itself
   listens on `127.0.0.1` only and loads nothing remote.
 - Some **skill scripts** (e.g., `qa-self/upload-screenshots.py`)
   call documented integrations directly via HTTP libraries when
@@ -69,13 +75,14 @@ with credentials you supply:
 | GitHub App API (`dev10x github-app setup` wizard) | App ID + private key you provide | Direct calls to `api.github.com` to verify the App key matches, list installations, exchange a JWT for an installation token, and read one repo per installation before writing config |
 | Linear (MCP) | Your Linear OAuth session | Issues and comments you read or write |
 | JIRA (`dev10x:jira`) | API token from your OS keyring | Issue lookups and comments you request |
-| Slack (MCP, `dev10x:slack`) | Your Slack app token, from your OS keyring or `SLACK_TOKEN` | Channel reads and messages you post; direct calls to `slack.com/api` to send, edit, or delete the notifications you approve, made either via `slack_sdk` or — when that optional package is absent — an equivalent stdlib request |
-| Google Chat (`dev10x:gchat`) | Service-account key from your OS keyring | Direct calls to `chat.googleapis.com` (via `oauth2.googleapis.com` for a token) to post review-request messages you approve to your configured Chat space |
-| YouTube Data API (`dev10x:yt-upload`) | A short-lived OAuth access token borrowed from your locally-authenticated `gog` CLI — no client secret is read and the refresh token is never exchanged; the borrowed token is written owner-only and shredded after use | A resumable upload of the video file you approve to `www.googleapis.com/upload/youtube/v3/videos`, plus the title and description you supply. **The upload defaults to `unlisted`, which is readable by anyone holding the link** — the skill gates on an explicit operator statement that the recording contains no production data |
+| Slack (MCP, `dev10x-comm:slack`) | Your Slack app token, from your OS keyring or `SLACK_TOKEN` | Channel reads and messages you post; direct calls to `slack.com/api` to send, edit, or delete the notifications you approve, made either via `slack_sdk` or — when that optional package is absent — an equivalent stdlib request |
+| Google Chat (`dev10x-comm:gchat`) | Service-account key from your OS keyring | Direct calls to `chat.googleapis.com` (via `oauth2.googleapis.com` for a token) to post review-request messages you approve to your configured Chat space |
+| Google Chat bus (`dev10x-chatbus` daemon) | Your own Google user grant, supplied by the daemon's token provider (the poll source reads through your `gog` CLI) | Reads of the Chat spaces, DMs and threads you watch; pulls of Chat reaction events from your own Pub/Sub subscription at `pubsub.googleapis.com`; and renewal of the Workspace Events subscription at `workspaceevents.googleapis.com` that feeds it. Events are stored in a local SQLite file readable only by you |
+| YouTube Data API (`dev10x-qa:yt-upload`) | A short-lived OAuth access token borrowed from your locally-authenticated `gog` CLI — no client secret is read and the refresh token is never exchanged; the borrowed token is written owner-only and shredded after use | A resumable upload of the video file you approve to `www.googleapis.com/upload/youtube/v3/videos`, plus the title and description you supply. **The upload defaults to `unlisted`, which is readable by anyone holding the link** — the skill gates on an explicit operator statement that the recording contains no production data |
 | Sentry (MCP) | Your Sentry auth | Issue details you fetch |
 | AWS Secrets Manager (`aws-vault`) | Your AWS profile | Secret lookups you approve |
 | Kubernetes API (`aws-vault` kubectl wrapper) | Your AWS profile via `aws-vault exec` | Read-only `kubectl` commands you submit (get, describe, logs, top, events, etc.); cluster context and namespace resolved from your local `service-registry.yaml` |
-| Postgres (databases via `dev10x:db-psql`) | Connection strings from `databases.yaml` (env or keyring) | Read-only SQL queries you submit; results returned locally |
+| Postgres (databases via `dev10x-db:db-psql`) | Connection strings from `databases.yaml` (env or keyring) | Read-only SQL queries you submit; results returned locally |
 | Anthropic API (Claude review CI) | Repository `ANTHROPIC_API_KEY` secret | PR diffs, commit metadata, and review comments processed by GitHub-hosted Claude actions |
 | PyPI (release CI only) | Trusted-publisher OIDC | Plugin distribution artifacts |
 | PyPI JSON API (`dev10x deps sweep`) | None (anonymous, read-only) | Names of pinned distributions from this repo's dependency declarations, sent to `pypi.org/pypi/<name>/json` to read the current stable version when you (or the scheduled workflow) run the sweep |

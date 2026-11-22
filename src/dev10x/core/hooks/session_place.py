@@ -14,7 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from dev10x.domain.git_context import GitContext
+from dev10x.core.domain.git_context import GitContext
 
 BASE_BRANCH_ALIASES: tuple[str, ...] = (
     "nopager",
@@ -101,7 +101,9 @@ def session_load_marker(data: dict | None = None) -> None:
     (sessions_dir / session_id).touch()
 
 
-ALIAS_SETUP_HINT = "Run the git-alias-setup skill (/dev10x:git-alias-setup) to configure them."
+ALIAS_SETUP_HINT = (
+    "Run the git-alias-setup skill (/dev10x-coding:git-alias-setup) to configure them."
+)
 
 
 def session_git_aliases(setup_hint: str = ALIAS_SETUP_HINT) -> None:

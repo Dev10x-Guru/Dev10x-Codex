@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dev10x.hooks.stop_verdict import StopSignal, TaskSignal, auto_advances, decide
+from dev10x.core.hooks.stop_verdict import StopSignal, TaskSignal, auto_advances, decide
 
 from .conftest import DEPLETED_PLAN, PENDING_PLAN
 from .test_stop_verdict import _assistant, _text
@@ -76,7 +76,7 @@ class TestADirtyTreeMeansNotDone:
             dirty=_DIRTY,
         )
 
-        assert "dev10x:git-commit" in verdict.reason
+        assert "dev10x-coding:git-commit" in verdict.reason
         assert "AskUserQuestion" not in verdict.reason
 
     def test_the_steer_carries_the_shared_worktree_escape(

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from dev10x.core.plugin_map import skill_directories
+from dev10x.core.plugin_map import repo_skill_directories
 from dev10x.core.skill_references import (
     SCANNED_FRAGMENT_DIRS,
     count_references,
@@ -23,7 +23,7 @@ from dev10x.core.skill_references import (
     scanned_paths,
     unknown_references,
 )
-from dev10x.subprocess_utils import get_plugin_root
+from dev10x.core.subprocess_utils import get_plugin_root
 
 INVENTORY_PATH = Path(__file__).parents[1] / "fixtures" / "skill_reference_inventory.json"
 
@@ -39,7 +39,6 @@ NON_SKILL_NAMES = {
     "my-skill-name": "placeholder in docs",
     "nonexistent": "the error example in references/skill-invocation.md",
     "reasons-canvas": "an option ADR-0005 rejected",
-    "report-work-weekly": "a personal skill hidden by skill-index/hidden.yaml",
     "skill-reinforcement": "the former name of diag-friction",
     "some-skill": "placeholder in docs",
     "target-name": "placeholder in docs",
@@ -59,7 +58,7 @@ def counts() -> dict[str, int]:
 class TestRepositoryInventory:
     def test_every_reference_names_a_real_skill(self, counts: dict[str, int]) -> None:
         known = [
-            *skill_directories(skills_root=get_plugin_root() / "skills"),
+            *repo_skill_directories(repo_root=get_plugin_root()),
             *_agent_names(),
             *NON_SKILL_NAMES,
         ]
@@ -107,6 +106,13 @@ class TestReferenceDetection:
         (tmp_path / "docs" / "ignored.txt").write_text("dev10x:git\n")
 
         assert count_references(paths=scanned_paths(root=tmp_path)) == {"git": 2, "review": 1}
+
+    def test_satellite_plugin_skills_are_scanned(self, tmp_path: Path) -> None:
+        skill = tmp_path / "plugins" / "qa" / "skills" / "tts"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("Skill(dev10x:request-review)\n")
+
+        assert count_references(paths=scanned_paths(root=tmp_path)) == {"request-review": 1}
 
     def test_command_map_fragments_are_scanned(self, tmp_path: Path) -> None:
         fragments = tmp_path / SCANNED_FRAGMENT_DIRS[0]

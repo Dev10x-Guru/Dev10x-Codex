@@ -20,8 +20,8 @@ def codex_harness(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def repo(tmp_path: Path) -> Iterator[Path]:
     with (
-        patch("dev10x.plan.service.get_toplevel", return_value=str(tmp_path)),
-        patch("dev10x.domain.documents.plan._get_branch", return_value="feature/x"),
+        patch("dev10x.tasks.plan.service.get_toplevel", return_value=str(tmp_path)),
+        patch("dev10x.core.domain.documents.plan._get_branch", return_value="feature/x"),
     ):
         yield tmp_path
 

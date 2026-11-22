@@ -19,10 +19,10 @@ rules:
     hook_block: true
     compensations:
       - type: use-skill
-        skill: dev10x:git-commit
+        skill: dev10x-coding:git-commit
         guardrails: gitmoji prefix, JTBD outcome title, 72-char limit
         fallback: >
-          If Skill(dev10x:git-commit) fails, apply guardrails manually:
+          If Skill(dev10x-coding:git-commit) fails, apply guardrails manually:
           (1) prefix with gitmoji, (2) include ticket ID from branch,
           (3) keep title under 72 chars, (4) use -F with temp file
           (not -m), (5) add Fixes: footer.
@@ -37,7 +37,7 @@ rules:
       extraction from branch name, and 72-char line limit
       enforcement.
     related:
-      - dev10x:git-groom
+      - dev10x-coding:git-groom
 
   - name: gh-pr-create
     matcher: Bash
@@ -47,10 +47,10 @@ rules:
     hook_block: true
     compensations:
       - type: use-skill
-        skill: dev10x:gh-pr-create
+        skill: dev10x-coding:gh-pr-create
         guardrails: Job Story body, ticket linking, commit list, summary comment
         fallback: >
-          If Skill(dev10x:gh-pr-create) fails, apply guardrails manually:
+          If Skill(dev10x-coding:gh-pr-create) fails, apply guardrails manually:
           (1) start body with JTBD Job Story, (2) add Fixes: issue URL,
           (3) create as draft (--draft), (4) include commit list.
     reason: >
@@ -65,17 +65,22 @@ rules:
     hook_block: true
     compensations:
       - type: use-skill
-        skill: dev10x:gh-pr-merge
+        skill: dev10x-coding:gh-pr-merge
         guardrails: 9 pre-merge checks (unresolved threads, CI, draft, mergeability, working copy, fixup commits, approval, Fixes-linked scope, branch protection)
         fallback: >
           The skill's Step 5 executes the merge via
           `mcp__plugin_dev10x_cli__merge_pr` (GH-232) — symmetric
           to `create_pr` / `push_safe`. Do NOT bypass this with
-          `DEV10X_SKIP_CMD_VALIDATION=true gh pr merge ...`; that
-          flag is reserved for transient MCP-unavailability
-          emergencies, not the documented flow. If the MCP tool is
-          unavailable, stop and ask the user to reconnect via
-          `/mcp` rather than running raw `gh pr merge`.
+          `DEV10X_SKIP_CMD_VALIDATION=true gh pr merge ...`: that
+          flag is reserved for skill-authorized exceptions and is not
+          a sanctioned path during an MCP outage either. If `merge_pr`
+          is unavailable, do not retry it and never run raw
+          `gh pr merge` in its place. Attended, ask the user to
+          reconnect via `/mcp`. Unattended, leave the PR as it is,
+          record the blocker and end the chunk. After a reconnect,
+          re-read the PR with `pr_get` (state, mergedAt) before
+          calling `merge_pr` again — a dropped merge may have landed
+          (GH-1099). See references/mcp-unavailable-escape-hatch.md.
     reason: >
       Direct gh pr merge bypasses the 9 pre-merge checks the skill
       enforces. Adaptive friction does not waive the skill body —
@@ -90,7 +95,7 @@ rules:
     hook_block: true
     compensations:
       - type: use-skill
-        skill: dev10x:git
+        skill: dev10x-coding:git
         guardrails: protected branch checks, force-push safety
         fallback: >
           Re-invoke the skill with the right parameters before
@@ -102,7 +107,8 @@ rules:
           `protected_branches=["main"]`; pushing to main passes
           `protected_branches=[]`. Do NOT use
           DEV10X_SKIP_CMD_VALIDATION=true to bypass — that flag is
-          reserved for skill-internal exceptions, not for callers.
+          reserved for skill-authorized exceptions, not for callers,
+          and not for an MCP outage.
           GH-963: a non-force push that names an explicit,
           non-protected branch (e.g. `git push -u origin
           my-feature-branch`) is already allowed straight through —
@@ -120,8 +126,8 @@ rules:
       is never blocked — see
       references/mcp-unavailable-escape-hatch.md.
     related:
-      - dev10x:git-commit
-      - dev10x:git-groom
+      - dev10x-coding:git-commit
+      - dev10x-coding:git-groom
 
   - name: git-rebase-interactive
     matcher: Bash
@@ -132,10 +138,10 @@ rules:
     hook_block: true
     compensations:
       - type: use-skill
-        skill: dev10x:git-groom
+        skill: dev10x-coding:git-groom
         guardrails: atomic commits, convention enforcement, non-interactive rebase
         fallback: >
-          If Skill(dev10x:git-groom) fails, run rebase manually with
+          If Skill(dev10x-coding:git-groom) fails, run rebase manually with
           GIT_SEQUENCE_EDITOR=true to auto-accept the default sequence,
           then fixup any out-of-order commits.
     reason: >
@@ -151,10 +157,10 @@ rules:
     hook_block: true
     compensations:
       - type: use-skill
-        skill: dev10x:gh-pr-monitor
+        skill: dev10x-coding:gh-pr-monitor
         guardrails: failure detection, fixup commits, re-monitoring after push
         fallback: >
-          If Skill(dev10x:gh-pr-monitor) fails, monitor manually:
+          If Skill(dev10x-coding:gh-pr-monitor) fails, monitor manually:
           (1) poll gh pr checks until all pass, (2) fix any failures,
           (3) mark PR ready with gh pr ready.
     reason: >
@@ -209,10 +215,12 @@ rules:
         tool: mcp__plugin_dev10x_cli__issue_close
         guardrails: structured responses, no Bash permission friction
         description: >
-          If the MCP server is unavailable, use gh issue close N
-          --reason <completed|not_planned> directly, including the
-          string `cli-friction: allow raw-gh-issue-write` in the
-          command so this rule lets it through.
+          Writes wait during an MCP outage. Attended: ask the user to
+          reconnect via /mcp. Unattended: record the blocker and stop.
+          Scripted DoD checks only: gh issue close N --reason
+          <completed|not_planned> with the string
+          `cli-friction: allow raw-gh-issue-write` in the command
+          lets it through.
     reason: >
       Direct gh issue close changes issue state and requires per-call
       Bash permission. The MCP tool accepts reason and optional
@@ -231,10 +239,11 @@ rules:
         tool: mcp__plugin_dev10x_cli__issue_reopen
         guardrails: structured responses, no Bash permission friction
         description: >
-          If the MCP server is unavailable, use gh issue reopen N
-          directly, including the string
-          `cli-friction: allow raw-gh-issue-write` in the command so
-          this rule lets it through.
+          Writes wait during an MCP outage. Attended: ask the user to
+          reconnect via /mcp. Unattended: record the blocker and stop.
+          Scripted DoD checks only: gh issue reopen N with the string
+          `cli-friction: allow raw-gh-issue-write` in the command
+          lets it through.
     reason: >
       Direct gh issue reopen changes issue state and requires per-call
       Bash permission. The MCP tool returns structured responses and
@@ -281,10 +290,10 @@ rules:
         tool: mcp__plugin_dev10x_cli__issue_create
         guardrails: structured responses, no Bash permission friction
         description: >
-          If the MCP server is unavailable, use gh issue create directly
-          with --title and --body-file. GH-1266: --body-file is the form
-          this rule's `except` lets through — a --body fallback would be
-          denied by the same rule that suggested it.
+          Writes wait during an MCP outage. Attended: ask the user to
+          reconnect via /mcp. Unattended: record the blocker and stop.
+          Scripted callers only: gh issue create with --title and
+          --body-file is the form this rule's `except` lets through.
     reason: >
       Direct gh issue create requires Bash permission approval on
       every call. The MCP tool provides structured JSON responses
@@ -305,11 +314,11 @@ rules:
         tool: mcp__plugin_dev10x_cli__update_pr
         guardrails: structured responses, no Bash permission friction
         description: >
-          If the MCP server is unavailable, use gh pr edit directly
-          with the required flags (--title, --body-file, --add-label,
-          --milestone, --base), including the string
-          `cli-friction: allow raw-gh-pr-write` in the command so this
-          rule lets it through.
+          Writes wait during an MCP outage. Attended: ask the user to
+          reconnect via /mcp. Unattended: record the blocker and stop.
+          Scripted DoD checks only: gh pr edit with the string
+          `cli-friction: allow raw-gh-pr-write` in the command lets
+          it through.
     reason: >
       Direct gh pr edit mutates PR metadata (title, body, labels,
       base) and bypasses the gh-pr-create "update mode" guardrails.
@@ -332,10 +341,11 @@ rules:
           Covers both directions: omit `undo` to publish a draft, pass
           `undo=true` to convert a published PR back to draft (GH-931
           finding 2) — the safe response to spotting a problem after
-          marking ready. If the MCP server is unavailable, run
-          gh pr ready <pr> --repo <owner/repo> [--undo] directly,
-          including the string `cli-friction: allow raw-gh-pr-write`
-          in the command so this rule lets it through.
+          marking ready. Writes wait during an MCP outage. Attended:
+          ask the user to reconnect via /mcp. Unattended: record the
+          blocker and stop. Scripted DoD checks only: gh pr ready <pr>
+          with the string `cli-friction: allow raw-gh-pr-write` in the
+          command lets it through.
     reason: >
       The draft flag is not PATCHable via update_pr, so un-drafting
       needs gh pr ready. The pr_ready MCP tool (GH-779) wraps it with
@@ -355,10 +365,11 @@ rules:
         tool: mcp__plugin_dev10x_cli__issue_edit
         guardrails: structured responses, no Bash permission friction
         description: >
-          If the MCP server is unavailable, use gh issue edit directly
-          with --title, --body-file, --milestone, --add-label, including
-          the string `cli-friction: allow raw-gh-issue-write` in the
-          command so this rule lets it through.
+          Writes wait during an MCP outage. Attended: ask the user to
+          reconnect via /mcp. Unattended: record the blocker and stop.
+          Scripted DoD checks only: gh issue edit with the string
+          `cli-friction: allow raw-gh-issue-write` in the command
+          lets it through.
     reason: >
       Direct gh issue edit mutates issue metadata (title, body,
       milestone, labels) and requires per-call Bash permission. The
@@ -375,21 +386,19 @@ rules:
         tool: mcp__plugin_dev10x_cli__issue_comment
         guardrails: structured responses, body written to temp file safely
         description: >
-          Use the MCP tool. If the MCP server is unavailable, the
-          sanctioned fallback is
-          `gh api repos/<owner>/<repo>/issues/<n>/comments -F body=@<file>`
-          — NOT `gh issue comment --body-file`, which this same rule
-          blocks (GH-1068 F6).
+          Use the MCP tool. Writes wait during an MCP outage.
+          Attended: ask the user to reconnect via /mcp. Unattended:
+          record the blocker and stop. `gh issue comment --body-file`
+          is not a fallback (this same rule blocks it, GH-1068 F6),
+          and neither is a raw `gh api` POST.
     reason: >
       Direct gh issue comment requires Bash permission per call and
       forces callers to manage heredoc/quoting. The MCP tool writes
       the body to a temp file and returns the comment permalink.
-      The fallback names `gh api … -F body=@<file>` because the
-      previous hint pointed at `gh issue comment --body-file`, a shape
-      this rule denies — so a caller that hit the block was steered
-      into the block a second time, with no working path out. A hint
-      that is itself denied is worse than no hint: it reads as
-      sanctioned and costs another round trip to disprove.
+      The fallback names no raw write because a hint that is itself
+      denied reads as sanctioned and costs another round trip to
+      disprove, and a raw gh api POST would contradict the outage
+      guidance that writes wait (GH-1916).
 
   - name: gh-issue-list
     matcher: Bash
@@ -523,7 +532,7 @@ rules:
     hook_block: false
     compensations:
       - type: use-skill
-        skill: dev10x:gh-pr-review
+        skill: dev10x-coding:gh-pr-review
     reason: >
       Direct gh pr review skips structured review checklist and
       domain-specific agent routing.
@@ -567,14 +576,14 @@ rules:
       Scoped to the NARROW shape on purpose. The generic `pytest` rule
       below stays advisory, which keeps the full-coverage form
       (`uv run --extra dev pytest --cov --cov-report=term-missing`)
-      unblocked: that is `dev10x:py-test`'s documented fallback for a
+      unblocked: that is `dev10x-coding:py-test`'s documented fallback for a
       session with no MCP server, and it is the shape that seeds a fresh
       worktree's virtualenv. Blocking it would leave such a session with
       no sanctioned path at all. It also keeps GH-155's recursion out of
       reach — the flip reverted there hard-blocked the form the skill
       itself ran.
     related:
-      - dev10x:py-test
+      - dev10x-coding:py-test
 
   - name: pytest
     matcher: Bash
@@ -585,10 +594,10 @@ rules:
     hook_block: false
     compensations:
       - type: use-skill
-        skill: dev10x:py-test
+        skill: dev10x-coding:py-test
         guardrails: 100% coverage gate, concise pass/fail summaries, cwd-aware uv run wrapping
         fallback: >
-          If Skill(dev10x:py-test) is unavailable, run pytest with coverage
+          If Skill(dev10x-coding:py-test) is unavailable, run pytest with coverage
           (`pytest --cov --cov-report=term-missing`) and verify 100%
           coverage on changed files manually.
     reason: >
@@ -597,7 +606,7 @@ rules:
       pytest calls before commits/PR with no coverage verification.
 
       Advisory only (hook_block: false) — the hard-block flipped in
-      GH-155 broke dev10x:py-test itself, which internally invokes
+      GH-155 broke dev10x-coding:py-test itself, which internally invokes
       `uv run pytest --cov ...` and hit the same hook recursively.
       Restoring advisory behavior pending the skill-context-aware
       hook protocol (GH-271 Phase 8).
@@ -734,14 +743,14 @@ rules:
     hook_block: false
     compensations:
       - type: use-skill
-        skill: dev10x:gh-pr-fixup
+        skill: dev10x-coding:gh-pr-fixup
     reason: >
       PR comment replies for VALID review comments must go through
       the fixup skill's push+reply atomic workflow. Raw gh api
       replies bypass fixup commit creation and thread management.
     related:
-      - dev10x:gh-pr-respond
-      - dev10x:gh-pr-triage
+      - dev10x-coding:gh-pr-respond
+      - dev10x-coding:gh-pr-triage
 
   - name: gh-review-threads-graphql
     matcher: Bash
@@ -767,8 +776,8 @@ rules:
       they run the reviewThreads query and return structured results
       without the friction (GH-598).
     related:
-      - dev10x:gh-pr-merge
-      - dev10x:gh-pr-review
+      - dev10x-coding:gh-pr-merge
+      - dev10x-coding:gh-pr-review
 
   - name: sentry-api
     matcher: Bash
@@ -777,7 +786,7 @@ rules:
     hook_block: false
     compensations:
       - type: use-skill
-        skill: dev10x:investigate
+        skill: dev10x-coding:investigate
     reason: >
       The investigate skill combines Sentry, codebase search,
       and Slack thread context for structured root-cause analysis.

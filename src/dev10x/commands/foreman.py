@@ -9,7 +9,7 @@ import click
 
 @click.group()
 def foreman() -> None:
-    """Watcher CLI for dev10x:foreman overnight delivery runs.
+    """Watcher CLI for dev10x-coding:foreman overnight delivery runs.
 
     One pre-approved command surface for every loop/poll the harness
     needs — inline Monitor/Bash loop shapes prompt unpredictably and
@@ -83,7 +83,7 @@ def retire(*, scratchpad: Path, chunk: str) -> None:
     (GH-1577).
     """
     from dev10x.coding.skills.foreman import watch as watch_skill
-    from dev10x.domain.common.result import ErrorResult
+    from dev10x.core.domain.common.result import ErrorResult
 
     result = watch_skill.retire_chunk(scratchpad=scratchpad, chunk=chunk)
     if isinstance(result, ErrorResult):
@@ -113,7 +113,7 @@ def escalate(*, scratchpad: Path, role: str, line: str) -> None:
     older ones; this always writes the line last, as one atomic append.
     """
     from dev10x.coding.skills.foreman import watch as watch_skill
-    from dev10x.domain.common.result import ErrorResult
+    from dev10x.core.domain.common.result import ErrorResult
 
     result = watch_skill.append_escalation(scratchpad=scratchpad, role=role, line=line)
     if isinstance(result, ErrorResult):
@@ -235,6 +235,7 @@ def watch(
             escalation_lines=escalations,
             retired=watch_skill.retired_heartbeats(scratchpad=scratchpad),
             handled_prs=watch_skill.handled_merge_prs(scratchpad=scratchpad),
+            blocked=watch_skill.blocked_heartbeats(scratchpad=scratchpad),
         )
         for event in events:
             click.echo(event)

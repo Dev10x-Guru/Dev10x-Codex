@@ -7,10 +7,12 @@ import warnings
 from pathlib import Path
 
 import pytest
-from dev10x.config.loader import load_config, load_document
-from dev10x.domain.rules.rule_engine import RuleEngine
-from dev10x.domain.rules.validation_rule import Compensation, MatchingRule
-from dev10x.validators.skill_redirect import (
+
+from dev10x.core.config.loader import load_config, load_document
+from dev10x.core.domain import HookHint, HookResult
+from dev10x.core.domain.rules.rule_engine import RuleEngine
+from dev10x.core.domain.rules.validation_rule import Compensation, MatchingRule
+from dev10x.core.validators.skill_redirect import (
     _REGEX_METACHARS_RE,
     _YAML_PATH,
     SkillRedirectValidator,
@@ -20,7 +22,6 @@ from dev10x.validators.skill_redirect import (
     names_quick_token,
     unreachable_patterns,
 )
-
 from tests.fakers import BashHookInputFaker
 from tests.validators.loop_shapes import BARE_POLL_LOOP, UNTIL_POLL_LOOP
 
@@ -95,7 +96,7 @@ class TestPsqlWriteRedirect:
         inp = _make_input(command=command)
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:db-psql" in result.message
+        assert "dev10x-db:db-psql" in result.message
 
     @pytest.mark.parametrize(
         "command",
@@ -115,7 +116,7 @@ class TestGitCommitRedirect:
         inp = _make_input(command='git commit -m "Enable feature X"')
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:git-commit" in result.message
+        assert "dev10x-coding:git-commit" in result.message
 
     def test_blocks_git_commit_with_m_single_quotes(
         self, validator: SkillRedirectValidator
@@ -123,7 +124,7 @@ class TestGitCommitRedirect:
         inp = _make_input(command="git commit -m 'Enable feature X'")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:git-commit" in result.message
+        assert "dev10x-coding:git-commit" in result.message
 
     def test_allows_git_commit_f_with_skill_temp(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command="git commit -F /tmp/Dev10x/git/commit-msg.W9DryMXsQ5Aw.txt")
@@ -150,7 +151,7 @@ class TestGitCommitRedirect:
         inp = _make_input(command="git commit -F /tmp/random/msg.txt")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:git-commit" in result.message
+        assert "dev10x-coding:git-commit" in result.message
 
     def test_blocks_git_commit_f_with_non_git_namespace(
         self, validator: SkillRedirectValidator
@@ -171,7 +172,7 @@ class TestGitCommitRedirect:
         inp = _make_input(command="git commit")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:git-commit" in result.message
+        assert "dev10x-coding:git-commit" in result.message
 
     def test_allows_git_commit_fixup(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command="git commit --fixup=abc1234")
@@ -189,13 +190,13 @@ class TestGhPrCreateRedirect:
         inp = _make_input(command="gh pr create --title 'Fix bug' --body 'details'")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:gh-pr-create" in result.message
+        assert "dev10x-coding:gh-pr-create" in result.message
 
     def test_blocks_gh_pr_create_minimal(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command="gh pr create")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:gh-pr-create" in result.message
+        assert "dev10x-coding:gh-pr-create" in result.message
 
 
 class TestGitPushRedirect:
@@ -203,7 +204,7 @@ class TestGitPushRedirect:
         inp = _make_input(command="git push origin main")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:git" in result.message
+        assert "dev10x-coding:git" in result.message
 
     def test_allows_git_push_force_with_lease(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command="git push --force-with-lease")
@@ -216,7 +217,7 @@ class TestGitPushRedirect:
         inp = _make_input(command="git push -u origin develop")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:git" in result.message
+        assert "dev10x-coding:git" in result.message
 
 
 class TestGitPushUnattendedEscapeHatch:
@@ -452,26 +453,26 @@ class TestPushHelpersOnNonPushCommands:
         ],
     )
     def test_no_git_push_yields_no_args(self, command: str) -> None:
-        from dev10x.validators.skill_redirect import _push_args
+        from dev10x.core.validators.skill_redirect import _push_args
 
         assert _push_args(command) is None
 
     @pytest.mark.parametrize("command", ["echo push", "git status"])
     def test_no_git_push_yields_no_targets(self, command: str) -> None:
-        from dev10x.validators.skill_redirect import _explicit_push_targets
+        from dev10x.core.validators.skill_redirect import _explicit_push_targets
 
         assert _explicit_push_targets(command) is None
 
     @pytest.mark.parametrize("command", ["echo push +evil:main", "git status"])
     def test_no_git_push_is_not_refspec_force(self, command: str) -> None:
-        from dev10x.validators.skill_redirect import _has_refspec_force
+        from dev10x.core.validators.skill_redirect import _has_refspec_force
 
         assert _has_refspec_force(command) is False
 
     def test_unbalanced_quotes_fall_back_to_whitespace_split(self) -> None:
         """``shlex`` raises on an unterminated quote; the fallback keeps the
         guard reading the command instead of throwing inside a hook."""
-        from dev10x.validators.skill_redirect import _tokenize
+        from dev10x.core.validators.skill_redirect import _tokenize
 
         assert _tokenize("git push origin 'unterminated") == [
             "git",
@@ -486,13 +487,13 @@ class TestGitRebaseRedirect:
         inp = _make_input(command="git rebase -i HEAD~3")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:git-groom" in result.message
+        assert "dev10x-coding:git-groom" in result.message
 
     def test_blocks_git_rebase_interactive(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command="git rebase --interactive HEAD~5")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:git-groom" in result.message
+        assert "dev10x-coding:git-groom" in result.message
 
     def test_allows_git_rebase_continue(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command="git rebase --continue")
@@ -510,13 +511,13 @@ class TestGhPrChecksWatchRedirect:
         inp = _make_input(command="gh pr checks --watch")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:gh-pr-monitor" in result.message
+        assert "dev10x-coding:gh-pr-monitor" in result.message
 
     def test_blocks_gh_pr_checks_w(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command="gh pr checks -w")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:gh-pr-monitor" in result.message
+        assert "dev10x-coding:gh-pr-monitor" in result.message
 
     def test_allows_gh_pr_checks_without_watch(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command="gh pr checks")
@@ -534,19 +535,19 @@ class TestGhPrMergeRedirect:
         inp = _make_input(command="gh pr merge 111 --squash --delete-branch")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:gh-pr-merge" in result.message
+        assert "dev10x-coding:gh-pr-merge" in result.message
 
     def test_blocks_gh_pr_merge_minimal(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command="gh pr merge")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:gh-pr-merge" in result.message
+        assert "dev10x-coding:gh-pr-merge" in result.message
 
     def test_blocks_gh_pr_merge_rebase(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command="gh pr merge 42 --rebase")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "dev10x:gh-pr-merge" in result.message
+        assert "dev10x-coding:gh-pr-merge" in result.message
 
     def test_should_run_true_for_gh_pr_merge(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command="gh pr merge 111 --squash")
@@ -900,7 +901,7 @@ class TestMessageContent:
         inp = _make_input(command="git push origin main")
         result = validator.validate(inp=inp)
         assert result is not None
-        assert "Skill(dev10x:git)" in result.message
+        assert "Skill(dev10x-coding:git)" in result.message
 
     def test_message_includes_guardrails(self, validator: SkillRedirectValidator) -> None:
         inp = _make_input(command="git push origin main")
@@ -1029,7 +1030,7 @@ def loop_first_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     A per-plugin split lands it ahead of git-push and psql-write, which is
     the order GH-1590's exemption hazard needs.
     """
-    import dev10x.validators.skill_redirect as mod
+    import dev10x.core.validators.skill_redirect as mod
 
     config, engine = _load_config()
     loop = next(rule for rule in engine.command_rules if rule.name == "watch-loop-handrolled")
@@ -1065,7 +1066,7 @@ class TestAnExemptionClearsOneRuleNotTheCommand:
         result = validator.correct(inp=inp)
 
         assert result is not None
-        assert "dev10x:git" in result.message
+        assert "dev10x-coding:git" in result.message
 
     def test_a_backgrounded_loop_with_a_harmless_body_still_passes(
         self, validator: SkillRedirectValidator
@@ -1193,7 +1194,7 @@ class TestBlockMessageFallback:
         validator = SkillRedirectValidator()
         inp = _make_input(command="test cmd foo")
 
-        import dev10x.validators.skill_redirect as mod
+        import dev10x.core.validators.skill_redirect as mod
 
         orig_config, orig_engine = mod._CONFIG, mod._ENGINE
         mod._CONFIG, mod._ENGINE = config, engine
@@ -1824,6 +1825,84 @@ def test_advisory_rules_that_would_ship_inert_are_reported() -> None:
     pairs = unreachable_patterns(rules=_advisory_bash_rules())
     if pairs:
         warnings.warn(format_unreachable_report(pairs=pairs), UserWarning, stacklevel=1)
+
+
+def _live_hint_rules() -> list[MatchingRule]:
+    return [rule for rule in load_config(yaml_path=_YAML_PATH).rules if rule.live_hint]
+
+
+def test_the_shipped_live_hints_are_pinned() -> None:
+    # Pinned so the parametrized guard below cannot pass vacuously.
+    assert [rule.name for rule in _live_hint_rules()] == ["gog-global-flags-first"]
+
+
+@pytest.mark.parametrize("rule", _live_hint_rules(), ids=lambda rule: rule.name)
+def test_every_live_hint_rule_can_actually_steer(rule: MatchingRule) -> None:
+    """GH-1725: a live_hint rule that blocks, targets a non-Bash matcher, or
+    carries no compensation text is dropped or emits nothing — silently, at
+    hook time. Catch the misconfiguration here instead."""
+    advice = " ".join((comp.description or "").strip() for comp in rule.compensations)
+
+    assert (rule.hook_block, rule.matcher, bool(advice.strip())) == (False, "Bash", True)
+
+
+class TestGogLiveHint:
+    """GH-1725: a leading-flag gog command is steered before the prompt,
+    without a deny or an ask — the steer used to appear only in
+    permission_triage / diag-friction, after the prompt had fired."""
+
+    COMMAND = "gog -a me@example.com --readonly chat messages list spaces/AAA --json"
+
+    def test_reaches_the_engine(self, validator: SkillRedirectValidator) -> None:
+        assert validator.should_run(inp=_make_input(command=self.COMMAND)) is True
+
+    def test_yields_a_hint_not_a_decision(self, validator: SkillRedirectValidator) -> None:
+        result = validator.validate(inp=_make_input(command=self.COMMAND))
+
+        assert isinstance(result, HookHint)
+
+    def test_hint_carries_the_reordering_advice(self, validator: SkillRedirectValidator) -> None:
+        result = validator.validate(inp=_make_input(command=self.COMMAND))
+
+        assert result is not None
+        assert "gog-global-flags-first" in result.message
+        assert "after the subcommand path" in result.message
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gog --version",
+            "gog --help",
+            "gog chat messages list spaces/AAA -a me@example.com --readonly --json",
+        ],
+    )
+    def test_stays_silent(self, validator: SkillRedirectValidator, command: str) -> None:
+        assert validator.validate(inp=_make_input(command=command)) is None
+
+    def test_a_blocking_rule_still_wins_over_a_hint(
+        self, validator: SkillRedirectValidator
+    ) -> None:
+        result = validator.validate(inp=_make_input(command="git push --force origin main"))
+
+        assert isinstance(result, HookResult)
+
+    def test_a_hint_rule_without_advice_stays_silent(
+        self, validator: SkillRedirectValidator, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import dev10x.core.validators.skill_redirect as mod
+
+        config, _engine = _load_config()
+        mute = MatchingRule(
+            name="mute-hint",
+            hook_block=False,
+            live_hint=True,
+            patterns=["^gog\\s+-a"],
+            compensations=[Compensation(type="use-alternative", description="   ")],
+        )
+        monkeypatch.setattr(mod, "_CONFIG", config)
+        monkeypatch.setattr(mod, "_ENGINE", RuleEngine(hint_rules=[mute]))
+
+        assert validator.validate(inp=_make_input(command=self.COMMAND)) is None
 
 
 # Make _YAML_PATH accessible for tests above

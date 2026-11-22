@@ -43,7 +43,7 @@
         {
           "dimension": "command-identification",
           "check": "behavioral",
-          "signal": "recommends_correct_skill — Output recommends dev10x:k8s as the replacement skill"
+          "signal": "recommends_correct_skill — Output recommends dev10x-infra:k8s as the replacement skill"
         },
         {
           "dimension": "command-identification",
@@ -84,7 +84,7 @@
         {
           "dimension": "command-identification",
           "check": "behavioral",
-          "signal": "recommends_git_skill — Output recommends dev10x:git as the replacement"
+          "signal": "recommends_git_skill — Output recommends dev10x-coding:git as the replacement"
         }
       ]
     },
@@ -104,7 +104,7 @@
           "dimension": "follow-up-retry-gate",
           "check": "tool_parameters",
           "tool": "AskUserQuestion",
-          "signal": "offers_invoke_recommended_skill — Options include invoking the recommended skill (e.g., dev10x:gh-pr-monitor) as the Recommended choice"
+          "signal": "offers_invoke_recommended_skill — Options include invoking the recommended skill (e.g., dev10x-coding:gh-pr-monitor) as the Recommended choice"
         },
         {
           "dimension": "follow-up-retry-gate",
@@ -316,8 +316,8 @@
     ],
     "should_not_trigger": [
       "Agent is already using skills correctly",
-      "User is asking about how to create a new skill (use dev10x:skill-create)",
-      "User wants to list available skills (use dev10x:skill-index)",
+      "User is asking about how to create a new skill (use dev10x-teach:skill-create)",
+      "User wants to list available skills (use dev10x-teach:skill-index)",
       "The CLI command has no skill or MCP equivalent"
     ]
   }

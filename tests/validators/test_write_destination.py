@@ -5,13 +5,13 @@ from __future__ import annotations
 from pathlib import Path, PurePosixPath
 
 import pytest
-from dev10x.domain.dev10x_paths import Dev10xConfigDir
-from dev10x.validators.write_destination import (
+
+from dev10x.core.domain import HookResult
+from dev10x.core.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.core.validators.write_destination import (
     WriteDestinationValidator,
     _destinations,
 )
-
-from dev10x.domain import HookResult
 from tests.fakers import BashHookInputFaker
 
 REPO = "/work/dx/repo"
@@ -32,7 +32,7 @@ def synthetic_root(monkeypatch: pytest.MonkeyPatch) -> None:
     exercises the real resolution.
     """
     monkeypatch.setattr(
-        "dev10x.validators.write_destination._working_tree",
+        "dev10x.core.validators.write_destination._working_tree",
         lambda *, cwd: PurePosixPath(cwd),
     )
 
@@ -72,6 +72,16 @@ class TestBlocksWritesIntoTheWorkingTree:
             "out=$(cp /tmp/x docs/x.py)",
             'echo "$(tee docs/x.py)"',
             "result=`cp /tmp/x docs/x.py`",
+            # A substitution keeps its operand slot (GH-1876), so the
+            # destination after it is still the last operand.
+            "cp $(find /tmp -name x.py) docs/x.py",
+            "mv `cat /tmp/list` docs/x.py",
+            "install -m $(cat /tmp/mode) /tmp/a.conf docs/a.conf",
+            "cp /tmp/x docs/$(date).py",
+            "cp /tmp/x docs/x.py$(:)",
+            "cp /tmp/x $(pwd)docs/x.py",
+            "$(true) cp /tmp/x docs/x.py",
+            ">/tmp/o$(date) cp /tmp/x docs/x.py",
             # `..` must be normalised before comparing, or a traversal
             # that lands back inside the tree reads as outside.
             "cp /tmp/x docs/../src/x.py",
@@ -598,4 +608,26 @@ class TestMalformedInput:
 
     def test_an_empty_segment_names_no_destination(self) -> None:
         """Defensive guard — ``_segments`` filters blanks, so this is direct."""
-        assert _destinations(segment="") == ("", [])
+        assert _destinations(tokens=[]) == ("", [])
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo 'a;cp /tmp/x docs/x.py'",
+            "rg 'cp x docs/y.py' src",
+        ],
+        ids=["quoted-separator", "quoted-writer"],
+    )
+    def test_a_quoted_operator_does_not_split_a_command(
+        self, validator: WriteDestinationValidator, command: str
+    ) -> None:
+        """GH-1800: the shared segmenter keeps a quoted `;` inside its argument."""
+        assert validator.validate(_make_input(command=command)) is None
+
+    def test_a_remote_body_is_not_judged_against_this_checkout(
+        self, validator: WriteDestinationValidator
+    ) -> None:
+        """GH-1800: `ssh host cp …` writes on another filesystem."""
+        result = validator.validate(_make_input(command="ssh host 'cp /tmp/x docs/x.py'"))
+
+        assert result is None

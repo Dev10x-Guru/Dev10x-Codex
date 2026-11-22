@@ -87,6 +87,38 @@
       "title": "audit_extract_sessionArguments",
       "type": "object"
     },
+    "audit_handoff_report": {
+      "properties": {
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "pr_state": {
+          "additionalProperties": true,
+          "title": "Pr State",
+          "type": "object"
+        },
+        "report": {
+          "additionalProperties": true,
+          "title": "Report",
+          "type": "object"
+        }
+      },
+      "required": [
+        "report",
+        "pr_state"
+      ],
+      "title": "audit_handoff_reportArguments",
+      "type": "object"
+    },
     "audit_hook_log_path": {
       "properties": {},
       "title": "audit_hook_log_pathArguments",
@@ -202,6 +234,43 @@
       "title": "background_preambleArguments",
       "type": "object"
     },
+    "bot_review_status": {
+      "properties": {
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "pr_number": {
+          "title": "Pr Number",
+          "type": "integer"
+        },
+        "repo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repo"
+        }
+      },
+      "required": [
+        "pr_number"
+      ],
+      "title": "bot_review_statusArguments",
+      "type": "object"
+    },
     "candidate_rules_report": {
       "properties": {
         "cwd": {
@@ -243,6 +312,149 @@
         }
       },
       "title": "candidate_rules_reportArguments",
+      "type": "object"
+    },
+    "chat_queue_ack": {
+      "properties": {
+        "claimer": {
+          "title": "Claimer",
+          "type": "string"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "item_id": {
+          "title": "Item Id",
+          "type": "integer"
+        },
+        "result": {
+          "default": "",
+          "title": "Result",
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "claimer"
+      ],
+      "title": "chat_queue_ackArguments",
+      "type": "object"
+    },
+    "chat_queue_claim": {
+      "properties": {
+        "claimer": {
+          "title": "Claimer",
+          "type": "string"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "kind": {
+          "default": "reply",
+          "title": "Kind",
+          "type": "string"
+        },
+        "lease_seconds": {
+          "default": 900,
+          "title": "Lease Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "claimer"
+      ],
+      "title": "chat_queue_claimArguments",
+      "type": "object"
+    },
+    "chat_queue_list": {
+      "properties": {
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "limit": {
+          "default": 20,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        }
+      },
+      "title": "chat_queue_listArguments",
+      "type": "object"
+    },
+    "chat_queue_reply": {
+      "properties": {
+        "claimer": {
+          "title": "Claimer",
+          "type": "string"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "item_id": {
+          "title": "Item Id",
+          "type": "integer"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "claimer",
+        "text"
+      ],
+      "title": "chat_queue_replyArguments",
       "type": "object"
     },
     "check_top_level_comments": {
@@ -776,6 +988,36 @@
         "ticket_id"
       ],
       "title": "detect_trackerArguments",
+      "type": "object"
+    },
+    "find_fixup_target": {
+      "properties": {
+        "base": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Base"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        }
+      },
+      "title": "find_fixup_targetArguments",
       "type": "object"
     },
     "gchat_watch_arm": {
@@ -2244,6 +2486,11 @@
           "title": "Dry Run",
           "type": "boolean"
         },
+        "remember": {
+          "default": false,
+          "title": "Remember",
+          "type": "boolean"
+        },
         "rule": {
           "title": "Rule",
           "type": "string"
@@ -3264,6 +3511,82 @@
       "title": "pr_review_editArguments",
       "type": "object"
     },
+    "pr_wait": {
+      "properties": {
+        "bot": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bot"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "max_polls": {
+          "default": 40,
+          "title": "Max Polls",
+          "type": "integer"
+        },
+        "poll_interval": {
+          "default": 30,
+          "title": "Poll Interval",
+          "type": "integer"
+        },
+        "pr_number": {
+          "title": "Pr Number",
+          "type": "integer"
+        },
+        "repo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repo"
+        },
+        "since_sha": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Since Sha"
+        },
+        "until": {
+          "title": "Until",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pr_number",
+        "until"
+      ],
+      "title": "pr_waitArguments",
+      "type": "object"
+    },
     "pre_pr_checks": {
       "properties": {
         "base_branch": {
@@ -3383,6 +3706,68 @@
         "base_ref"
       ],
       "title": "rebase_groomArguments",
+      "type": "object"
+    },
+    "reconcile_fixes_links": {
+      "properties": {
+        "acknowledge": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Acknowledge"
+        },
+        "base": {
+          "title": "Base",
+          "type": "string"
+        },
+        "body": {
+          "title": "Body",
+          "type": "string"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "head": {
+          "default": "HEAD",
+          "title": "Head",
+          "type": "string"
+        },
+        "repo_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repo Dir"
+        }
+      },
+      "required": [
+        "body",
+        "base"
+      ],
+      "title": "reconcile_fixes_linksArguments",
       "type": "object"
     },
     "record_rule_feedback": {
@@ -3656,6 +4041,71 @@
         }
       },
       "title": "resolve_review_threadArguments",
+      "type": "object"
+    },
+    "review_readiness_audit": {
+      "properties": {
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "limit": {
+          "default": 20,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "pr_number": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pr Number"
+        },
+        "repo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Repo"
+        }
+      },
+      "title": "review_readiness_auditArguments",
+      "type": "object"
+    },
+    "review_stamp_write": {
+      "properties": {
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        }
+      },
+      "title": "review_stamp_writeArguments",
       "type": "object"
     },
     "rule_confidence_report": {
@@ -4328,6 +4778,108 @@
         }
       },
       "title": "verify_pr_stateArguments",
+      "type": "object"
+    },
+    "wait_for": {
+      "properties": {
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "expect_status": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expect Status"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pattern"
+        },
+        "poll_interval": {
+          "default": 2.0,
+          "title": "Poll Interval",
+          "type": "number"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "timeout": {
+          "default": 300,
+          "title": "Timeout",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "target"
+      ],
+      "title": "wait_forArguments",
+      "type": "object"
+    },
+    "worktree_prune_candidates": {
+      "properties": {
+        "base": {
+          "default": "develop",
+          "title": "Base",
+          "type": "string"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cwd"
+        },
+        "paths": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Paths"
+        }
+      },
+      "title": "worktree_prune_candidatesArguments",
       "type": "object"
     }
   },

@@ -19,7 +19,8 @@ from dev10x.core.config.fragments import discover_fragments, load_merged, plugin
 from dev10x.core.plugin_map import PLUGIN_MAP_PATH, load_plugin_map
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-LIB = REPO_ROOT / "skills" / "skill-index" / "scripts" / "lib-families.sh"
+SHIPPED_SKILL_DIR = REPO_ROOT / "plugins" / "teach" / "skills" / "skill-index"
+LIB = SHIPPED_SKILL_DIR / "scripts" / "lib-families.sh"
 SHELL_TIMEOUT_SECONDS = 60
 
 pytestmark = pytest.mark.skipif(
@@ -129,25 +130,23 @@ class TestMergeFamilies:
         assert yaml.safe_load(output.read_text()) == expected
 
 
-SHIPPED_SKILL_DIR = REPO_ROOT / "skills" / "skill-index"
-
 #: The pre-split display_map minus the entries that named no Dev10x skill
 #: (`logs`, `triage-sentry`, `app-db`) and the inverted
 #: `dev10x:investigate: investigate`, which resolved to no key (GH-1589).
 EXPECTED_DISPLAY_MAP = {
-    "commit": "dev10x:git-commit",
-    "commit:split": "dev10x:git-commit-split",
-    "commit:fixup": "dev10x:git-fixup",
-    "commit:to-new-ticket": "dev10x:git-promote",
-    "branch:groom": "dev10x:git-groom",
-    "pr:create": "dev10x:gh-pr-create",
-    "pr:respond": "dev10x:gh-pr-respond",
-    "pr:monitor": "dev10x:gh-pr-monitor",
-    "pr:request-review": "dev10x:gh-pr-request-review",
-    "pr:triage": "dev10x:gh-pr-triage",
-    "pr:comment-fixup": "dev10x:gh-pr-fixup",
-    "ticket:work-on": "dev10x:work-on",
-    "release-notes": "dev10x:release-notes",
+    "commit": "dev10x-coding:git-commit",
+    "commit:split": "dev10x-coding:git-commit-split",
+    "commit:fixup": "dev10x-coding:git-fixup",
+    "commit:to-new-ticket": "dev10x-coding:git-promote",
+    "branch:groom": "dev10x-coding:git-groom",
+    "pr:create": "dev10x-coding:gh-pr-create",
+    "pr:respond": "dev10x-coding:gh-pr-respond",
+    "pr:monitor": "dev10x-coding:gh-pr-monitor",
+    "pr:request-review": "dev10x-coding:gh-pr-request-review",
+    "pr:triage": "dev10x-coding:gh-pr-triage",
+    "pr:comment-fixup": "dev10x-coding:gh-pr-fixup",
+    "ticket:work-on": "dev10x-coding:work-on",
+    "release-notes": "dev10x-coding:release-notes",
 }
 
 #: Family order in SKILLS.md: core first, then plugins.yaml order.
@@ -158,6 +157,7 @@ EXPECTED_FAMILIES = {
     "Meta": "teach",
     "Session": "tasks",
     "Scoping": "scoping",
+    "Diagrams": "scoping",
     "Pipeline": "coding",
     "Git": "coding",
     "PR": "coding",
@@ -166,7 +166,7 @@ EXPECTED_FAMILIES = {
     "Reports": "coding",
 }
 
-DEV10X_PREFIX = "dev10x:"
+DEV10X_PLUGIN_NAMES = frozenset(load_plugin_map().known_plugin_names())
 
 
 def _shipped_family_files() -> list[tuple[str, Path]]:
@@ -179,9 +179,10 @@ def _shipped_family_files() -> list[tuple[str, Path]]:
 
 
 def _skill_directory(*, name: str) -> str:
-    # A name outside the dev10x: namespace keeps its full spelling, which
+    # A name outside every Dev10x plugin keeps its full spelling, which
     # names no skill directory, so the ownership test below reports it.
-    return name.removeprefix(DEV10X_PREFIX) if name.startswith(DEV10X_PREFIX) else name
+    plugin, _, skill = name.partition(":")
+    return skill if plugin in DEV10X_PLUGIN_NAMES else name
 
 
 def _family_members() -> list[tuple[str, str, str]]:
@@ -248,3 +249,50 @@ class TestPluginSkillDirs:
     def test_an_unresolved_dev10x_dir_lists_nothing(self) -> None:
         stdout = _shell_stdout(script='plugin_skill_dirs "$1"', args=[""])
         assert stdout == ""
+
+
+def _core(*, root: Path) -> Path:
+    (root / "src" / "dev10x" / "core").mkdir(parents=True)
+    (root / "src" / "dev10x" / "core" / "plugins.yaml").write_text("plugins: {}\n")
+    (root / "bin").mkdir()
+    (root / "bin" / "require-tool.sh").write_text("")
+    return root
+
+
+class TestCoreRoot:
+    """GH-1568: skill-index left core, so its scripts find core's bin/ and
+    plugin map wherever dev10x-teach sits."""
+
+    def test_pre_split_core_install_is_its_own_core(self, tmp_path: Path) -> None:
+        root = _core(root=tmp_path / "dev10x" / "0.115.0")
+
+        assert _shell_stdout(script='core_root "$1"', args=[str(root)]).strip() == str(root)
+
+    def test_checkout_holds_the_satellite_under_plugins(self, tmp_path: Path) -> None:
+        repo = _core(root=tmp_path / "repo")
+        teach = repo / "plugins" / "teach"
+        teach.mkdir(parents=True)
+
+        assert _shell_stdout(script='core_root "$1"', args=[str(teach)]).strip() == str(repo)
+
+    def test_installed_satellite_reads_core_beside_it_at_its_newest_version(
+        self, tmp_path: Path
+    ) -> None:
+        publisher = tmp_path / "cache" / "Dev10x-Guru"
+        _core(root=publisher / "dev10x" / "0.9.0")
+        newest = _core(root=publisher / "dev10x" / "0.10.0")
+        teach = publisher / "dev10x-teach" / "0.10.0"
+        teach.mkdir(parents=True)
+
+        assert _shell_stdout(script='core_root "$1"', args=[str(teach)]).strip() == str(newest)
+
+    def test_fails_without_core(self, tmp_path: Path) -> None:
+        teach = tmp_path / "dev10x-teach" / "0.10.0"
+        teach.mkdir(parents=True)
+
+        assert _shell(script='core_root "$1"', args=[str(teach)]).returncode == 1
+
+    def test_the_repo_satellite_resolves_to_the_repo(self) -> None:
+        teach = REPO_ROOT / "plugins" / "teach"
+
+        assert _shell_stdout(script='core_root "$1"', args=[str(teach)]).strip() == str(REPO_ROOT)

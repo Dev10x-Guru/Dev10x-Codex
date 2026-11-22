@@ -10,22 +10,24 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import subprocess
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from dev10x.domain.common.repository_ref import RepositoryRef
-from dev10x.domain.common.result import ErrorResult, SuccessResult, err, ok
+
+from dev10x.core.domain.common.repository_ref import RepositoryRef
+from dev10x.core.domain.common.result import ErrorResult, SuccessResult, err, ok
+from tests.fakers.process import completed as _completed
 
 cli_server = pytest.importorskip("dev10x.mcp.server_cli", reason="mcp not installed")
 
-gh = pytest.importorskip("dev10x.github", reason="dev10x not installed")
+gh = pytest.importorskip("dev10x.coding.github", reason="dev10x not installed")
+gateway = pytest.importorskip("dev10x.core.github._gateway", reason="dev10x not installed")
 
 
 @pytest.fixture
 def mock_resolve_repo():
     with patch.object(
-        gh._gateway,
+        gateway,
         "_resolve_repo",
         new_callable=AsyncMock,
         return_value=ok(RepositoryRef(owner="owner", name="repo")),
@@ -33,23 +35,9 @@ def mock_resolve_repo():
         yield mock
 
 
-def _completed(
-    *,
-    returncode: int = 0,
-    stdout: str = "",
-    stderr: str = "",
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(
-        args=[],
-        returncode=returncode,
-        stdout=stdout,
-        stderr=stderr,
-    )
-
-
 class TestDetectRepo:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_returns_repo_on_success(
         self,
         mock_run: AsyncMock,
@@ -61,7 +49,7 @@ class TestDetectRepo:
         assert result == "Dev10x-Guru/dev10x-claude"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_returns_none_on_failure(
         self,
         mock_run: AsyncMock,
@@ -75,7 +63,7 @@ class TestDetectRepo:
 
 class TestGhApi:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_builds_get_command(
         self,
         mock_run: AsyncMock,
@@ -91,7 +79,7 @@ class TestGhApi:
         assert "-X" not in cmd
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_adds_method_for_non_get(
         self,
         mock_run: AsyncMock,
@@ -106,7 +94,7 @@ class TestGhApi:
         assert cmd[post_idx + 1] == "POST"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_adds_jq_filter(
         self,
         mock_run: AsyncMock,
@@ -121,7 +109,7 @@ class TestGhApi:
         assert cmd[jq_idx + 1] == ".name"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_handles_string_fields(
         self,
         mock_run: AsyncMock,
@@ -140,7 +128,7 @@ class TestGhApi:
         assert cmd[f_idx + 1] == "title=My PR"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_handles_int_fields(
         self,
         mock_run: AsyncMock,
@@ -159,7 +147,7 @@ class TestGhApi:
         assert cmd[f_idx + 1] == "count=42"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_handles_list_fields(
         self,
         mock_run: AsyncMock,
@@ -196,7 +184,7 @@ class TestResolveRepo:
 
     @pytest.mark.asyncio
     @patch(
-        "dev10x.github._gateway._detect_repo",
+        "dev10x.core.github._gateway._detect_repo",
         new_callable=AsyncMock,
         return_value="detected/repo",
     )
@@ -210,7 +198,7 @@ class TestResolveRepo:
         assert result.value == RepositoryRef(owner="detected", name="repo")
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._detect_repo", new_callable=AsyncMock, return_value=None)
+    @patch("dev10x.core.github._gateway._detect_repo", new_callable=AsyncMock, return_value=None)
     async def test_returns_error_when_detection_fails(
         self,
         _mock: AsyncMock,
@@ -223,7 +211,7 @@ class TestResolveRepo:
 
 class TestDetectTracker:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_returns_parsed_output_on_success(
         self,
         mock_run: AsyncMock,
@@ -238,7 +226,7 @@ class TestDetectTracker:
         assert result["TICKET_NUMBER"] == "15"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_run: AsyncMock,
@@ -252,7 +240,7 @@ class TestDetectTracker:
 
 class TestMktmp:
     @pytest.mark.asyncio
-    @patch("dev10x.utilities.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.utilities.async_run_script", new_callable=AsyncMock)
     async def test_returns_path_without_creating_file_by_default(
         self,
         mock_run: AsyncMock,
@@ -267,7 +255,7 @@ class TestMktmp:
         assert "-d" not in called_args
 
     @pytest.mark.asyncio
-    @patch("dev10x.utilities.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.utilities.async_run_script", new_callable=AsyncMock)
     async def test_passes_create_flag_when_requested(
         self,
         mock_run: AsyncMock,
@@ -286,7 +274,7 @@ class TestMktmp:
         assert "-d" not in called_args
 
     @pytest.mark.asyncio
-    @patch("dev10x.utilities.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.utilities.async_run_script", new_callable=AsyncMock)
     async def test_creates_temp_directory(
         self,
         mock_run: AsyncMock,
@@ -301,7 +289,7 @@ class TestMktmp:
         assert "--create" not in called_args
 
     @pytest.mark.asyncio
-    @patch("dev10x.utilities.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.utilities.async_run_script", new_callable=AsyncMock)
     async def test_directory_mode_ignores_create_flag(
         self,
         mock_run: AsyncMock,
@@ -320,7 +308,7 @@ class TestMktmp:
         assert "--create" not in called_args
 
     @pytest.mark.asyncio
-    @patch("dev10x.utilities.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.utilities.async_run_script", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_run: AsyncMock,
@@ -332,7 +320,7 @@ class TestMktmp:
         assert "error" in result
 
     @pytest.mark.asyncio
-    @patch("dev10x.utilities.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.utilities.async_run_script", new_callable=AsyncMock)
     async def test_passes_cwd_to_underlying_script(
         self,
         mock_run: AsyncMock,
@@ -355,7 +343,7 @@ class TestMktmp:
 
 class TestIssueCreate:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_creates_issue_with_title_only(
         self,
         mock_run: AsyncMock,
@@ -370,7 +358,7 @@ class TestIssueCreate:
         assert result["title"] == "Fix bug"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_creates_issue_with_body_and_labels(
         self,
         mock_run: AsyncMock,
@@ -389,7 +377,7 @@ class TestIssueCreate:
         assert result["number"] == 456
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_run: AsyncMock,
@@ -401,7 +389,7 @@ class TestIssueCreate:
         assert "error" in result
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_falls_back_to_key_value_on_bad_json(
         self,
         mock_run: AsyncMock,
@@ -413,7 +401,7 @@ class TestIssueCreate:
         assert result["NUMBER"] == "789"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_creates_issue_with_milestone(
         self,
         mock_run: AsyncMock,
@@ -436,7 +424,7 @@ class TestIssueCreate:
 
 class TestPrDetect:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_detects_pr_from_number(
         self,
         mock_run: AsyncMock,
@@ -450,7 +438,7 @@ class TestPrDetect:
         assert "PR_NUMBER" in result
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_handles_detection_error(
         self,
         mock_run: AsyncMock,
@@ -464,7 +452,7 @@ class TestPrDetect:
 
 class TestNextWorktreeName:
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_calculates_next_worktree_number(
         self,
         mock_run: AsyncMock,
@@ -476,7 +464,7 @@ class TestNextWorktreeName:
         assert "path" in result
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_handles_error_in_calculation(
         self,
         mock_run: AsyncMock,
@@ -490,7 +478,7 @@ class TestNextWorktreeName:
 
 class TestSetupAliases:
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_sets_up_git_aliases(
         self,
         mock_run: AsyncMock,
@@ -503,7 +491,7 @@ class TestSetupAliases:
         assert result.get("success") is True
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_handles_alias_setup_error(
         self,
         mock_run: AsyncMock,
@@ -517,7 +505,7 @@ class TestSetupAliases:
 
 class TestVerifyPrState:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_verifies_pr_state_before_creation(
         self,
         mock_run: AsyncMock,
@@ -531,7 +519,7 @@ class TestVerifyPrState:
         assert isinstance(result, dict)
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_blocks_pr_on_protected_branch(
         self,
         mock_run: AsyncMock,
@@ -548,7 +536,7 @@ class TestVerifyPrState:
 
 class TestPrePrChecks:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_runs_quality_checks_successfully(
         self,
         mock_run: AsyncMock,
@@ -561,7 +549,7 @@ class TestPrePrChecks:
         assert result["output"] == "All checks passed"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_reports_check_failures(
         self,
         mock_run: AsyncMock,
@@ -576,7 +564,7 @@ class TestPrePrChecks:
 
 class TestRebaseGroom:
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_rebases_and_grooms_commits(
         self,
         mock_run: AsyncMock,
@@ -590,7 +578,7 @@ class TestRebaseGroom:
 
 class TestCreateWorktree:
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_creates_worktree(
         self,
         mock_run: AsyncMock,
@@ -604,7 +592,7 @@ class TestCreateWorktree:
         assert "WORKTREE_PATH" in result
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_handles_worktree_creation_error(
         self,
         mock_run: AsyncMock,
@@ -623,7 +611,7 @@ class TestPrCommentReply:
     """#G2b — MCP handler must propagate as_bot=True down to _gh_api."""
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api", new_callable=AsyncMock)
     async def test_propagates_as_bot_true_to_gh_api(
         self,
         mock_api: AsyncMock,
@@ -642,7 +630,7 @@ class TestPrCommentReply:
         assert mock_api.call_args.kwargs["as_bot"] is True
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api", new_callable=AsyncMock)
     async def test_returns_error_dict_on_api_failure(
         self,
         mock_api: AsyncMock,
@@ -661,7 +649,7 @@ class TestPrCommentReply:
 
 class TestPrComments:
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_comments", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pr_comments", new_callable=AsyncMock)
     async def test_delegates_to_github_module(
         self,
         mock_fn: AsyncMock,
@@ -675,7 +663,7 @@ class TestPrComments:
         assert mock_fn.call_args.kwargs["pr_number"] == 42
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_comments", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pr_comments", new_callable=AsyncMock)
     async def test_returns_error_dict_on_failure(
         self,
         mock_fn: AsyncMock,
@@ -689,10 +677,12 @@ class TestPrComments:
 
 class TestPostSummaryCommentMcp:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
-    @patch("dev10x.github._gateway._bot_env", new_callable=AsyncMock, return_value=None)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._bot_env", new_callable=AsyncMock, return_value=None)
     @patch(
-        "dev10x.github._gateway._detect_repo", new_callable=AsyncMock, return_value="owner/repo"
+        "dev10x.core.github._gateway._detect_repo",
+        new_callable=AsyncMock,
+        return_value="owner/repo",
     )
     async def test_posts_summary(
         self,
@@ -710,10 +700,12 @@ class TestPostSummaryCommentMcp:
         assert result["success"] is True
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
-    @patch("dev10x.github._gateway._bot_env", new_callable=AsyncMock, return_value=None)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._bot_env", new_callable=AsyncMock, return_value=None)
     @patch(
-        "dev10x.github._gateway._detect_repo", new_callable=AsyncMock, return_value="owner/repo"
+        "dev10x.core.github._gateway._detect_repo",
+        new_callable=AsyncMock,
+        return_value="owner/repo",
     )
     async def test_returns_error_on_failure(
         self,
@@ -731,7 +723,7 @@ class TestPostSummaryCommentMcp:
 @pytest.mark.usefixtures("stub_feature_branch", "stub_fixes_trailer_readback")
 class TestCreatePrMcp:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_creates_pr_returns_number_and_url(
         self,
         mock_run: AsyncMock,
@@ -753,7 +745,7 @@ class TestCreatePrMcp:
         assert "github.com" in result["url"]
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_run: AsyncMock,
@@ -774,7 +766,7 @@ class TestCreatePrMcp:
 
 class TestUpdatePrMcp:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_updates_body(
         self,
         mock_api: AsyncMock,
@@ -798,7 +790,7 @@ class TestPrLabelsMcp:
     """Durable per-PR signal surface for the clearance gate (GH-1008)."""
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_lists_current_label_names(
         self,
         mock_api: AsyncMock,
@@ -813,7 +805,7 @@ class TestPrLabelsMcp:
         assert mock_api.call_args.args[0] == "repos/owner/repo/issues/1/labels"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_adds_a_missing_label(
         self,
         mock_api: AsyncMock,
@@ -832,7 +824,7 @@ class TestPrLabelsMcp:
         assert mock_api.call_args.kwargs["fields"] == {"labels": ["review:cleared"]}
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_adding_a_present_label_is_a_no_op(
         self,
         mock_api: AsyncMock,
@@ -847,7 +839,7 @@ class TestPrLabelsMcp:
         assert mock_api.await_count == 1
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_removes_a_present_label(
         self,
         mock_api: AsyncMock,
@@ -870,7 +862,7 @@ class TestPrLabelsMcp:
         assert mock_api.call_args.kwargs["fields"] == {"labels": ["bug"]}
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_removing_many_labels_costs_one_call(
         self,
         mock_api: AsyncMock,
@@ -895,7 +887,7 @@ class TestPrLabelsMcp:
         assert mock_api.call_args.kwargs["fields"] == {"labels": ["keep"]}
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_removing_every_label_puts_an_empty_set(
         self,
         mock_api: AsyncMock,
@@ -912,7 +904,7 @@ class TestPrLabelsMcp:
         assert mock_api.call_args.kwargs["fields"] == {"labels": []}
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_removing_an_absent_label_does_not_404(
         self,
         mock_api: AsyncMock,
@@ -930,7 +922,7 @@ class TestPrLabelsMcp:
         assert mock_api.await_count == 1
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_write_falls_back_to_the_computed_set_on_garbage(
         self,
         mock_api: AsyncMock,
@@ -959,7 +951,7 @@ class TestPrLabelsMcp:
         assert "non-empty" in result["error"]
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_returns_error_when_the_read_fails(
         self,
         mock_api: AsyncMock,
@@ -972,7 +964,7 @@ class TestPrLabelsMcp:
         assert result["error"] == "not found"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_returns_error_on_unparseable_read(
         self,
         mock_api: AsyncMock,
@@ -985,7 +977,7 @@ class TestPrLabelsMcp:
         assert "unparseable" in result["error"]
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_returns_error_when_the_add_fails(
         self,
         mock_api: AsyncMock,
@@ -1001,7 +993,7 @@ class TestPrLabelsMcp:
         assert result["error"] == "forbidden"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_treats_a_non_array_body_as_no_labels(
         self,
         mock_api: AsyncMock,
@@ -1017,7 +1009,7 @@ class TestPrLabelsMcp:
     @pytest.mark.asyncio
     async def test_returns_error_when_the_repo_cannot_be_resolved(self) -> None:
         with patch.object(
-            gh._gateway,
+            gateway,
             "_resolve_repo",
             new_callable=AsyncMock,
             return_value=err("no repo detected"),
@@ -1027,7 +1019,7 @@ class TestPrLabelsMcp:
         assert result["error"] == "no repo detected"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_returns_error_when_the_remove_fails(
         self,
         mock_api: AsyncMock,
@@ -1050,7 +1042,7 @@ class TestIssueLabelsMcp:
     """Issue-side counterpart to pr_labels (GH-1322)."""
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_lists_current_label_names(
         self,
         mock_api: AsyncMock,
@@ -1065,7 +1057,7 @@ class TestIssueLabelsMcp:
         assert mock_api.call_args.args[0] == "repos/owner/repo/issues/1/labels"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_adds_a_missing_label(
         self,
         mock_api: AsyncMock,
@@ -1084,7 +1076,7 @@ class TestIssueLabelsMcp:
         assert mock_api.call_args.kwargs["fields"] == {"labels": ["needs-triage"]}
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_adding_a_present_label_is_a_no_op(
         self,
         mock_api: AsyncMock,
@@ -1098,7 +1090,7 @@ class TestIssueLabelsMcp:
         assert mock_api.await_count == 1
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_removes_a_present_label(
         self,
         mock_api: AsyncMock,
@@ -1117,7 +1109,7 @@ class TestIssueLabelsMcp:
         assert mock_api.call_args.args[0] == "repos/owner/repo/issues/1/labels/needs-triage"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_removing_an_absent_label_does_not_404(
         self,
         mock_api: AsyncMock,
@@ -1132,7 +1124,7 @@ class TestIssueLabelsMcp:
         assert mock_api.await_count == 1
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_write_falls_back_to_the_computed_set_on_garbage(
         self,
         mock_api: AsyncMock,
@@ -1161,7 +1153,7 @@ class TestIssueLabelsMcp:
         assert "non-empty" in result["error"]
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_returns_error_when_the_read_fails(
         self,
         mock_api: AsyncMock,
@@ -1176,7 +1168,7 @@ class TestIssueLabelsMcp:
     @pytest.mark.asyncio
     async def test_returns_error_when_the_repo_cannot_be_resolved(self) -> None:
         with patch.object(
-            gh._gateway,
+            gateway,
             "_resolve_repo",
             new_callable=AsyncMock,
             return_value=err("no repo detected"),
@@ -1186,7 +1178,7 @@ class TestIssueLabelsMcp:
         assert result["error"] == "no repo detected"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_returns_error_when_the_write_fails(
         self,
         mock_api: AsyncMock,
@@ -1202,7 +1194,7 @@ class TestIssueLabelsMcp:
         assert result["error"] == "forbidden"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_returns_error_when_the_delete_fails(
         self,
         mock_api: AsyncMock,
@@ -1220,7 +1212,7 @@ class TestIssueLabelsMcp:
 
 class TestPrReviewEditMcp:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_puts_review_body(
         self,
         mock_api: AsyncMock,
@@ -1238,7 +1230,7 @@ class TestPrReviewEditMcp:
         assert mock_api.call_args.kwargs["fields"] == {"body": "clean"}
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_api: AsyncMock,
@@ -1253,7 +1245,7 @@ class TestPrReviewEditMcp:
 
 class TestPrReadyMcp:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_marks_ready(
         self,
         mock_run: AsyncMock,
@@ -1276,7 +1268,7 @@ class TestPrReadyMcp:
         assert result["draft"] is False
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_undo_converts_back_to_draft(
         self,
         mock_run: AsyncMock,
@@ -1305,7 +1297,7 @@ class TestPrReadyMcp:
         assert result["draft"] is True
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_run: AsyncMock,
@@ -1320,7 +1312,7 @@ class TestPrReadyMcp:
 
 class TestMergePrMcp:
     @pytest.mark.asyncio
-    @patch("dev10x.github.merge_pr", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.merge_pr", new_callable=AsyncMock)
     async def test_delegates_to_github_module(
         self,
         mock_fn: AsyncMock,
@@ -1351,7 +1343,7 @@ class TestMergePrMcp:
         }
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.merge_pr", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.merge_pr", new_callable=AsyncMock)
     async def test_forwards_admin_and_auto_flags(
         self,
         mock_fn: AsyncMock,
@@ -1375,7 +1367,7 @@ class TestMergePrMcp:
         assert mock_fn.call_args.kwargs["auto"] is False
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.merge_pr", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.merge_pr", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_fn: AsyncMock,
@@ -1389,7 +1381,7 @@ class TestMergePrMcp:
 
 class TestGenerateCommitListMcp:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_returns_commit_list(
         self,
         mock_run: AsyncMock,
@@ -1402,7 +1394,7 @@ class TestGenerateCommitListMcp:
         assert "First" in result["commit_list"]
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_run: AsyncMock,
@@ -1416,7 +1408,7 @@ class TestGenerateCommitListMcp:
 
 class TestPushSafe:
     @pytest.mark.asyncio
-    @patch("dev10x.git.push_safe", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.push_safe", new_callable=AsyncMock)
     async def test_delegates_to_git_module(
         self,
         mock_fn: AsyncMock,
@@ -1429,7 +1421,7 @@ class TestPushSafe:
         assert mock_fn.call_args.kwargs["args"] == ["origin", "feature"]
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.push_safe", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.push_safe", new_callable=AsyncMock)
     async def test_returns_error_when_blocked(
         self,
         mock_fn: AsyncMock,
@@ -1443,7 +1435,7 @@ class TestPushSafe:
 
 class TestPrNotify:
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_notify", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pr_notify", new_callable=AsyncMock)
     async def test_delegates_with_action_prepare(
         self,
         mock_fn: AsyncMock,
@@ -1456,7 +1448,7 @@ class TestPrNotify:
         assert mock_fn.call_args.kwargs["action"] == "prepare"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_notify", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pr_notify", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_fn: AsyncMock,
@@ -1470,7 +1462,7 @@ class TestPrNotify:
 
 class TestCheckTopLevelComments:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_returns_findings_and_count(
         self,
         mock_run: AsyncMock,
@@ -1482,7 +1474,7 @@ class TestCheckTopLevelComments:
         assert result["count"] == 2
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_returns_error_on_invalid_json(
         self,
         mock_run: AsyncMock,
@@ -1494,7 +1486,7 @@ class TestCheckTopLevelComments:
         assert "error" in result
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_buckets_findings_by_severity(
         self,
         mock_run: AsyncMock,
@@ -1520,7 +1512,7 @@ class TestCheckTopLevelComments:
         assert [f["id"] for f in result["needs_disposition"]] == [2, 3]
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_returns_error_on_malformed_repo(
         self,
         mock_run: AsyncMock,
@@ -1534,7 +1526,7 @@ class TestCheckTopLevelComments:
 
 class TestUnresolvedThreadsMcp:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_returns_prs_and_count(
         self,
         mock_run: AsyncMock,
@@ -1546,7 +1538,7 @@ class TestUnresolvedThreadsMcp:
         assert result["count"] == 1
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_run: AsyncMock,
@@ -1560,7 +1552,7 @@ class TestUnresolvedThreadsMcp:
 
 class TestIssueGet:
     @pytest.mark.asyncio
-    @patch("dev10x.github.issue_get", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.issue_get", new_callable=AsyncMock)
     async def test_delegates_to_github_module(
         self,
         mock_fn: AsyncMock,
@@ -1573,7 +1565,7 @@ class TestIssueGet:
         assert mock_fn.call_args.kwargs == {"number": 1, "repo": "o/r"}
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.issue_get", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.issue_get", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_fn: AsyncMock,
@@ -1587,7 +1579,7 @@ class TestIssueGet:
 
 class TestPrGet:
     @pytest.mark.asyncio
-    @patch("dev10x.mcp.github_tools.gh.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.coding.mcp.github_tools.gh.pr_get", new_callable=AsyncMock)
     async def test_delegates_to_github_module(
         self,
         mock_fn: AsyncMock,
@@ -1611,7 +1603,7 @@ class TestPrGet:
         assert mock_fn.call_args.kwargs == {"number": 42, "repo": "o/r"}
 
     @pytest.mark.asyncio
-    @patch("dev10x.mcp.github_tools.gh.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.coding.mcp.github_tools.gh.pr_get", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_fn: AsyncMock,
@@ -1623,7 +1615,7 @@ class TestPrGet:
         assert "error" in result
 
     @pytest.mark.asyncio
-    @patch("dev10x.mcp.github_tools.gh.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.coding.mcp.github_tools.gh.pr_get", new_callable=AsyncMock)
     async def test_accepts_pr_number_alias(
         self,
         mock_fn: AsyncMock,
@@ -1637,7 +1629,7 @@ class TestPrGet:
         assert mock_fn.call_args.kwargs == {"number": 42, "repo": "o/r"}
 
     @pytest.mark.asyncio
-    @patch("dev10x.mcp.github_tools.gh.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.coding.mcp.github_tools.gh.pr_get", new_callable=AsyncMock)
     async def test_number_takes_precedence_over_alias(
         self,
         mock_fn: AsyncMock,
@@ -1657,7 +1649,7 @@ class TestPrGet:
 
 class TestPrClose:
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_close", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pr_close", new_callable=AsyncMock)
     async def test_delegates_to_github_module(
         self,
         mock_fn: AsyncMock,
@@ -1676,7 +1668,7 @@ class TestPrClose:
         }
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_close", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pr_close", new_callable=AsyncMock)
     async def test_passes_comment(
         self,
         mock_fn: AsyncMock,
@@ -1690,7 +1682,7 @@ class TestPrClose:
         assert mock_fn.call_args.kwargs["comment"] == "superseded by #900"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_close", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pr_close", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_fn: AsyncMock,
@@ -1704,7 +1696,7 @@ class TestPrClose:
 
 class TestPrList:
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_list", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pr_list", new_callable=AsyncMock)
     async def test_delegates_to_github_module(
         self,
         mock_fn: AsyncMock,
@@ -1722,7 +1714,7 @@ class TestPrList:
         }
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_list", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pr_list", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_fn: AsyncMock,
@@ -1736,7 +1728,7 @@ class TestPrList:
 
 class TestIssueClose:
     @pytest.mark.asyncio
-    @patch("dev10x.github.issue_close", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.issue_close", new_callable=AsyncMock)
     async def test_delegates_to_github_module(
         self,
         mock_fn: AsyncMock,
@@ -1758,7 +1750,7 @@ class TestIssueClose:
         }
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.issue_close", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.issue_close", new_callable=AsyncMock)
     async def test_passes_comment(
         self,
         mock_fn: AsyncMock,
@@ -1770,7 +1762,7 @@ class TestIssueClose:
         assert mock_fn.call_args.kwargs["comment"] == "thanks"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.issue_close", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.issue_close", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_fn: AsyncMock,
@@ -1784,7 +1776,7 @@ class TestIssueClose:
 
 class TestIssueReopen:
     @pytest.mark.asyncio
-    @patch("dev10x.github.issue_reopen", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.issue_reopen", new_callable=AsyncMock)
     async def test_delegates_to_github_module(
         self,
         mock_fn: AsyncMock,
@@ -1797,7 +1789,7 @@ class TestIssueReopen:
         assert mock_fn.call_args.kwargs == {"number": 1, "repo": "o/r"}
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.issue_reopen", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.issue_reopen", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_fn: AsyncMock,
@@ -1811,7 +1803,7 @@ class TestIssueReopen:
 
 class TestIssueComments:
     @pytest.mark.asyncio
-    @patch("dev10x.github.issue_comments", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.issue_comments", new_callable=AsyncMock)
     async def test_returns_comment_list(
         self,
         mock_fn: AsyncMock,
@@ -1823,7 +1815,7 @@ class TestIssueComments:
         assert result == {"comments": [{"id": 1}]}
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.issue_comments", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.issue_comments", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_fn: AsyncMock,
@@ -1837,7 +1829,7 @@ class TestIssueComments:
 
 class TestStartSplitRebase:
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_starts_rebase(
         self,
         mock_run: AsyncMock,
@@ -1849,7 +1841,7 @@ class TestStartSplitRebase:
         assert isinstance(result, dict)
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_run: AsyncMock,
@@ -1863,7 +1855,7 @@ class TestStartSplitRebase:
 
 class TestMassRewrite:
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_rewrites_with_config(
         self,
         mock_run: AsyncMock,
@@ -1875,7 +1867,7 @@ class TestMassRewrite:
         assert isinstance(result, dict)
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_run: AsyncMock,
@@ -1889,7 +1881,7 @@ class TestMassRewrite:
 
 class TestPlanSyncSetContext:
     @pytest.mark.asyncio
-    @patch("dev10x.plan.set_context", new_callable=AsyncMock)
+    @patch("dev10x.tasks.plan.set_context", new_callable=AsyncMock)
     async def test_delegates_to_plan_module(
         self,
         mock_fn: AsyncMock,
@@ -1904,7 +1896,7 @@ class TestPlanSyncSetContext:
 
 class TestPlanSyncJsonSummary:
     @pytest.mark.asyncio
-    @patch("dev10x.plan.json_summary", new_callable=AsyncMock)
+    @patch("dev10x.tasks.plan.json_summary", new_callable=AsyncMock)
     async def test_returns_summary(
         self,
         mock_fn: AsyncMock,
@@ -1918,7 +1910,7 @@ class TestPlanSyncJsonSummary:
 
 class TestPlanSyncArchive:
     @pytest.mark.asyncio
-    @patch("dev10x.plan.archive", new_callable=AsyncMock)
+    @patch("dev10x.tasks.plan.archive", new_callable=AsyncMock)
     async def test_archives_plan(
         self,
         mock_fn: AsyncMock,
@@ -1932,7 +1924,7 @@ class TestPlanSyncArchive:
 
 class TestGenerateSkillIndex:
     @pytest.mark.asyncio
-    @patch("dev10x.skill_index.generate_all", new_callable=AsyncMock)
+    @patch("dev10x.teach.skill_index.generate_all", new_callable=AsyncMock)
     async def test_generates_index(
         self,
         mock_fn: AsyncMock,
@@ -1945,7 +1937,7 @@ class TestGenerateSkillIndex:
         assert mock_fn.call_args.kwargs == {"force": False}
 
     @pytest.mark.asyncio
-    @patch("dev10x.skill_index.generate_all", new_callable=AsyncMock)
+    @patch("dev10x.teach.skill_index.generate_all", new_callable=AsyncMock)
     async def test_passes_force_flag(
         self,
         mock_fn: AsyncMock,
@@ -1959,7 +1951,7 @@ class TestGenerateSkillIndex:
 
 class TestAuditExtractSession:
     @pytest.mark.asyncio
-    @patch("dev10x.audit.extract_session", new_callable=AsyncMock)
+    @patch("dev10x.teach.audit.extract_session", new_callable=AsyncMock)
     async def test_extracts_session(
         self,
         mock_fn: AsyncMock,
@@ -1973,7 +1965,7 @@ class TestAuditExtractSession:
 
 class TestAuditAnalyzeActions:
     @pytest.mark.asyncio
-    @patch("dev10x.audit.analyze_actions", new_callable=AsyncMock)
+    @patch("dev10x.teach.audit.analyze_actions", new_callable=AsyncMock)
     async def test_analyzes_actions(
         self,
         mock_fn: AsyncMock,
@@ -1987,7 +1979,7 @@ class TestAuditAnalyzeActions:
 
 class TestAuditAnalyzePermissions:
     @pytest.mark.asyncio
-    @patch("dev10x.audit.analyze_permissions", new_callable=AsyncMock)
+    @patch("dev10x.teach.audit.analyze_permissions", new_callable=AsyncMock)
     async def test_analyzes_permissions(
         self,
         mock_fn: AsyncMock,
@@ -2001,7 +1993,7 @@ class TestAuditAnalyzePermissions:
 
 class TestAuditHookLogPath:
     @pytest.mark.asyncio
-    @patch("dev10x.audit.hook_log_path", new_callable=AsyncMock)
+    @patch("dev10x.teach.audit.hook_log_path", new_callable=AsyncMock)
     async def test_returns_log_path(
         self,
         mock_fn: AsyncMock,
@@ -2024,7 +2016,7 @@ class TestAuditHookLogPath:
 
 class TestAuditHookRecent:
     @pytest.mark.asyncio
-    @patch("dev10x.audit.hook_recent", new_callable=AsyncMock)
+    @patch("dev10x.teach.audit.hook_recent", new_callable=AsyncMock)
     async def test_returns_recent_records(
         self,
         mock_fn: AsyncMock,
@@ -2180,7 +2172,9 @@ class TestCwdParameterActivation:
     ) -> None:
         handler = getattr(cli_server, handler_name)
 
-        with patch("dev10x.subprocess_utils.use_cwd", side_effect=_noop_cwd_stub) as mock_use_cwd:
+        with patch(
+            "dev10x.core.subprocess_utils.use_cwd", side_effect=_noop_cwd_stub
+        ) as mock_use_cwd:
             with contextlib.suppress(Exception):
                 # Domain calls may fail without real subprocess/network;
                 # we only verify use_cwd is invoked with the right path.
@@ -2193,7 +2187,7 @@ class TestCwdParameterActivation:
 
 class TestPrIssueComment:
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_issue_comment", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pr_issue_comment", new_callable=AsyncMock)
     async def test_delegates_to_github_module(
         self,
         mock_fn: AsyncMock,
@@ -2214,7 +2208,7 @@ class TestPrIssueComment:
         }
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_issue_comment", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pr_issue_comment", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_fn: AsyncMock,
@@ -2226,7 +2220,7 @@ class TestPrIssueComment:
         assert "error" in result
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pr_issue_comment", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pr_issue_comment", new_callable=AsyncMock)
     async def test_forwards_repo_none_when_omitted(
         self,
         mock_fn: AsyncMock,
@@ -2240,7 +2234,7 @@ class TestPrIssueComment:
 
 class TestMinimizeComments:
     @pytest.mark.asyncio
-    @patch("dev10x.github.minimize_comments", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.minimize_comments", new_callable=AsyncMock)
     async def test_delegates_to_github_module(
         self,
         mock_fn: AsyncMock,
@@ -2261,7 +2255,7 @@ class TestMinimizeComments:
         }
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.minimize_comments", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.minimize_comments", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_fn: AsyncMock,
@@ -2273,7 +2267,7 @@ class TestMinimizeComments:
         assert "error" in result
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.minimize_comments", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.minimize_comments", new_callable=AsyncMock)
     async def test_forwards_default_classifier_outdated(
         self,
         mock_fn: AsyncMock,
@@ -2287,7 +2281,7 @@ class TestMinimizeComments:
 
 class TestRequestReview:
     @pytest.mark.asyncio
-    @patch("dev10x.github.request_review", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.request_review", new_callable=AsyncMock)
     async def test_delegates_to_github_module(
         self,
         mock_fn: AsyncMock,
@@ -2310,7 +2304,7 @@ class TestRequestReview:
         }
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.request_review", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.request_review", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_fn: AsyncMock,
@@ -2322,7 +2316,7 @@ class TestRequestReview:
         assert "error" in result
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.request_review", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.request_review", new_callable=AsyncMock)
     async def test_forwards_team_none_when_omitted(
         self,
         mock_fn: AsyncMock,
@@ -2336,7 +2330,7 @@ class TestRequestReview:
 
 class TestResolveReviewThread:
     @pytest.mark.asyncio
-    @patch("dev10x.github.resolve_review_thread", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.resolve_review_thread", new_callable=AsyncMock)
     async def test_delegates_to_github_module(
         self,
         mock_fn: AsyncMock,
@@ -2357,7 +2351,7 @@ class TestResolveReviewThread:
         }
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.resolve_review_thread", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.resolve_review_thread", new_callable=AsyncMock)
     async def test_returns_error_on_failure(
         self,
         mock_fn: AsyncMock,
@@ -2369,7 +2363,7 @@ class TestResolveReviewThread:
         assert "error" in result
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.resolve_review_thread", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.resolve_review_thread", new_callable=AsyncMock)
     async def test_accepts_comment_ids_instead_of_thread_ids(
         self,
         mock_fn: AsyncMock,
@@ -2390,7 +2384,7 @@ class TestResolveReviewThread:
 
 class TestIssueCreateLabelForwarding:
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_forwards_each_label_with_repeated_flag(
         self,
         mock_run: AsyncMock,
@@ -2408,7 +2402,7 @@ class TestIssueCreateLabelForwarding:
         assert call_args[label_indices[1] + 1] == "urgent"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_no_label_flag_when_labels_omitted(
         self,
         mock_run: AsyncMock,
@@ -2452,7 +2446,7 @@ DECORATED_DELEGATIONS: list[tuple[str, str, dict]] = [
 
 
 class TestDecoratedHandlerDelegation:
-    """GH-585 — @github_tool handlers delegate to dev10x.github and unwrap."""
+    """GH-585 — @github_tool handlers delegate to dev10x.coding.github and unwrap."""
 
     @pytest.mark.parametrize(
         "handler_name,gh_attr,kwargs",
@@ -2504,7 +2498,7 @@ class TestClusterReviewComments:
     @pytest.mark.asyncio
     async def test_delegates_to_review_patterns(self) -> None:
         with patch(
-            "dev10x.github.review_patterns.cluster_review_comments",
+            "dev10x.coding.github.review_patterns.cluster_review_comments",
             new_callable=AsyncMock,
         ) as mock_fn:
             mock_fn.return_value = ok({"patterns": [], "summary": {}})
@@ -2517,7 +2511,7 @@ class TestClusterReviewComments:
     @pytest.mark.asyncio
     async def test_propagates_error(self) -> None:
         with patch(
-            "dev10x.github.review_patterns.cluster_review_comments",
+            "dev10x.coding.github.review_patterns.cluster_review_comments",
             new_callable=AsyncMock,
         ) as mock_fn:
             mock_fn.return_value = err("boom")
@@ -2533,7 +2527,7 @@ class TestCandidateRulesReport:
     @pytest.mark.asyncio
     async def test_delegates_to_candidate_rules(self) -> None:
         with patch(
-            "dev10x.github.candidate_rules.candidate_rules_report",
+            "dev10x.coding.github.candidate_rules.candidate_rules_report",
             new_callable=AsyncMock,
         ) as mock_fn:
             mock_fn.return_value = ok(
@@ -2548,7 +2542,7 @@ class TestCandidateRulesReport:
     @pytest.mark.asyncio
     async def test_propagates_error(self) -> None:
         with patch(
-            "dev10x.github.candidate_rules.candidate_rules_report",
+            "dev10x.coding.github.candidate_rules.candidate_rules_report",
             new_callable=AsyncMock,
         ) as mock_fn:
             mock_fn.return_value = err("no repository specified")

@@ -9,10 +9,10 @@ import msgpack
 import yaml
 
 from dev10x.core.config.fragments import discover_fragments, load_merged, plugin_order
-from dev10x.domain.config_loader import ConfigLoader
-from dev10x.domain.documents.config_document import Config
-from dev10x.domain.file_locks import atomic_write_bytes
-from dev10x.domain.rules.validation_rule import (
+from dev10x.core.domain.config_loader import ConfigLoader
+from dev10x.core.domain.documents.config_document import Config
+from dev10x.core.domain.file_locks import atomic_write_bytes
+from dev10x.core.domain.rules.validation_rule import (
     Compensation,
     MatchingRule,
     MatchPosition,
@@ -135,6 +135,7 @@ def _dict_to_config(*, raw: dict[str, Any]) -> Config:
             except_=r.get("except_", []),
             compensations=[Compensation(**c) for c in r.get("compensations", [])],
             hook_block=r.get("hook_block", True),
+            live_hint=r.get("live_hint", False),
             reason=r.get("reason", ""),
             message=r.get("message", ""),
             related=r.get("related", []),

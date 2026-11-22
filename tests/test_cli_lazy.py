@@ -15,6 +15,7 @@ import pytest
 from dev10x.cli import cli
 
 EXPECTED_SUBCOMMANDS = {
+    "chatbus",
     "ci-review",
     "config",
     "deps",
@@ -25,6 +26,7 @@ EXPECTED_SUBCOMMANDS = {
     "hook",
     "init",
     "orchestration",
+    "overwatch",
     "permission",
     "platform",
     "playbook",
@@ -32,7 +34,6 @@ EXPECTED_SUBCOMMANDS = {
     "validate",
     "skill",
     "spec",
-    "supervisor",
     "usage",
     "watchdog",
 }

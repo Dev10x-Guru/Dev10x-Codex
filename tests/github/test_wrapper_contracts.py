@@ -16,15 +16,17 @@ boundary:
 from __future__ import annotations
 
 import inspect
-import subprocess
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from dev10x.domain.common.repository_ref import RepositoryRef
-from dev10x.domain.common.result import ErrorResult, SuccessResult, ok
 
-gh = pytest.importorskip("dev10x.github", reason="dev10x not installed")
+from dev10x.core.domain.common.repository_ref import RepositoryRef
+from dev10x.core.domain.common.result import ErrorResult, SuccessResult, ok
+from tests.fakers.process import completed as _completed
+
+gh = pytest.importorskip("dev10x.coding.github", reason="dev10x not installed")
+gateway = pytest.importorskip("dev10x.core.github._gateway", reason="dev10x not installed")
 
 _FULL_SHA = "0123456789abcdef0123456789abcdef01234567"
 
@@ -39,7 +41,7 @@ _PR_GET_SCRIPT = _REPO_ROOT / "skills/gh-context/scripts/gh-pr-get.sh"
 @pytest.fixture
 def mock_resolve_repo():
     with patch.object(
-        gh._gateway,
+        gateway,
         "_resolve_repo",
         new_callable=AsyncMock,
         return_value=ok(RepositoryRef(owner="owner", name="repo")),
@@ -47,39 +49,25 @@ def mock_resolve_repo():
         yield mock
 
 
-def _completed(
-    *,
-    returncode: int = 0,
-    stdout: str = "",
-    stderr: str = "",
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(
-        args=[],
-        returncode=returncode,
-        stdout=stdout,
-        stderr=stderr,
-    )
-
-
 @pytest.mark.usefixtures("stub_fixes_trailer_readback")
 class TestCreatePrAcceptsRepo:
     """GH-1269: the MCP signature omits the sibling wrappers' ``repo``."""
 
     def test_mcp_create_pr_declares_repo_parameter(self) -> None:
-        from dev10x.mcp import github_tools
+        from dev10x.coding.mcp import github_tools
 
         parameters = inspect.signature(github_tools.create_pr).parameters
         assert "repo" in parameters
 
     @pytest.mark.parametrize("tool_name", ["pr_get", "update_pr", "merge_pr", "create_pr"])
     def test_pr_wrappers_accept_repo_uniformly(self, tool_name: str) -> None:
-        from dev10x.mcp import github_tools
+        from dev10x.coding.mcp import github_tools
 
         parameters = inspect.signature(getattr(github_tools, tool_name)).parameters
         assert "repo" in parameters, f"{tool_name} breaks the repo= convention"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_repo_reaches_the_create_pr_script(
         self,
         mock_run_script: AsyncMock,
@@ -88,7 +76,7 @@ class TestCreatePrAcceptsRepo:
             stdout="https://github.com/owner/repo/pull/7\n7\n"
         )
 
-        with patch("dev10x.domain.git_context.GitContext") as mock_ctx:
+        with patch("dev10x.core.domain.git_context.GitContext") as mock_ctx:
             mock_ctx.return_value.branch = "feature/x"
             result = await gh.create_pr(
                 title="t",
@@ -120,13 +108,13 @@ class TestMergePrPinsTheVerifiedHead:
         assert "expected_head_sha" in parameters
 
     def test_mcp_merge_pr_declares_expected_head_sha(self) -> None:
-        from dev10x.mcp import github_tools
+        from dev10x.coding.mcp import github_tools
 
         parameters = inspect.signature(github_tools.merge_pr).parameters
         assert "expected_head_sha" in parameters
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_expected_head_sha_becomes_match_head_commit(
         self,
         mock_run: AsyncMock,
@@ -142,7 +130,7 @@ class TestMergePrPinsTheVerifiedHead:
         assert called_args[called_args.index("--match-head-commit") + 1] == _FULL_SHA
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_flag_absent_when_no_sha_pinned(
         self,
         mock_run: AsyncMock,
@@ -155,7 +143,7 @@ class TestMergePrPinsTheVerifiedHead:
         assert "--match-head-commit" not in mock_run.call_args.kwargs["args"]
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_payload_echoes_the_pinned_sha(
         self,
         mock_run: AsyncMock,
@@ -173,7 +161,7 @@ class TestMergePrPinsTheVerifiedHead:
         "sha",
         ["deadbeef", "deadbee", _FULL_SHA + "0", "g" * 40, "dead beef" * 5],
     )
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_abbreviated_sha_is_refused_before_any_call(
         self,
         mock_run: AsyncMock,
@@ -191,7 +179,7 @@ class TestMergePrPinsTheVerifiedHead:
         mock_resolve_repo.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_uppercase_sha_is_normalized(
         self,
         mock_run: AsyncMock,
@@ -223,7 +211,7 @@ class TestCreatePrAlwaysEmitsFixes:
         return mock_run_script.call_args.args[4]
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_issue_id_alone_still_yields_a_fixes_ref(
         self,
         mock_run_script: AsyncMock,
@@ -232,14 +220,14 @@ class TestCreatePrAlwaysEmitsFixes:
             stdout="https://github.com/owner/repo/pull/7\n7\n"
         )
 
-        with patch("dev10x.domain.git_context.GitContext") as mock_ctx:
+        with patch("dev10x.core.domain.git_context.GitContext") as mock_ctx:
             mock_ctx.return_value.branch = "feature/x"
             await gh.create_pr(title="t", issue_id="1245", job_story=_JOB_STORY)
 
         assert "1245" in self._fixes_arg(mock_run_script)
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_closes_members_become_fixes_refs(
         self,
         mock_run_script: AsyncMock,
@@ -249,7 +237,7 @@ class TestCreatePrAlwaysEmitsFixes:
             stdout="https://github.com/owner/repo/pull/7\n7\n"
         )
 
-        with patch("dev10x.domain.git_context.GitContext") as mock_ctx:
+        with patch("dev10x.core.domain.git_context.GitContext") as mock_ctx:
             mock_ctx.return_value.branch = "feature/x"
             await gh.create_pr(
                 title="t",
@@ -263,7 +251,7 @@ class TestCreatePrAlwaysEmitsFixes:
         assert "1226" in fixes_arg
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_explicit_fixes_url_still_wins(
         self,
         mock_run_script: AsyncMock,
@@ -273,7 +261,7 @@ class TestCreatePrAlwaysEmitsFixes:
         )
         url = "https://github.com/owner/repo/issues/99"
 
-        with patch("dev10x.domain.git_context.GitContext") as mock_ctx:
+        with patch("dev10x.core.domain.git_context.GitContext") as mock_ctx:
             mock_ctx.return_value.branch = "feature/x"
             await gh.create_pr(
                 title="t",
@@ -285,7 +273,7 @@ class TestCreatePrAlwaysEmitsFixes:
         assert url in self._fixes_arg(mock_run_script)
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_explicit_url_and_closes_both_survive(
         self,
         mock_run_script: AsyncMock,
@@ -296,7 +284,7 @@ class TestCreatePrAlwaysEmitsFixes:
         )
         url = "https://github.com/owner/repo/issues/99"
 
-        with patch("dev10x.domain.git_context.GitContext") as mock_ctx:
+        with patch("dev10x.core.domain.git_context.GitContext") as mock_ctx:
             mock_ctx.return_value.branch = "feature/x"
             await gh.create_pr(
                 title="t",
@@ -309,7 +297,7 @@ class TestCreatePrAlwaysEmitsFixes:
         assert self._fixes_arg(mock_run_script) == f"{url} #1251"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_self_motivated_prose_is_not_split(
         self,
         mock_run_script: AsyncMock,
@@ -319,7 +307,7 @@ class TestCreatePrAlwaysEmitsFixes:
             stdout="https://github.com/owner/repo/pull/7\n7\n"
         )
 
-        with patch("dev10x.domain.git_context.GitContext") as mock_ctx:
+        with patch("dev10x.core.domain.git_context.GitContext") as mock_ctx:
             mock_ctx.return_value.branch = "feature/x"
             await gh.create_pr(
                 title="t",

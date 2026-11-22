@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dev10x.domain import HookAllow, HookAsk, HookInput, HookResult
+from dev10x.core.domain import HookAllow, HookAsk, HookInput, HookResult
 
 
 class TestHookInputFromDict:
@@ -56,6 +56,15 @@ class TestHookAllow:
 
     def test_to_dict_message_preserved(self) -> None:
         assert HookAllow(message="auto-approved").to_dict()["message"] == "auto-approved"
+
+    def test_to_dict_reports_whether_it_decides(self) -> None:
+        """GH-1795: only a deciding allow skips the prompt."""
+        assert HookAllow(decides=True, rule_id="DX011").to_dict() == {
+            "message": "",
+            "decision": "allow",
+            "decides": True,
+            "rule_id": "DX011",
+        }
 
 
 class TestHookAsk:

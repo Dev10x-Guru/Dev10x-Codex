@@ -3,14 +3,20 @@
 When a Stage B step moves a skill from ``dev10x:<skill>`` to
 ``dev10x-<area>:<skill>``, it appends one row to ``SKILL_NAME_ALIASES``.
 ``dev10x config migrate-skill-names`` then rewrites the old name in the
-user's hand-edited files, and :func:`resolve_skill_alias` keeps the old
-name readable as a deprecated alias until the row's ``removed_in``. The
-register entry for ``SKILL_NAME_ALIASES`` in
+user's hand-edited files, and :func:`resolve_skill_alias` maps the old
+name to the new one until the row's ``removed_in``. While the table holds
+rows, a ``SKILL_NAME_ALIASES`` entry in
 :mod:`dev10x.core.domain.deprecations` must outlive every row.
 
-Stage A renames nothing, so the table ships empty; fixtures prove the
-mechanism. Every write takes the file's lock and lands atomically, and
-a second run finds nothing left to rewrite.
+The table is empty between extractions. The B1–B3 rows (``dev10x-qa``,
+``dev10x-infra``, ``dev10x-db``) shipped in 0.114.0 and 0.115.0 and were
+retired at 0.116.0 (GH-1865). B4 (GH-1567) adds the seven skills that moved
+to ``dev10x-comm``, B5 (GH-1568) the seven that moved to ``dev10x-teach``,
+B6 (GH-1569) the eight that moved to ``dev10x-tasks``, B7 (GH-1570) the
+nineteen that moved to ``dev10x-scoping`` and B9 (GH-1572) the forty that
+moved to ``dev10x-coding``; all five ship in 0.116.0, so their rows end two
+releases later. Every write takes the file's lock and
+lands atomically, and a second run finds nothing left to rewrite.
 """
 
 from __future__ import annotations
@@ -39,7 +45,111 @@ class SkillNameAlias:
         return _invocation(text=self.old), _invocation(text=self.new)
 
 
-SKILL_NAME_ALIASES: tuple[SkillNameAlias, ...] = ()
+EXTRACTION_ALIAS_REMOVED_IN = "0.118.0"
+
+_MOVED_IN_0_116_EXTRACTIONS: dict[str, tuple[str, ...]] = {
+    "dev10x-comm": (
+        "bus",
+        "gchat",
+        "gog",
+        "overwatch",
+        "slack",
+        "slack-setup",
+        "voice-channel",
+    ),
+    "dev10x-teach": (
+        "audit-file",
+        "context-audit",
+        "memory-maintenance",
+        "skill-audit",
+        "skill-audit-queue",
+        "skill-create",
+        "skill-index",
+    ),
+    "dev10x-tasks": (
+        "park",
+        "park-discover",
+        "park-remind",
+        "park-todo",
+        "plan-sync",
+        "reflect",
+        "session-tasks",
+        "session-wrap-up",
+    ),
+    "dev10x-scoping": (
+        "adr",
+        "adr-evaluate",
+        "artifact",
+        "ddd",
+        "diagram-bpmn",
+        "diagram-c4",
+        "diagram-sequence",
+        "estimate",
+        "jira",
+        "jtbd",
+        "linear",
+        "project-audit",
+        "project-scope",
+        "scope",
+        "spec-sync",
+        "spec-update",
+        "ticket-create",
+        "ticket-jtbd",
+        "ticket-scope",
+    ),
+    "dev10x-coding": (
+        "ci-review",
+        "fanout",
+        "foreman",
+        "gchat-review-request",
+        "gh-pr-bookmark",
+        "gh-pr-create",
+        "gh-pr-doctor",
+        "gh-pr-fixup",
+        "gh-pr-merge",
+        "gh-pr-monitor",
+        "gh-pr-request-review",
+        "gh-pr-respond",
+        "gh-pr-review",
+        "gh-pr-triage",
+        "gh-review-setup",
+        "git",
+        "git-alias-setup",
+        "git-branch-prune",
+        "git-commit",
+        "git-commit-split",
+        "git-fixup",
+        "git-groom",
+        "git-promote",
+        "git-worktree",
+        "git-worktree-prune",
+        "ide-normalize",
+        "investigate",
+        "py-mockito",
+        "py-test",
+        "py-test-flaky",
+        "py-uv",
+        "qa-scope",
+        "release-notes",
+        "request-review",
+        "review",
+        "review-fix",
+        "slack-review-request",
+        "ticket-branch",
+        "verify-acc-dod",
+        "work-on",
+    ),
+}
+
+SKILL_NAME_ALIASES: tuple[SkillNameAlias, ...] = tuple(
+    SkillNameAlias(
+        old=f"dev10x:{skill}",
+        new=f"{plugin}:{skill}",
+        removed_in=EXTRACTION_ALIAS_REMOVED_IN,
+    )
+    for plugin, skills in _MOVED_IN_0_116_EXTRACTIONS.items()
+    for skill in skills
+)
 
 
 @dataclass(frozen=True)

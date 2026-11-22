@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from dev10x.harness import HARNESS_ENV_VAR, Harness
+from dev10x.core.harness import HARNESS_ENV_VAR, Harness
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -21,10 +21,13 @@ UPSTREAM_TESTS_ASSERTING_CLAUDE_OUTPUT = frozenset(
 
 PLAN_SYNC_IS_OFF = "plan-sync writes are off in Dev10x-Codex (#13, #36)"
 SKILLS_INDEX_IS_OFF = "Codex SessionStart leaves out the Claude skills index"
+COMPACTION_IS_OFF = "Codex has no PreCompact event, so SessionStart leaves out compaction (#12)"
 
 UPSTREAM_TESTS_OF_CLAUDE_ONLY_FEATURES: dict[str, str] = {
     "tests/hooks/test_orchestrators.py::TestSkillsIndexWiring::"
     "test_orchestrator_includes_index_in_envelope": SKILLS_INDEX_IS_OFF,
+    "tests/hooks/test_orchestrators.py::TestCompactionRecovery::"
+    "test_compact_source_injects_recovery_context": COMPACTION_IS_OFF,
     "tests/mcp/test_cli_server.py::TestPlanSyncArchive::": PLAN_SYNC_IS_OFF,
     "tests/mcp/test_cli_server.py::TestPlanSyncSetContext::": PLAN_SYNC_IS_OFF,
     "tests/mcp/test_plan_tools.py::TestPlanSyncArchiveErrorContract::": PLAN_SYNC_IS_OFF,

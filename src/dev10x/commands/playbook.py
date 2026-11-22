@@ -15,12 +15,13 @@ import click
 import yaml
 
 from dev10x.core.config.fragments import FragmentError
-from dev10x.domain.plugin_root import resolve_plugin_root
-from dev10x.skills.playbook import (
+from dev10x.core.domain.plugin_root import resolve_plugin_root
+from dev10x.core.skills.playbook import (
     compare_playbooks,
+    default_path_in,
     find_user_playbooks,
+    installed_plugin_roots,
     load_plugin_default,
-    plugin_default_path,
     render_markdown_report,
 )
 
@@ -58,7 +59,7 @@ def _report_projects(
     check that cannot tell "found nothing" from "did not look" is the
     failure ADR-0026 exists to prevent.
     """
-    from dev10x.domain.project_match import (
+    from dev10x.core.domain.project_match import (
         MatchScheme,
         ProjectsStatus,
         describe,
@@ -128,8 +129,8 @@ def playbook_diff(*, skill_key: str | None, plugin_root: str | None) -> None:
             click.echo("No user playbook overrides found.")
         return
 
-    from dev10x.domain.common.result import SuccessResult
-    from dev10x.session.repo_address import resolve_name_with_owner
+    from dev10x.core.domain.common.result import SuccessResult
+    from dev10x.core.session.repo_address import resolve_name_with_owner
 
     address = resolve_name_with_owner()
     repo_target = address.value if isinstance(address, SuccessResult) else None
@@ -137,9 +138,10 @@ def playbook_diff(*, skill_key: str | None, plugin_root: str | None) -> None:
 
     findings_count = 0
     skipped: list[str] = []
+    plugin_roots = installed_plugin_roots(core_root=root)
     for override in overrides:
-        default_path = plugin_default_path(skill_key=override.skill_key, plugin_root=root)
-        default_doc = _load_default(skill_key=override.skill_key, plugin_roots=[root])
+        default_path = default_path_in(skill_key=override.skill_key, plugin_roots=plugin_roots)
+        default_doc = _load_default(skill_key=override.skill_key, plugin_roots=plugin_roots)
         if default_doc is None:
             skipped.append(override.skill_key)
             click.echo(

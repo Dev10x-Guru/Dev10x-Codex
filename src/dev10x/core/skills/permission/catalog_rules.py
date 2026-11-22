@@ -4,17 +4,24 @@ Everything here answers "which rule should exist?" or "does this rule
 cover that?": scanning plugin and user-skill scripts, building the Bash
 and Read rules for them, checking a settings file's coverage, collapsing
 retired upgrade-cleanup rules, and generalizing session-specific
-arguments. The writers in :mod:`dev10x.skills.permission.catalog_write`
+arguments. The writers in :mod:`dev10x.core.skills.permission.catalog_write`
 act on these answers. Split out of ``update_paths.py`` by GH-1432.
 """
 
+import fnmatch
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
-from dev10x.domain.common.allow_rule import AllowRule
-from dev10x.domain.common.mktmp_path import MKTMP_GENERALIZE_PATTERN
-from dev10x.skills.permission.catalog_load import extract_cache_publisher
+from dev10x.core.domain.common.allow_rule import AllowRule
+from dev10x.core.domain.common.mktmp_path import MKTMP_GENERALIZE_PATTERN
+from dev10x.core.paths import satellite_cache_dir, satellite_subdir
+from dev10x.core.plugin_map import PluginMap
+from dev10x.core.skills.permission.catalog_load import (
+    detect_latest_version,
+    extract_cache_publisher,
+)
 
 MCP_WILDCARD_PATTERN = re.compile(r"^mcp__plugin_[A-Za-z0-9]+_\*$")
 
@@ -43,13 +50,13 @@ def _expand_stale_wildcards(
         return []
 
     if catalog is None:
-        from dev10x.skills.permission.enumerate_mcp import discover_mcp_tools
+        from dev10x.core.skills.permission.enumerate_mcp import discover_mcp_tools
 
         catalog = discover_mcp_tools()
     if not catalog:
         return []
 
-    from dev10x.skills.permission.enumerate_mcp import _matches_wildcard
+    from dev10x.core.skills.permission.enumerate_mcp import _matches_wildcard
 
     expanded: list[str] = []
     seen = set(existing)
@@ -79,6 +86,45 @@ READ_TOP_LEVEL_DIRS: tuple[str, ...] = (
     "servers",
     "lib",
 )
+
+
+@dataclass(frozen=True)
+class ScriptRoot:
+    """One installed plugin tree to scan for scripts (GH-1807).
+
+    ``marketplace_subdir`` is the path between the publisher's
+    marketplace root and the plugin's own tree: empty for core, which
+    sits at the marketplace root, and ``plugins/<key>`` for a satellite
+    (ADR-0034 Stage B).
+    """
+
+    plugin_root: Path
+    marketplace_subdir: str = ""
+
+
+def satellite_script_roots(*, cache_dir: Path, plugin_map: PluginMap) -> list[ScriptRoot]:
+    """Installed satellite trees beside core's ``cache_dir`` (GH-1807).
+
+    A satellite caches at ``<cache>/<publisher>/<plugin name>/<ver>``
+    next to core's ``<cache>/<publisher>/dev10x/<ver>``. A key listed
+    under ``extracted:`` whose cache directory holds no version is not
+    installed, so it is skipped: there is nothing to scan.
+    """
+    roots: list[ScriptRoot] = []
+    for key in plugin_map.extracted:
+        satellite_cache = satellite_cache_dir(
+            core_cache_dir=cache_dir, plugin_name=plugin_map.installed_name(key=key)
+        )
+        version = detect_latest_version(satellite_cache)
+        if not version:
+            continue
+        roots.append(
+            ScriptRoot(
+                plugin_root=satellite_cache / version,
+                marketplace_subdir=satellite_subdir(key=key),
+            )
+        )
+    return roots
 
 
 def scan_plugin_scripts(plugin_root: Path) -> list[Path]:
@@ -123,6 +169,7 @@ def build_marketplaces_script_rules(
     plugin_root: Path,
     plugin_cache: str,
     user_home: Path,
+    marketplace_subdir: str = "",
 ) -> list[str]:
     """Emit unversioned marketplace-root Bash rules for plugin scripts (GH-704).
 
@@ -137,6 +184,11 @@ def build_marketplaces_script_rules(
     twins anchored at ``marketplaces/<publisher>/<relative>`` so a grant
     matches whichever root family dispatches the script. ``relative`` is the
     same sub-path in both layouts (``skills/<name>/scripts/<file>`` etc.).
+
+    A satellite plugin lives under ``marketplaces/<publisher>/plugins/<key>/``
+    rather than at the marketplace root (GH-1807); ``marketplace_subdir``
+    carries that infix so its twins spell the directory the runtime
+    dispatches from.
     """
     publisher = extract_cache_publisher(plugin_cache)
     if not publisher:
@@ -144,6 +196,8 @@ def build_marketplaces_script_rules(
 
     home = user_home.expanduser().resolve()
     rel_root = f".claude/plugins/marketplaces/{publisher}"
+    if marketplace_subdir:
+        rel_root = f"{rel_root}/{marketplace_subdir}"
     rules: list[str] = []
     for script in scripts:
         relative = script.relative_to(plugin_root)
@@ -546,17 +600,60 @@ def generalize_permission(entry: str) -> str | None:
     return None
 
 
-def _generalizations(allow_list: list[str]) -> tuple[list[tuple[str, str]], list[str]]:
-    """Return the safe (old, new) rewrites plus the rules it refused to touch."""
+# GH-1868
+_ENV_ASSIGNMENT_RE = re.compile(r"^(?:env\s+)?[A-Za-z_][A-Za-z0-9_]*=\S*\s")
+_SENSITIVE_RULE_RE = re.compile(
+    r"secret|credential|passw(?:or)?d|token|vault|unsecure|keychain"
+    r"|private[-_]?key|(?<![a-z])aws(?![a-z])",
+    re.IGNORECASE,
+)
+
+
+def widening_hold_reason(entry: str, *, exclude: tuple[str, ...] = ()) -> str | None:
+    """Why `entry` must keep its exact arguments, or None when it may widen."""
+    for pattern in exclude:
+        if pattern in entry or fnmatch.fnmatchcase(entry, pattern):
+            return f"excluded by --exclude {pattern!r}"
+    if _ENV_ASSIGNMENT_RE.match(AllowRule.parse(entry).inner):
+        return "env-assignment prefix"
+    if _SENSITIVE_RULE_RE.search(entry):
+        return "names secret or credential handling"
+    return None
+
+
+@dataclass(frozen=True)
+class GeneralizationPlan:
+    replacements: list[tuple[str, str]]
+    refused: list[str]
+    held: list[tuple[str, str]]
+
+
+def plan_generalizations(
+    allow_list: list[str],
+    *,
+    exclude: tuple[str, ...] = (),
+) -> GeneralizationPlan:
+    """Split rewrite candidates into safe rewrites, refusals and held rules."""
     existing = set(allow_list)
     replacements: list[tuple[str, str]] = []
     refused: list[str] = []
+    held: list[tuple[str, str]] = []
     for entry in allow_list:
         generalized = generalize_permission(entry)
         if not generalized or generalized == entry or generalized in existing:
+            continue
+        reason = widening_hold_reason(entry, exclude=exclude)
+        if reason is not None:
+            held.append((entry, reason))
             continue
         if not is_well_formed_rule(generalized):
             refused.append(entry)
             continue
         replacements.append((entry, generalized))
-    return replacements, refused
+    return GeneralizationPlan(replacements=replacements, refused=refused, held=held)
+
+
+def _generalizations(allow_list: list[str]) -> tuple[list[tuple[str, str]], list[str]]:
+    """Return the safe (old, new) rewrites plus the rules it refused to touch."""
+    plan = plan_generalizations(allow_list)
+    return plan.replacements, plan.refused

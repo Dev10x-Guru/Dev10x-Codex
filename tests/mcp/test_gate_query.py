@@ -11,17 +11,17 @@ from pathlib import Path
 
 import pytest
 import yaml
-from dev10x.domain.common.result import ErrorResult, err, ok
-from dev10x.domain.dev10x_paths import Dev10xConfigDir
-from dev10x.domain.gate_policy import MIGRATOR_COMMAND, GateContext
 
-from dev10x import github as github_module
-from dev10x.mcp.gate_query import (
+from dev10x.coding import github as github_module
+from dev10x.core.domain.common.result import ErrorResult, err, ok
+from dev10x.core.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.core.domain.gate_policy import MIGRATOR_COMMAND, GateContext
+from dev10x.core.mcp.gate_query import (
     REVIEW_CLEARED_LABEL,
     GateResolutionOutcome,
     GateResolutionQuery,
 )
-from dev10x.session import preset_pin
+from dev10x.core.session import preset_pin
 
 
 def _write_config(toplevel: Path, body: str) -> None:
@@ -35,11 +35,11 @@ def _write_config(toplevel: Path, body: str) -> None:
 def _write_friction(projects: list[dict]) -> None:
     """Write the global friction.yaml (isolated to a tmp home by conftest).
 
-    ``human_review: false`` and ``supervisor_review: none`` sit in
-    ``defaults`` — and so merge into every matched entry — because these
-    tests probe policy INHERITANCE through the merge gate. Left at their
-    safe poles the ADR-0019 precondition floor (GH-1000) and the ADR-0022
-    supervisor park would resolve every one of them to ``ask``, hiding
+    ``supervisor_review: none`` sits in ``defaults`` — and so merges into
+    every matched entry — because these tests probe policy INHERITANCE
+    through the merge gate. Left at its safe pole the precondition floor
+    (GH-1000) and the ADR-0022 supervisor park would resolve every one of
+    them to ``ask``, hiding
     whatever the preset actually inherited. Both floors' own behaviour is
     covered in ``tests/domain/test_gate_policy.py``,
     ``tests/mcp/test_gate_tools.py``, and ``TestSupervisorSignOffSignal``
@@ -61,7 +61,6 @@ def _write_friction(projects: list[dict]) -> None:
                 "defaults": {
                     "gate_preset": "adaptive",
                     "gate_overrides": {"merge": "ask"},
-                    "human_review": False,
                     "supervisor_review": "none",
                 },
                 "projects": [
@@ -467,3 +466,78 @@ class TestWorktreePolicyInheritance:
 
         # No working tree to probe, so the worktree path governs → defaults.
         assert await _merge_effect(tmp_path) == "ask"
+
+
+def _write_plan_mirror(toplevel: Path, body: dict) -> None:
+    path = toplevel / ".claude" / "session" / "plan.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(body))
+
+
+class TestRunModeOnTheOutcome:
+    """GH-1921: every resolution carries the run mode a callee reads."""
+
+    async def _run_mode(self, toplevel: Path) -> dict:
+        result = await GateResolutionQuery(
+            gate="external_notify", context={}, toplevel=str(toplevel)
+        ).run()
+        assert not isinstance(result, ErrorResult)
+        return result.value.run_mode.to_payload()
+
+    @pytest.mark.asyncio
+    async def test_no_plan_mirror_is_undetermined(self, tmp_path: Path) -> None:
+        assert await self._run_mode(tmp_path) == {
+            "mode": "undetermined",
+            "basis": "no-plan-mirror",
+        }
+
+    @pytest.mark.asyncio
+    async def test_afk_overlay_is_unattended(self, tmp_path: Path) -> None:
+        _write_config(tmp_path, "gate_overlays: [afk]\n")
+
+        assert await self._run_mode(tmp_path) == {"mode": "unattended", "basis": "afk-overlay"}
+
+    @pytest.mark.asyncio
+    async def test_dropped_afk_overlay_does_not_count(self, tmp_path: Path) -> None:
+        _write_config(tmp_path, "gate_overlays: [afk]\nallowed_overlays: [solo-maintainer]\n")
+
+        assert (await self._run_mode(tmp_path))["mode"] == "undetermined"
+
+    @pytest.mark.asyncio
+    async def test_plan_step_in_progress_is_unattended(self, tmp_path: Path) -> None:
+        _write_plan_mirror(
+            tmp_path,
+            {
+                "tasks": [
+                    {
+                        "id": "7",
+                        "subject": "Monitor CI",
+                        "status": "in_progress",
+                        "metadata": {"skills": ["dev10x:gh-pr-monitor"]},
+                    }
+                ]
+            },
+        )
+
+        assert await self._run_mode(tmp_path) == {
+            "mode": "unattended",
+            "basis": "plan-step-in-progress",
+            "plan_step": "Monitor CI",
+        }
+
+    @pytest.mark.asyncio
+    async def test_plan_from_another_branch_is_undetermined(self, tmp_path: Path) -> None:
+        # tmp_path is not a git checkout, so the current branch is unknown
+        # and cannot match the branch the plan was recorded on.
+        _write_plan_mirror(
+            tmp_path,
+            {
+                "plan": {"branch": "someone/else"},
+                "tasks": [{"id": "1", "status": "in_progress", "metadata": {"type": "x"}}],
+            },
+        )
+
+        assert await self._run_mode(tmp_path) == {
+            "mode": "undetermined",
+            "basis": "plan-mirror-other-branch",
+        }

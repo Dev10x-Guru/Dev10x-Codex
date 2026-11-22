@@ -63,7 +63,7 @@ Where suppressed-doubt entries land. Skills append, never overwrite.
 ### `pr-description` (default)
 
 Append to the active PR body under a dedicated header. If no PR exists
-yet, buffer the entries and flush them when `dev10x:gh-pr-create`
+yet, buffer the entries and flush them when `dev10x-coding:gh-pr-create`
 runs.
 
 ```markdown
@@ -82,7 +82,7 @@ pointer to a followup ticket.
 
 ### `session-bookmark`
 
-Append to the PR bookmark comment created by `dev10x:gh-pr-bookmark`.
+Append to the PR bookmark comment created by `dev10x-coding:gh-pr-bookmark`.
 Use for doubts that should survive session boundaries but do not
 belong in the merged PR body.
 
@@ -104,7 +104,7 @@ For a skill that emits `AskUserQuestion`:
      recommended option, and surface the returned `record` line so a
      present supervisor can still veto
 4. ✓ Append a one-line entry to the resolved `log_to` doubt sink
-5. ✓ Log the suppression to the audit hook so `dev10x:skill-audit`
+5. ✓ Log the suppression to the audit hook so `dev10x-teach:skill-audit`
      can surface walk-away suppressions in the session report
 
 ## Anti-patterns

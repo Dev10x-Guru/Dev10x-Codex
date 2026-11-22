@@ -27,9 +27,8 @@ import pytest
 
 yaml = pytest.importorskip("yaml", reason="pyyaml not installed")
 
-from dev10x.config.loader import load_document  # noqa: E402
-
-from dev10x.skills.audit import cli_friction as cli_friction_mod  # noqa: E402
+from dev10x.core.config.loader import load_document  # noqa: E402
+from dev10x.teach.skills.audit import cli_friction as cli_friction_mod  # noqa: E402
 
 # ── Paths to canonical data files ────────────────────────────────────────────
 
@@ -107,12 +106,12 @@ class TestCommandSkillMapRouting:
         ("command", "expected_compensation_type", "expected_target"),
         [
             # Bash hard-block rules → use-skill
-            ("git commit -m 'Enable X'", "use-skill", "dev10x:git-commit"),
-            ("gh pr create --title 'Enable X'", "use-skill", "dev10x:gh-pr-create"),
-            ("gh pr merge --squash", "use-skill", "dev10x:gh-pr-merge"),
-            ("git push origin feature-branch", "use-skill", "dev10x:git"),
-            ("git rebase -i develop", "use-skill", "dev10x:git-groom"),
-            ("gh pr checks --watch", "use-skill", "dev10x:gh-pr-monitor"),
+            ("git commit -m 'Enable X'", "use-skill", "dev10x-coding:git-commit"),
+            ("gh pr create --title 'Enable X'", "use-skill", "dev10x-coding:gh-pr-create"),
+            ("gh pr merge --squash", "use-skill", "dev10x-coding:gh-pr-merge"),
+            ("git push origin feature-branch", "use-skill", "dev10x-coding:git"),
+            ("git rebase -i develop", "use-skill", "dev10x-coding:git-groom"),
+            ("gh pr checks --watch", "use-skill", "dev10x-coding:gh-pr-monitor"),
             # Bash hard-block rules → use-tool
             ("gh pr view 42", "use-tool", "mcp__plugin_dev10x_cli__pr_get"),
             ("gh issue close 123", "use-tool", "mcp__plugin_dev10x_cli__issue_close"),

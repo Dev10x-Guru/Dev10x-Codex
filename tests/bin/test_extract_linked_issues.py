@@ -9,6 +9,7 @@ uses matched nothing. Every shape below is one a real PR body has used.
 from __future__ import annotations
 
 import importlib.util
+import io
 from pathlib import Path
 
 import pytest
@@ -22,8 +23,17 @@ extract_linked_issues = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(extract_linked_issues)
 
 extract = extract_linked_issues.extract
+explicit_none_reason = extract_linked_issues.explicit_none_reason
+verdict = extract_linked_issues.verdict
+workflow_data = extract_linked_issues.workflow_data
+EXIT_REFS = extract_linked_issues.EXIT_REFS
+EXIT_MISSING = extract_linked_issues.EXIT_MISSING
+EXIT_DECLARED_NONE = extract_linked_issues.EXIT_DECLARED_NONE
 
 REPO = "Dev10x-Guru/Dev10x-Claude"
+_NBSP = chr(0x00A0)
+_ZERO_WIDTH_SPACE = chr(0x200B)
+_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "close-issues.yml"
 
 
 class TestBareForms:
@@ -74,6 +84,99 @@ class TestUrlForm:
         assert extract(body=body, repo=REPO) == [f"{REPO}#42"]
 
 
+class TestUrlNeedsAClosingKeyword:
+    """GH-1927: a full URL closes only right after Fixes / Closes / Resolves."""
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            f"Refs: https://github.com/{REPO}/issues/1915",
+            f"Refs https://github.com/{REPO}/issues/1915",
+            f"Split out to https://github.com/{REPO}/issues/1915 for later.",
+            f"https://github.com/{REPO}/issues/1915",
+            f"Fixes: see https://github.com/{REPO}/issues/1915",
+            f"Prefixes: https://github.com/{REPO}/issues/1915",
+            f"Fixes: https://github.com/{REPO}/pull/1915",
+            f"Fixes:\nhttps://github.com/{REPO}/issues/1915",
+        ],
+        ids=[
+            "refs-line",
+            "refs-without-colon",
+            "prose",
+            "bare-url",
+            "keyword-not-immediately-before",
+            "keyword-inside-a-word",
+            "pull-request-url",
+            "keyword-on-the-previous-line",
+        ],
+    )
+    def test_url_without_a_closing_keyword_closes_nothing(self, body: str) -> None:
+        assert extract(body=body, repo=REPO) == []
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            f"Fixes: https://github.com/{REPO}/issues/42",
+            f"Fixes https://github.com/{REPO}/issues/42",
+            f"Closes https://github.com/{REPO}/issues/42",
+            f"Closes: https://github.com/{REPO}/issues/42",
+            f"Resolves: https://github.com/{REPO}/issues/42",
+            f"fixes: HTTPS://GITHUB.COM/{REPO}/issues/42",
+        ],
+        ids=["fixes-colon", "fixes", "closes", "closes-colon", "resolves-colon", "lowercase"],
+    )
+    def test_keyworded_url_closes(self, body: str) -> None:
+        assert extract(body=body, repo=REPO) == [f"{REPO}#42"]
+
+    def test_every_fixes_line_closes_while_refs_lines_do_not(self) -> None:
+        body = "\n".join(
+            [
+                "**When** a slice lands ...",
+                "",
+                f"Refs: https://github.com/{REPO}/issues/1915",
+                f"Fixes: https://github.com/{REPO}/issues/1",
+                f"Fixes: https://github.com/{REPO}/issues/2",
+                f"Fixes: https://github.com/{REPO}/issues/3",
+            ]
+        )
+
+        assert extract(body=body, repo=REPO) == [f"{REPO}#1", f"{REPO}#2", f"{REPO}#3"]
+
+    def test_cross_repo_fixes_url_keeps_its_repo(self) -> None:
+        body = "\n".join(
+            [
+                "Refs: https://github.com/other-org/other-repo/issues/8",
+                "Fixes: https://github.com/other-org/other-repo/issues/7",
+            ]
+        )
+
+        assert extract(body=body, repo=REPO) == ["other-org/other-repo#7"]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            f"```\nFixes: https://github.com/{REPO}/issues/123\n```",
+            f"~~~\nCloses https://github.com/{REPO}/issues/123\n~~~",
+            f"<!-- Resolves: https://github.com/{REPO}/issues/123 -->",
+        ],
+        ids=["backtick-fence", "tilde-fence", "html-comment"],
+    )
+    def test_hidden_keyworded_url_closes_nothing(self, body: str) -> None:
+        assert extract(body=body, repo=REPO) == []
+
+    def test_refs_url_beside_a_bare_fixes_on_one_line(self) -> None:
+        body = f"Fixes #7, refs https://github.com/{REPO}/issues/8"
+
+        assert extract(body=body, repo=REPO) == [f"{REPO}#7"]
+
+    def test_refs_only_body_fails_and_says_why(self) -> None:
+        body = f"Story.\n\nRefs: https://github.com/{REPO}/issues/1915"
+        code, lines = verdict(body=body, repo=REPO)
+
+        assert code == EXIT_MISSING
+        assert extract_linked_issues.KEYWORD_REQUIRED_HINT in lines
+
+
 class TestMixedAndDegenerate:
     def test_mixed_url_and_bare_forms_both_land(self) -> None:
         body = "\n".join(
@@ -106,3 +209,428 @@ class TestMixedAndDegenerate:
         # The caller treats an empty result as a failure, not a no-op --
         # a bare mention must not be enough to close someone's issue.
         assert extract(body=body, repo=REPO) == []
+
+
+class TestOnlyVisibleReferencesClose:
+    """GH-1896: references obey the same visibility rule as a none trailer."""
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<!-- Fixes: #123 -->",
+            "<!--\nFixes: GH-123\n-->",
+            "```\nFixes: #123\n```",
+            "~~~md\nCloses #123",
+            f"<!-- Fixes: https://github.com/{REPO}/issues/123 -->",
+            f"```\nFixes: https://github.com/{REPO}/issues/123\n```",
+        ],
+        ids=[
+            "inline-comment",
+            "multi-line-comment",
+            "backtick-fence",
+            "unclosed-tilde-fence",
+            "url-in-comment",
+            "url-in-fence",
+        ],
+    )
+    def test_hidden_reference_closes_nothing(self, body: str) -> None:
+        assert extract(body=body, repo=REPO) == []
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "<!-- Fixes: #999 -->\nFixes: #123",
+            "```\nFixes: #999\n```\nFixes: #123",
+            "<!-- a\nb -->Fixes: #123",
+            "  Fixes: #123  ",
+        ],
+        ids=["after-comment", "after-fence", "after-multi-line-comment", "indented"],
+    )
+    def test_visible_reference_beside_a_hidden_one_closes_alone(self, body: str) -> None:
+        assert extract(body=body, repo=REPO) == [f"{REPO}#123"]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "```inline``` aside\nFixes: #123",
+            "````\n```\nFixes: #999\n````\nFixes: #123",
+            "~~~\n```\nFixes: #999\n~~~\nFixes: #123",
+            "```\nFixes: #999\n``` not a closer\n```\nFixes: #123",
+            "```\n    ```\nFixes: #999\n```\nFixes: #123",
+            "    ```\nFixes: #123",
+            f"{_NBSP}```\nFixes: #123",
+            "   ```\nFixes: #999\n   ```  \r\nFixes: #123",
+        ],
+        ids=[
+            "inline-code-is-not-a-fence",
+            "shorter-closer-stays-inside",
+            "other-marker-stays-inside",
+            "closer-with-text-stays-inside",
+            "indented-closer-stays-inside",
+            "indented-opener-is-code-not-a-fence",
+            "nbsp-led-opener-is-not-a-fence",
+            "three-space-fence-with-trailing-space",
+        ],
+    )
+    def test_fence_boundaries_follow_commonmark(self, body: str) -> None:
+        assert extract(body=body, repo=REPO) == [f"{REPO}#123"]
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "Fixes\n```\nx\n```\n#5",
+            "Fixes\n<!-- x -->\n#5",
+            "Fixes:\n#5",
+        ],
+        ids=["across-a-fence", "across-a-comment", "across-a-line-break"],
+    )
+    def test_a_keyword_never_reaches_a_number_on_another_line(self, body: str) -> None:
+        assert extract(body=body, repo=REPO) == []
+
+
+class TestAsciiOnlyReferences:
+    """GH-1896: a non-ASCII digit or repo name never reaches `gh issue close`."""
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "Fixes: #١٢٣",
+            "Fixes: GH-١٢٣",
+            "Fixes: #12٣",
+            "Closes #１２",
+            "Fixes: https://github.com/ówner/repo/issues/1",
+            "Fixes: https://github.com/owner/répo/issues/1",
+            f"Fixes: https://github.com/{REPO}/issues/١",
+            f"Fixes: https://github.com/{REPO}/issues/1٣",
+            f"Fixes #1{_ZERO_WIDTH_SPACE}2",
+            f"Fixes #1{chr(0x0301)}2",
+            f"Fixes #1{chr(0x2060)}2",
+            f"Fixes: #123{chr(0x202E)}",
+            f"Fixes: #123{chr(0xE0041)}",
+            f"Fixes: #123{chr(0x05B0)}",
+            f"Fixes: #123{chr(0x20E3)}",
+            "Fixes: #12é",
+            "Fixes: #12_",
+        ],
+        ids=[
+            "arabic-indic-digits",
+            "arabic-indic-digits-gh-form",
+            "ascii-digits-glued-to-a-non-ascii-digit",
+            "fullwidth-digits",
+            "non-ascii-owner",
+            "non-ascii-repo",
+            "url-non-ascii-number",
+            "url-number-glued-to-a-non-ascii-digit",
+            "zero-width-space-inside-the-number",
+            "combining-mark-inside-the-number",
+            "word-joiner-inside-the-number",
+            "bidi-override-after-the-number",
+            "tag-character-after-the-number",
+            "hebrew-point-after-the-number",
+            "enclosing-keycap-after-the-number",
+            "number-glued-to-a-non-ascii-letter",
+            "number-glued-to-an-underscore",
+        ],
+    )
+    def test_non_ascii_reference_closes_nothing(self, body: str) -> None:
+        assert extract(body=body, repo=REPO) == []
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ("Fixes: #123.", [f"{REPO}#123"]),
+            ("(Closes #123)", [f"{REPO}#123"]),
+            ("Fixes: #123, Fixes: #124", [f"{REPO}#123", f"{REPO}#124"]),
+            ("Fixes: GH-123\n", [f"{REPO}#123"]),
+            (f"Fixes: https://github.com/{REPO}/issues/123.", [f"{REPO}#123"]),
+            ("Fixes: #123— part of a bundle", [f"{REPO}#123"]),
+            ("Fixes: #123…", [f"{REPO}#123"]),
+            ("（Closes #123）", [f"{REPO}#123"]),
+            (f"Fixes: #123{_NBSP}", [f"{REPO}#123"]),
+            (f"Fixes:{_NBSP}#123", [f"{REPO}#123"]),
+        ],
+        ids=[
+            "full-stop",
+            "parenthesised",
+            "comma-list",
+            "trailing-newline",
+            "url-full-stop",
+            "em-dash",
+            "ellipsis",
+            "fullwidth-parentheses",
+            "trailing-nbsp",
+            "nbsp-separator",
+        ],
+    )
+    def test_ascii_punctuation_after_the_number_still_closes(
+        self,
+        body: str,
+        expected: list[str],
+    ) -> None:
+        assert extract(body=body, repo=REPO) == expected
+
+    def test_url_followed_by_a_fragment_still_closes(self) -> None:
+        body = f"Fixes: https://github.com/{REPO}/issues/42#issuecomment-1"
+
+        assert extract(body=body, repo=REPO) == [f"{REPO}#42"]
+
+
+_PARTIAL_DELIVERY_BODY = "\n".join(
+    [
+        "**When** a maintainer lands one slice of #909 ...",
+        "",
+        "Fixes: none — part of #909",
+    ]
+)
+
+
+class TestExplicitNone:
+    """GH-1819: `Fixes: none — <reason>` is a deliberate no-op, not a gap."""
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            (_PARTIAL_DELIVERY_BODY, "part of #909"),
+            ("Fixes: none — self-motivated", "self-motivated"),
+            ("Fixes: none -- self-motivated", "self-motivated"),
+            ("Fixes: none - self-motivated", "self-motivated"),
+            ("fixes: NONE – part of #12", "part of #12"),
+            ("Fixes: none—part of #12", "part of #12"),
+            ("Story.\n\n  Fixes: none — part of #909  \n", "part of #909"),
+            ("Story.\r\n\r\nFixes: none — part of #909\r\n", "part of #909"),
+            ("Fixes: none —\nFixes: none — part of #909", "part of #909"),
+            ("```\nFixes: none — x\n```\nFixes: none — part of #909", "part of #909"),
+            ("<!-- note -->\nFixes: none — part of #909", "part of #909"),
+            ("<!-- a\nb -->Fixes: none — part of #909", "part of #909"),
+            ("Fixes: none — <b>bold</b> reason", "<b>bold</b> reason"),
+        ],
+        ids=[
+            "partial-delivery-body",
+            "em-dash",
+            "double-hyphen",
+            "single-hyphen",
+            "case-insensitive-en-dash",
+            "no-space-before-reason",
+            "indented-with-trailing-space",
+            "crlf",
+            "first-usable-line-wins",
+            "after-closed-fence",
+            "after-inline-comment",
+            "after-multi-line-comment",
+            "html-inside-a-real-reason",
+        ],
+    )
+    def test_explicit_none_trailer_reports_its_reason(
+        self,
+        body: str,
+        expected: str,
+    ) -> None:
+        assert explicit_none_reason(body=body) == expected
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "",
+            "A body with no references at all.",
+            "Fixes: GH-42",
+            "Fixes: nonexistent-thing",
+            "Fixes: none-yet",
+            "Fixes: none of the above",
+            "Fixes: none",
+            "Fixes: none —",
+            "Story.\r\n\r\nFixes: none\r\n",
+            "Fixes: none —   \r\n",
+            "We considered Fixes: none — but rejected it.",
+            "Fixes: none" + " " * 60_000 + "x",
+            "Fixes: none — —",
+            "Fixes: none — ...",
+            "Fixes: none — __",
+            "Fixes: none — <reason>",
+            "Fixes: none — < why >",
+            "```\nFixes: none — part of #909\n```",
+            "~~~md\nFixes: none — part of #909",
+            "<!-- Fixes: none — part of #909 -->",
+            "<!--\nFixes: none — part of #909\n-->",
+            "<!--" * 20_000 + "\nFixes: none — part of #909",
+        ],
+        ids=[
+            "empty",
+            "no-references",
+            "real-reference",
+            "none-prefix-word",
+            "none-yet",
+            "none-of-the-above",
+            "bare-none",
+            "dash-without-reason",
+            "bare-none-crlf",
+            "dash-with-blank-reason-crlf",
+            "quoted-in-prose",
+            "hostile-whitespace",
+            "punctuation-only-reason",
+            "ellipsis-reason",
+            "underscore-only-reason",
+            "unfilled-placeholder",
+            "spaced-placeholder",
+            "inside-backtick-fence",
+            "inside-unclosed-tilde-fence",
+            "inside-inline-comment",
+            "inside-multi-line-comment",
+            "inside-unclosed-comment-flood",
+        ],
+    )
+    def test_body_without_explicit_none_reports_nothing(self, body: str) -> None:
+        assert explicit_none_reason(body=body) is None
+
+    def test_partial_delivery_body_closes_nothing(self) -> None:
+        # The parent named after `part of` must stay open -- that is the
+        # trailer's whole purpose.
+        assert extract(body=_PARTIAL_DELIVERY_BODY, repo=REPO) == []
+
+
+class TestVerdict:
+    """GH-1873: one call decides refs / declared-none / missing."""
+
+    def test_references_win_over_a_none_trailer(self) -> None:
+        body = "Fixes: GH-7\nFixes: none — part of #909"
+
+        assert verdict(body=body, repo=REPO) == (EXIT_REFS, [f"{REPO}#7"])
+
+    def test_declared_none_is_a_notice(self) -> None:
+        assert verdict(body=_PARTIAL_DELIVERY_BODY, repo=REPO) == (
+            EXIT_DECLARED_NONE,
+            ["::notice::PR declares 'Fixes: none' (part of #909); nothing to close."],
+        )
+
+    @pytest.mark.parametrize(
+        ("body", "expected_errors"),
+        [
+            ("Just a story.", 1),
+            ("Story.\n\nFixes: none", 2),
+            ("Story.\n\nFixes: none — <reason>", 2),
+        ],
+        ids=["no-trailer", "bare-none", "placeholder-none"],
+    )
+    def test_missing_fails_and_names_a_malformed_none_trailer(
+        self,
+        body: str,
+        expected_errors: int,
+    ) -> None:
+        code, lines = verdict(body=body, repo=REPO)
+
+        assert code == EXIT_MISSING
+        assert sum(line.startswith("::error::") for line in lines) == expected_errors
+
+    @pytest.mark.parametrize(
+        "shape",
+        extract_linked_issues.RECOGNIZED_SHAPES,
+        ids=extract_linked_issues.RECOGNIZED_SHAPES,
+    )
+    def test_every_advertised_shape_is_one_the_extractor_closes(self, shape: str) -> None:
+        body = shape.replace("<owner>/<repo>", "owner/repo")
+
+        assert extract(body=body, repo=REPO) != []
+
+    def test_the_hint_lists_every_advertised_shape(self) -> None:
+        _, lines = verdict(body="Just a story.", repo=REPO)
+        hint = next(line for line in lines if line.startswith("Recognized shapes:"))
+
+        assert all(f"'{shape}'" in hint for shape in extract_linked_issues.RECOGNIZED_SHAPES)
+
+
+class TestWorkflowData:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("part of #909", "part of #909"),
+            ("100%0A::error::forged", "100%250A::error::forged"),
+            ("tab\there\x1b[31m", "tabhere[31m"),
+        ],
+        ids=["plain", "runner-escape", "control-characters"],
+    )
+    def test_author_text_cannot_steer_the_runner(self, text: str, expected: str) -> None:
+        assert workflow_data(text=text) == expected
+
+    def test_a_reason_is_escaped_inside_the_notice(self) -> None:
+        _, lines = verdict(body="Fixes: none — 50%0A done", repo=REPO)
+
+        assert lines == ["::notice::PR declares 'Fixes: none' (50%250A done); nothing to close."]
+
+
+class TestCli:
+    @pytest.mark.parametrize(
+        ("body", "expected_code", "expected_out"),
+        [
+            ("Fixes: GH-7\n", EXIT_REFS, f"{REPO}#7\n"),
+            (
+                _PARTIAL_DELIVERY_BODY,
+                EXIT_DECLARED_NONE,
+                "::notice::PR declares 'Fixes: none' (part of #909); nothing to close.\n",
+            ),
+        ],
+        ids=["refs", "declared-none"],
+    )
+    def test_main_prints_exactly_the_verdict_and_exits_with_its_code(
+        self,
+        body: str,
+        expected_code: int,
+        expected_out: str,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setattr("sys.argv", ["extract-linked-issues.py", "--repo", REPO])
+        monkeypatch.setattr("sys.stdin", io.StringIO(body))
+
+        assert extract_linked_issues.main() == expected_code
+        assert capsys.readouterr().out == expected_out
+
+    def test_main_fails_a_bare_none_with_the_verdict_errors(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setattr("sys.argv", ["extract-linked-issues.py", "--repo", REPO])
+        monkeypatch.setattr("sys.stdin", io.StringIO("Fixes: none\n"))
+        _, expected_lines = verdict(body="Fixes: none\n", repo=REPO)
+
+        assert extract_linked_issues.main() == EXIT_MISSING
+        assert capsys.readouterr().out.splitlines() == expected_lines
+
+    def test_main_requires_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("sys.argv", ["extract-linked-issues.py"])
+        monkeypatch.setattr("sys.stdin", io.StringIO("Fixes: GH-7\n"))
+
+        with pytest.raises(SystemExit) as raised:
+            extract_linked_issues.main()
+
+        assert raised.value.code == 2
+
+
+class TestWorkflowWiring:
+    """close-issues.yml makes one call and branches only on its exit code."""
+
+    @pytest.fixture
+    def workflow_text(self) -> str:
+        return _WORKFLOW.read_text(encoding="utf-8")
+
+    def test_the_extractor_is_called_once(self, workflow_text: str) -> None:
+        assert workflow_text.count("./bin/extract-linked-issues.py") == 1
+
+    def test_exit_three_reaches_the_case_under_set_e(self, workflow_text: str) -> None:
+        wrapped = workflow_text[workflow_text.index("set +e") :]
+        markers = ["set +e", "verdict=$(", "status=$?", "set -e\n", 'case "$status" in']
+
+        positions = [wrapped.index(marker) for marker in markers]
+
+        assert positions == sorted(positions)
+
+    @pytest.mark.parametrize(
+        "arm",
+        [
+            f"{EXIT_REFS}) refs=$verdict ;;",
+            f"{EXIT_DECLARED_NONE}) printf '%s\\n' \"$verdict\"; exit 0 ;;",
+            "*) printf '%s\\n' \"$verdict\"; exit 1 ;;",
+        ],
+        ids=["refs", "declared-none", "anything-else-fails"],
+    )
+    def test_each_exit_code_maps_to_its_outcome(self, workflow_text: str, arm: str) -> None:
+        assert arm in workflow_text

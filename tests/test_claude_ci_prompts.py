@@ -303,6 +303,74 @@ class TestRoutingParity:
         assert routes[pattern]
 
 
+@functools.cache
+def _normalized(*, path: Path) -> str:
+    text = re.sub(r"^\s*>\s?", "", path.read_text(encoding="utf-8"), flags=re.MULTILINE)
+    return " ".join(text.split())
+
+
+_COVERAGE_FIRST: str = (
+    "Report every issue you find, including ones you are uncertain about or "
+    "consider low-severity. Do not filter for importance or confidence — the "
+    "orchestrator verifies and ranks findings. For each finding include "
+    "file:line, severity (CRITICAL / WARNING / INFO), confidence, and a "
+    "one-sentence rationale."
+)
+
+#: The shared doc and the CI prompt state every shared rule.
+_ROUTING_AND_CORE: list[str] = [
+    "references/review-routing.md",
+    ".github/claude/prompts/code-review.core.md",
+]
+
+#: Each shared rule, paired with every document that must state it.
+_SHARED_RULES: list[tuple[str, str]] = [
+    *[
+        (document, _COVERAGE_FIRST)
+        for document in [*_ROUTING_AND_CORE, "plugins/coding/skills/review/references/domain-dispatch.md"]
+    ],
+    *[
+        (document, rule)
+        for rule in [
+            "in ONE message so they run in parallel",
+            "more than ~15 changed files",
+            "File Patterns -> Agents",
+            "the dropped count in the summary",
+        ]
+        for document in _ROUTING_AND_CORE
+    ],
+]
+
+
+class TestSharedRouting:
+    """CI and the local self-review route by one written rule set (GH-1741)."""
+
+    _SKILL: ClassVar[Path] = _REPO_ROOT / "plugins" / "coding" / "skills" / "review" / "SKILL.md"
+
+    @pytest.mark.parametrize(("document", "rule"), _SHARED_RULES)
+    def test_document_states_the_shared_rule(self, document: str, rule: str) -> None:
+        assert rule in _normalized(path=_REPO_ROOT / document), f"{document} lost: {rule!r}"
+
+    @pytest.mark.parametrize(
+        "relative",
+        [
+            ".github/claude/prompts/code-review.core.md",
+            "plugins/coding/skills/review/SKILL.md",
+            "plugins/coding/skills/review/references/domain-dispatch.md",
+        ],
+    )
+    def test_every_consumer_points_at_the_shared_doc(self, relative: str) -> None:
+        text = (_REPO_ROOT / relative).read_text(encoding="utf-8")
+
+        assert "references/review-routing.md" in text
+
+    def test_local_review_keeps_no_agent_list_of_its_own(self) -> None:
+        skill = self._SKILL.read_text(encoding="utf-8")
+
+        assert "→ reviewer-" not in skill
+        assert ".claude/rules/INDEX.md" in skill
+
+
 class TestReviewVerdict:
     """The CI review submits the state its verdict names (GH-1693)."""
 
@@ -471,11 +539,83 @@ class TestReviewCadence:
         assert "!github.event.pull_request.draft" in condition
         assert "head.repo.full_name == github.repository" in condition
 
-    def test_draft_on_push_fails_loudly_without_app_credentials(self) -> None:
+    def test_draft_on_push_skips_without_app_credentials(self) -> None:
         steps = _steps_by_name(workflow="pr-draft-on-push.yml")
-        guard = steps["Refuse to run without the App credentials"]["run"]
+        guard = steps["Skip without the App credentials"]["run"]
 
-        assert "exit 1" in guard
+        assert "exit 1" not in guard
+        assert "configured=false" in guard
+
+    @pytest.mark.parametrize("step", ["Mint the App token", "Convert the PR to draft"])
+    def test_draft_on_push_acts_only_when_configured(self, step: str) -> None:
+        steps = _steps_by_name(workflow="pr-draft-on-push.yml")
+
+        assert steps[step]["if"] == "steps.credentials.outputs.configured == 'true'"
+
+
+def _job_condition(*, workflow: str, job: str) -> str:
+    return " ".join(_load_workflow(workflow=workflow)["jobs"][job]["if"].split())
+
+
+#: Each paid review workflow and the job the kill switch must skip.
+_REVIEW_JOBS: list[tuple[str, str]] = [
+    ("claude-code-review.yml", "claude-review"),
+    ("claude-pr-hygiene.yml", "hygiene-review"),
+    ("claude-memory-review.yml", "lessons-learned"),
+]
+
+
+class TestKillSwitch:
+    """The supervisor can switch the Claude jobs off without a red check (GH-1756).
+
+    The switch sits in the job-level ``if:``, so a switched-off job reads as
+    skipped and the never-ran, posted-nothing and checklist guards inside it
+    never run. Only the literal ``'false'`` disables, so an unset variable
+    leaves every existing setup unchanged.
+    """
+
+    @pytest.mark.parametrize(("workflow", "job"), _REVIEW_JOBS)
+    def test_review_variable_skips_the_job(self, workflow: str, job: str) -> None:
+        condition = _job_condition(workflow=workflow, job=job)
+
+        assert condition.startswith("vars.CLAUDE_REVIEW_ENABLED != 'false' && ")
+
+    @pytest.mark.parametrize(("workflow", "job"), _REVIEW_JOBS)
+    def test_label_skips_one_pr(self, workflow: str, job: str) -> None:
+        condition = _job_condition(workflow=workflow, job=job)
+
+        assert (
+            "!contains(github.event.pull_request.labels.*.name, 'skip-claude-review')" in condition
+        )
+
+    def test_assistant_has_its_own_variable(self) -> None:
+        condition = _job_condition(workflow="claude.yml", job="claude")
+
+        assert condition.startswith("vars.CLAUDE_ASSISTANT_ENABLED != 'false' && (")
+        assert "CLAUDE_REVIEW_ENABLED" not in condition
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "claude-code-review.yml.tmpl",
+            "claude-pr-hygiene.yml.tmpl",
+            "claude-second-opinion.yml.tmpl",
+        ],
+    )
+    def test_scaffolded_reviews_carry_the_switch(self, template: str) -> None:
+        text = (
+            _REPO_ROOT
+            / "plugins"
+            / "coding"
+            / "skills"
+            / "gh-review-setup"
+            / "references"
+            / "templates"
+            / template
+        ).read_text(encoding="utf-8")
+
+        assert "vars.CLAUDE_REVIEW_ENABLED != 'false'" in text
+        assert "'skip-claude-review'" in text
 
 
 class TestReviewChecklist:

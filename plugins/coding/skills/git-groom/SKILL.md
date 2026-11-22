@@ -1,0 +1,107 @@
+---
+name: dev10x-coding:git-groom
+description: >
+  Restructure, polish, and clean up git commit history in the current
+  branch before merging. Creates atomic, well-organized commits that
+  tell a clear story.
+  TRIGGER when: branch is ready for merge and commit history needs
+  cleanup (squash fixups, reorder, reword).
+  DO NOT TRIGGER when: branch has clean history already, or splitting
+  individual commits (use dev10x-coding:git-commit-split).
+user-invocable: true
+invocation-name: dev10x-coding:git-groom
+allowed-tools:
+  - mcp__plugin_dev10x_cli__mass_rewrite
+  - Skill(dev10x-coding:git-commit-split)
+  - mcp__plugin_dev10x_cli__rebase_groom
+  - mcp__plugin_dev10x_cli__update_pr
+  # Phase 4 rewrites commit permalinks on both comment surfaces (GH-996):
+  # inline review-thread comments and top-level PR comments each have
+  # their own wrapper.
+  - mcp__plugin_dev10x_cli__pr_comments
+  - mcp__plugin_dev10x_cli__pr_review_comment_edit
+  - mcp__plugin_dev10x_cli__pr_labels
+  - mcp__plugin_dev10x_cli__issue_comment_edit
+  # Phase 3 re-readies a PR its force-push drafted (GH-1731).
+  - mcp__plugin_dev10x_cli__pr_get
+  - mcp__plugin_dev10x_cli__pr_ready
+  # Phase 0 / Phase 4 PR detection and the Phase 3 push (GH-1703).
+  - mcp__plugin_dev10x_cli__pr_detect
+  - mcp__plugin_dev10x_cli__push_safe
+  - Bash(${CLAUDE_PLUGIN_ROOT}/skills/git-groom/scripts/:*)
+  - Bash(${CLAUDE_PLUGIN_ROOT}/skills/git/scripts/git-rebase-groom.sh:*)
+  # Read-only Phase 1 analysis shapes (GH-997). Phase 1 prescribes these,
+  # so they must be declared here or every groom pays per-call approval.
+  - Bash(git log:*)
+  - Bash(git merge-base:*)
+  # Rename-first split (GH-1629): staged-candidate check and the
+  # R100 purity check on each rename commit.
+  - Bash(git diff --cached:*)
+  - Bash(git show --name-status:*)
+  # Phase 1 resolves the base branch through this tool rather than
+  # assuming `develop`, so it needs declaring for the same reason.
+  - mcp__plugin_dev10x_cli__detect_base_branch
+  - Bash(git reset --soft:*)
+  - Bash(git reset --hard groom-backup-*:*)
+  - Bash(git reset HEAD:*)
+  - Bash(git tag -f groom-backup-*:*)
+  - Bash(git diff groom-backup-*:*)
+  # Strategy B post-reset file-set check (GH-1683)
+  - Bash(git diff --cached --name-only:*)
+  - Bash(git diff --name-only:*)
+  # Tree reconstruction ends by resetting onto the rebuilt parent (GH-1680)
+  - Bash(git reset --hard:*)
+  # Keeping a pick that became empty during a conflict (GH-1680)
+  - Bash(git commit --allow-empty -F:*)
+  - Bash(git rebase --continue:*)
+  - Bash(git rebase --abort:*)
+  # Shapes the instructions prescribe (GH-1703): the Stash Guard's
+  # tagged stash, the autosquash alias and the gitignore diagnosis.
+  - Bash(git status --porcelain:*)
+  - Bash(git stash push -u -m groom-guard-*:*)
+  - Bash(git stash list:*)
+  - Bash(git stash apply:*)
+  - Bash(git stash drop:*)
+  - Bash(git autosquash-develop:*)
+  - Bash(git check-ignore:*)
+  - Bash(git add -f:*)
+  - Bash(git write-tree:*)
+  - Bash(git commit-tree:*)
+  - Bash(git push --force-with-lease:*)
+  - Bash(/tmp/Dev10x/bin/mktmp.sh:*)
+  - mcp__plugin_dev10x_cli__mktmp
+  - Edit(/tmp/Dev10x/git/**)
+  - AskUserQuestion
+  - mcp__plugin_dev10x_cli__resolve_gate
+---
+
+# Git Branch History Grooming
+
+Restructure, polish, and clean up git commit history before
+merging. Produces atomic, well-organized commits with outcome-
+focused titles (JTBD style).
+
+## Instructions
+
+The full workflow — strategy selection gate, mass rewrite vs
+interactive rebase, fixup autosquash, force-push safety — lives
+in [`instructions.md`](instructions.md).
+
+When this skill is invoked, Read `instructions.md` now and
+follow it end-to-end. The strategy `AskUserQuestion` gate
+documented there is REQUIRED.
+
+## Legacy script path warning (GH-97)
+
+This skill MUST be invoked via `Skill('dev10x-coding:git-groom')`.
+Direct script invocation is unsupported and the historical
+path `~/.claude/skills/dx:git/scripts/git-rebase-groom.sh`
+no longer exists (it predates the current plugin layout).
+Audit sessions show agents reaching for that path from
+muscle memory, then falling back to raw
+`git -c sequence.editor=... rebase -i --autosquash` when it
+ENOENTs. Neither path is correct — both bypass the safety
+checks this skill wraps around `git rebase` (protected-branch
+guard, autosquash sanity, force-push-with-lease). If you see
+the ENOENT, the corrective action is to invoke the skill,
+not to retry the script.

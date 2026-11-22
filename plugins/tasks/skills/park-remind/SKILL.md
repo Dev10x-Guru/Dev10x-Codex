@@ -1,0 +1,147 @@
+---
+name: dev10x-tasks:park-remind
+description: >
+  Schedule a Slack reminder — so deferred items appear when you are
+  clearing messages, not buried in a file you might not open.
+  TRIGGER when: deferring work that should resurface via Slack
+  notification later.
+  DO NOT TRIGGER when: deferring to code or project storage (use
+  dev10x-tasks:park-todo), or routing to the best destination automatically
+  (use dev10x-tasks:park).
+user-invocable: true
+invocation-name: dev10x-tasks:park-remind
+allowed-tools:
+  - Read
+  - Write
+  - Edit
+  - Bash(uvx dev10x skill notify slack-send:*)
+  - Bash(/tmp/Dev10x/bin/mktmp.sh:*)
+  - Bash(git branch:*)
+  - Bash(git rev-parse:*)
+  - mcp__plugin_dev10x_cli__mktmp
+  - mcp__plugin_dev10x_cli__task_index_append
+  - Edit(/tmp/Dev10x/slack/**)
+---
+
+# dev10x-tasks:park-remind — Slack DM Reminder
+
+**Announce:** "Using dev10x-tasks:park-remind to send a Slack reminder to yourself."
+
+## Orchestration
+
+This skill follows `references/task-orchestration.md` patterns.
+Create a task at invocation, mark completed when done:
+
+**REQUIRED: Create a task at invocation.** Execute at startup:
+
+1. `TaskCreate(subject="Schedule Slack reminder", activeForm="Scheduling reminder")`
+
+Mark completed when done: `TaskUpdate(taskId, status="completed")`
+
+## Overview
+
+Send a self-DM via Slack with a deferred item, formatted with session
+context so you know where to pick it up. After the DM is sent, append
+a pointer entry to the project task index so
+`dev10x-tasks:park-discover` can surface it locally without a Slack search
+(GH-85).
+
+## Prerequisites
+
+- Slack token available (env `SLACK_TOKEN` or system keyring)
+- `self_user_id` set in `~/.config/Dev10x/slack-config.yaml` (or the
+  `SLACK_SELF_USER_ID` env var)
+- The `dev10x` CLI reachable via `uvx` (the reminder goes through
+  `dev10x skill notify slack-send --remind`, GH-1554)
+
+## Workflow
+
+### 1. Gather context
+
+```bash
+git branch --show-current
+```
+
+```bash
+git rev-parse --show-toplevel
+```
+
+Each in a single Bash call — no `;` chaining, no subshells.
+Extract from the branch name:
+- Ticket ID (pattern: `username/TICKET-ID/[worktree/]description`)
+- Project name (from the toplevel basename)
+
+### 2. Format message
+
+Build the reminder message:
+
+```
+🔖 Deferred from session [YYYY-MM-DD]
+Project: <project-name> | Branch: <branch-name>
+
+<user's deferred item text>
+```
+
+If the user provided a URL or file reference, include it on a
+separate line after the item text.
+
+### 3. Send DM
+
+Write the formatted text to a unique temp file with the Write tool
+first:
+
+```
+mcp__plugin_dev10x_cli__mktmp(namespace="slack", prefix="remind-msg", ext=".txt")
+```
+
+Write content to the returned path using Write tool, then:
+```bash
+uvx dev10x skill notify slack-send --remind --message-file <unique-path>
+```
+
+Do NOT use heredoc (`cat <<'EOF'`) or `$(cat ...)` to build the
+message inline — the bash security hook blocks both. Always use
+Write tool → temp file → `--message-file`.
+
+### 4. Append to the task index
+
+After Slack confirms delivery, append a pointer entry using the
+schema documented in `dev10x-tasks:park-todo` § Task Index Append:
+
+```
+mcp__plugin_dev10x_cli__task_index_append(entry={
+    "subject": "<item text, single line>",
+    "status": "pending",
+    "source": "slack-reminder",
+    "created_at": "<YYYY-MM-DD>",
+    "metadata": {
+        "branch": "<current-branch>",
+        "slack_ts": "<timestamp returned by slack-send>",
+        "slack_permalink": "<permalink, when known>",
+    },
+})
+```
+
+The Slack DM remains the authoritative content; the index entry is
+the local pointer that `dev10x-tasks:park-discover` reads without a network
+round-trip.
+
+The tool creates the store on first use and appends under a lock, so
+there is nothing to create or preserve by hand. Do NOT Write/Edit the
+store — ADR-0018 D5 rehomed it out of the repo precisely so no
+Write/Edit consent gate fires on a deferral.
+
+### 5. Confirm
+
+Report to user: "Sent reminder to your Slack DMs and indexed in the
+project task index."
+
+## Standalone Usage
+
+When invoked directly: `/dev10x-tasks:park-remind "message text"`
+
+Parse the argument as the item text. Gather context and send.
+
+## Used By
+
+- `dev10x-tasks:park` — when user picks "Slack DM to self"

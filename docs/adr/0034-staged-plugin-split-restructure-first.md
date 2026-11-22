@@ -90,7 +90,7 @@ That way no MCP tool is ever renamed.
 | skill management (7) | `dev10x-teach` | skill-create, skill-audit, skill-audit-queue, audit-file, skill-index, context-audit, memory-maintenance |
 | task management (7) | `dev10x-tasks` | session-tasks, session-wrap-up, plan-sync, park, park-discover, park-todo, park-remind |
 | tickets + scoping (15) | `dev10x-scoping` | ticket-create, ticket-jtbd, jira, linear, scope, ticket-scope, project-scope, estimate, jtbd, ddd, spec-sync, spec-update, adr, adr-evaluate, project-audit |
-| core (15) | `dev10x` | afk, ask, friction-setup, session-config-seed, upgrade-cleanup, plugin-maintenance, plugin-doctor, onboarding, permission-investigator, diag-friction, playbook, playbook-maintenance, gh-context (moved from coding in Stage A3, GH-1553), permission-audit-apply, skill-prune (GH-1631, GH-1627) |
+| core (17) | `dev10x` | afk, ask, friction-setup, session-config-seed, upgrade-cleanup, plugin-maintenance, plugin-doctor, onboarding, permission-investigator, diag-friction, playbook, playbook-maintenance, gh-context (moved from coding in Stage A3, GH-1553), permission-audit-apply, skill-prune (GH-1631, GH-1627), diag-approval, permission-grant |
 | coding (37) | `dev10x-coding` | git and git-\* (10, including ticket-branch), gh-pr-\* / gh-review-setup (11), review, review-fix, request-review, slack-review-request, gchat-review-request, work-on, fanout, foreman, verify-acc-dod, py-test, py-test-flaky, py-uv, investigate, qa-scope, release-notes, ide-normalize |
 
 ### Plugin names and the invocation rule
@@ -441,6 +441,176 @@ The supervisor decided the Stage B open decisions on 2026-10-19
    - Core-only installs list the git and GitHub tools without the
      skills that drive them. Gated registration is revisited only if
      tool-list size becomes a measured problem.
+4. **Config fragments stay in core's tree (GH-1564).** Stage B step 2
+   says to `git mv` a plugin's config fragments too. B1 does not.
+   - Every reader of a fragment (`command-skill-map.d/`,
+     `families.d/`, `projects.d/`) runs from core's package and globs
+     core's own directories, so a fragment moved under `plugins/<p>/`
+     would stop loading.
+   - The fragments load whether or not their plugin is enabled. For
+     QA that is harmless: its DX006 rules are advisory
+     (`hook_block: false`), and a family or allow rule naming a skill
+     that is not installed matches nothing.
+   - Moving them waits for readers that search each enabled
+     satellite's root, gated on `plugin_enablement`. Until then a
+     fragment records its owner by file name only.
+   - B2 (GH-1565) applies the same rule to
+     `command-skill-map.d/infra.yaml` (two advisory DX006 rules) and
+     `projects.d/infra.yaml` (`Skill(dev10x-infra:*)` only). Infra
+     has no family fragment, and the `aws.sh` allow stays in core's
+     baseline.
+   - Script rules already in a user's settings are expanded to
+     core's directory. GH-1793 makes `dev10x permission update-paths`
+     move a rule for any skill under an `extracted:` key to the
+     satellite's cache (`…/dev10x-<area>/<ver>/`) and marketplace
+     (`…/plugins/<area>/`) directories, so a later extraction needs no
+     code change for this. It lands before `0.114.0`, the release that
+     ships B1 and B2, so their moved scripts do not prompt. An `allow`
+     rule is replaced; a `deny` or `ask` rule is kept and a relocated
+     copy added. A git-tracked settings file is skipped, as for every
+     `update-paths` rewrite.
+   - A user who never held the core rules gets nothing from that move,
+     so GH-1807 makes `ensure-scripts` scan each installed satellite's
+     cache (`…/<plugin name>/<ver>/`, found beside core's) and spell
+     its script twins with the `plugins/<key>/` infix. `ensure-reads`
+     emits the versioned skill-folder Read rules for the same roots;
+     the unversioned `marketplaces/<pub>/**` Read rule already spans
+     every satellite. A key under `extracted:` with no installed
+     version is skipped.
+   - **Version policy (GH-1886): a satellite is located at its own
+     newest installed version, never at core's.** Permission seeding
+     and runtime resolution through `dev10x.core.paths.satellite_script`
+     both follow it, so a satellite that lags or leads core by a
+     release still resolves and still gets its grants. Releases still
+     bump every plugin together; the policy only stops the lookup from
+     depending on that. `update-paths` rewrites a rule the user already
+     holds and cannot see what is installed, so it keeps the rule's
+     version segment; `ensure-scripts` adds the newest one.
+   - The layout rules have one owner each (GH-1886):
+     `PluginMap.installed_name` for a key's plugin name, and
+     `dev10x.core.paths.satellite_cache_dir` / `satellite_subdir` /
+     `latest_version` for the cache sibling, the `plugins/<key>`
+     infix and the version choice. A Stage B layout change edits
+     those, not their callers.
+   - B3 (GH-1566) keeps `command-skill-map.d/db.yaml`,
+     `families.d/db.yaml` and `projects.d/db.yaml` in core's tree too.
+     `projects.d/db.yaml` gains `Skill(dev10x-db:*)` next to the
+     `mcp__plugin_dev10x_db__query` allow it already held.
+   - The `db` MCP server stays in core, but its `query` tool and the
+     DX004 hook's messages use `db.sh`, which moves with `db-psql`.
+     Core finds it through `dev10x.core.paths.satellite_script`.
+     The resolver tries the satellite under core's own root first,
+     which covers a checkout and a marketplace clone. It then tries
+     the satellite installed beside core in the cache
+     (`…/dev10x-db/<ver>/`, its newest version). With neither present,
+     `query` returns an error that names `dev10x-db`. B9's coding
+     scripts, which `cli` tools run, can use the same resolver.
+   - B4 (GH-1567) moves all seven skills `plugins.yaml` assigns to
+     `comm`: the five in the target table plus `overwatch` and
+     `voice-channel`, which were mapped to comm later and call the bus
+     scripts through `${CLAUDE_PLUGIN_ROOT}`. Its fragments
+     (`command-skill-map.d/comm.yaml`, `projects.d/comm.yaml`,
+     `hooks/hooks.d/comm.json`) stay in core, and `projects.d/comm.yaml`
+     gains `Skill(dev10x-comm:*)`. The Chat bus, Overwatch and
+     notification Python stays in `dev10x.comm`.
+   - Core no longer reaches into the satellite: the slack-review-request
+     `send` path posts through the in-package `slack_notify` module, and
+     the investigate `reply.sh` calls `dev10x skill notify slack-send`,
+     instead of running `slack-notify.py` by path. The bus shims find
+     core's `src/` through `skills/bus/lib/core_src.py`: under their own
+     root, under a checkout's root, or beside the installed satellite in
+     the cache at core's newest version.
+   - B5 (GH-1568) moves the seven `teach` skills. The audit and
+     `generate_skill_index` MCP tools and their Python stay in
+     `dev10x.teach`; they reach the moved scripts through
+     `dev10x.teach.teach_script`, the same `satellite_script` resolver
+     B3 uses for `db.sh`. The skill-audit shims carry their own copy of
+     `lib/core_src.py`, since one satellite cannot import another. The
+     skill-index generators find core's `bin/` and plugin map through
+     `core_root` in `lib-families.sh`, tried in the same three layouts,
+     and pick the installed core by its plugin map rather than by the
+     presence of `skill-index`, so `~/.claude/SKILLS.md` keeps listing
+     core and every satellite.
+   - B6 (GH-1569) moves all eight skills `plugins.yaml` assigns to
+     `tasks`: the seven in the target table plus `reflect`, mapped to
+     tasks later. None of them ships a script. Its fragments
+     (`hooks/hooks.d/tasks.json`, `projects.d/tasks.yaml`) stay in core,
+     so `task-guard` and `task-plan-sync` keep running from core's
+     `hooks/scripts/` and the Stop hook keeps reading `plan.yaml` through
+     `dev10x.core.plan_mirror` whether or not `dev10x-tasks` is
+     installed. The satellite manifest declares no hooks of its own, so
+     the entries are never registered twice. The `task_index_*` and
+     `plan_sync_*` MCP tools and the `dev10x skill reflect` command stay
+     in core under their old names.
+   - B7 (GH-1570) moves all nineteen skills `plugins.yaml` assigns to
+     `scoping`: the fifteen in the target table plus `artifact` and the
+     three `diagram-*` skills, mapped to scoping later. The five
+     `architect-*` agents and `adr-reviewer` move to
+     `plugins/scoping/agents/`, since `adr-evaluate` is their only
+     caller, and so does `references/diagrams/rendering.md`, whose every
+     reader is now a scoping skill. Coding↔scoping stays the
+     `soft_dependencies` edge in `plugins.yaml`; per decision 2 it is
+     not emitted to either manifest, so the satellite declares
+     `["dev10x"]` only. The tracker MCP tools, the spec-drift validator
+     (DX015) and `projects.d/scoping.yaml` stay in core. Three
+     `allowed-tools` grants on core's `gh-context` scripts are dropped:
+     no scoping skill ran those scripts, and from the satellite's root
+     the path would no longer resolve.
+   - B8 (GH-1571) finalizes core in place: no skill moves. Core keeps
+     the `dev10x` name, both MCP servers, `hooks/hooks.json` and every
+     `hooks.d/` fragment, and the seventeen skills `plugins.yaml`
+     assigns to `core`. The coding skills still ship inside it until
+     B9, so the manifest description names them as interim rather than
+     promising they stay. `plugin-doctor` gains the backup check Key
+     rule 3 names: `satellite-dependencies` flags an enabled satellite
+     whose `dev10x` (or hard) dependency is disabled or enabled
+     nowhere, and `extracted-skill-rules` flags a hand-written
+     `Skill(dev10x:<skill>)` rule for a skill that now lives in a
+     satellite. Both read `plugins.yaml`, so B9 needs no doctor change.
+   - B9 (GH-1572) moves all forty skills `plugins.yaml` assigns to
+     `coding` to `plugins/coding/`; no agent moves, since core and the CI
+     review read the reviewer agents too. The manifest declares
+     `["dev10x", "dev10x-tasks"]`, as `plugins.yaml` derives it. Per
+     decision 3 every `dev10x.coding` MCP tool stays registered by core's
+     `cli` server, so the tool list is unchanged with both plugins
+     installed and with core alone; a test pins both shapes against the
+     pre-move list. Those tools reach the moved scripts through
+     `dev10x.coding.coding_script`, the `satellite_script` resolver B3
+     and B5 use. The seven uv-script shims find core's `src/` through
+     one `skills/git/lib/core_src.py`, a copy of the comm and teach
+     helper. `gh-context` stays in core, so `gh-pr-create` and
+     `gh-pr-monitor` read issues and PRs through the MCP tools instead
+     of its scripts. Playbook readers (`dev10x playbook diff`, the
+     skill-playbook MCP resource) now search each installed satellite's
+     root, since `dev10x-coding` is the first satellite to ship playbook
+     defaults and work-on's plays. Its fragments (`hooks.d/coding.json`,
+     `command-skill-map.d/coding.yaml`, `projects.d/coding.yaml`,
+     `families.d/coding.yaml`) stay in core's tree, per decision 4.
+5. **Old names stay readable for two releases (GH-1564).** Each moved
+   skill gets one `SKILL_NAME_ALIASES` row, and
+   `dev10x config migrate-skill-names` rewrites user configs. QA ships
+   in `0.114.0`, so its rows and the register entry end at `0.116.0`.
+   A later extraction pushes the register entry out again, so it
+   always outlives the newest row.
+   - B2 (GH-1565) lands before `0.114.0` is released, so infra ships
+     in the same release as QA. Its two rows also end at `0.116.0`,
+     and the register entry does not move. An extraction that ships
+     in a later release gets its own removal version, two releases
+     after that release.
+   - B3 (GH-1566) also lands before `0.114.0`, so its three rows end
+     at `0.116.0` and the register entry stays put.
+   - GH-1865 retired those rows and the register entry at `0.116.0`.
+     B4 (GH-1567) ships in `0.116.0`, so its seven rows end at
+     `0.118.0` and the register entry returns with that removal
+     version.
+   - B5 (GH-1568) also lands before `0.116.0` is released, so its
+     seven rows end at `0.118.0` and the register entry stays put.
+   - B6 (GH-1569) lands before `0.116.0` too, so its eight rows end at
+     `0.118.0` and the register entry stays put.
+   - B7 (GH-1570) lands before `0.116.0` as well, so its nineteen rows
+     end at `0.118.0` and the register entry stays put.
+   - B9 (GH-1572) lands before `0.116.0` too, so its forty rows end at
+     `0.118.0` and the register entry stays put.
 
 ### Open decisions (record before the dependent step)
 

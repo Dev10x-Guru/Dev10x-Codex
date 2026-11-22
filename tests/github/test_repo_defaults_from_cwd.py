@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-import subprocess
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from dev10x.domain.common.result import ErrorResult, SuccessResult
 
-from dev10x import monitor as monitor_mod
+from dev10x.coding import monitor as monitor_mod
 from dev10x.coding.github import reviews
+from dev10x.core.domain.common.result import ErrorResult, SuccessResult
+from tests.fakers.process import completed as _completed
 
 _DETECTED = "detected-owner/detected-repo"
-
-
-def _completed(*, stdout: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
 
 
 @pytest.fixture
@@ -51,7 +47,7 @@ def script_runner():
 @pytest.fixture
 def monitor_runner():
     with patch(
-        "dev10x.monitor.async_run",
+        "dev10x.coding.monitor.async_run",
         new_callable=AsyncMock,
         return_value=_completed(stdout='{"verdict": "green"}'),
     ) as mock_run:

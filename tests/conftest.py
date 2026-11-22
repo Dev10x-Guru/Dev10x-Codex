@@ -1,13 +1,18 @@
+import logging
 import subprocess
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from dev10x.domain.claude_paths import ClaudeDir
-from dev10x.domain.common.result import ok
-from dev10x.domain.dev10x_paths import CONFIG_HOME_ENV_VAR, Dev10xConfigDir
 from factory.random import reseed_random
+
+from dev10x.core.diagnostic_log import LOG_DIR_ENV as DIAGNOSTIC_LOG_DIR_ENV
+from dev10x.core.diagnostic_log import LOGGER_NAME as DIAGNOSTIC_LOGGER_NAME
+from dev10x.core.domain.claude_paths import ClaudeDir
+from dev10x.core.domain.common.result import ok
+from dev10x.core.domain.dev10x_paths import CONFIG_HOME_ENV_VAR, Dev10xConfigDir
+from dev10x.core.validators import reset_registry
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -117,6 +122,40 @@ def _isolate_dev10x_config_home(
 
 
 @pytest.fixture
+def write_safety_key_policy() -> Callable[[str | bytes], Path]:
+    """Write ``safety-keys.yaml`` into the isolated config home (GH-1856)."""
+
+    def write(content: str | bytes) -> Path:
+        path = Dev10xConfigDir.safety_keys_yaml()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content)
+        return path
+
+    return write
+
+
+@pytest.fixture(autouse=True)
+def _isolate_diagnostic_log(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Generator[None, None, None]:
+    """Keep the GH-1639 diagnostic sink out of /tmp/Dev10x/log and test order.
+
+    ``server_cli.main()`` and the ``skill`` CLI group attach handlers to the
+    process-wide ``dev10x`` logger. Without this, any test driving either
+    entry point writes into the real log directory and leaves the handlers
+    attached for every test that runs after it.
+    """
+    monkeypatch.setenv(DIAGNOSTIC_LOG_DIR_ENV, str(tmp_path / "dev10x-diagnostic-log"))
+    logger = logging.getLogger(DIAGNOSTIC_LOGGER_NAME)
+    saved_handlers, saved_level = list(logger.handlers), logger.level
+    yield
+    logger.handlers, logger.level = saved_handlers, saved_level
+
+
+@pytest.fixture
 def stub_feature_branch() -> Generator[MagicMock, None, None]:
     """Pin ``create_pr``'s branch-detection seam to a feature branch (GH-1124).
 
@@ -128,7 +167,7 @@ def stub_feature_branch() -> Generator[MagicMock, None, None]:
     never the thing under test; the guard keeps its own ambient-independent
     coverage in ``TestCreatePrBaseBranchGuard``.
     """
-    with patch("dev10x.domain.git_context.GitContext") as mock_git_context:
+    with patch("dev10x.core.domain.git_context.GitContext") as mock_git_context:
         mock_git_context.return_value.branch = "janusz/GH-1124/test-isolation"
         yield mock_git_context
 
@@ -145,9 +184,30 @@ def stub_fixes_trailer_readback() -> Generator[AsyncMock, None, None]:
     contract as ``stub_feature_branch``: the guard keeps its own
     coverage in ``TestCreatePrFixesTrailerReadback``.
     """
-    with patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock) as mock_pr_get:
+    with patch("dev10x.coding.github.pulls.pr_get", new_callable=AsyncMock) as mock_pr_get:
         mock_pr_get.return_value = ok({"body": "Story\n\nFixes: #1"})
         yield mock_pr_get
+
+
+_HOOK_PROFILE_ENV_VARS = (
+    "DEV10X_HOOK_PROFILE",
+    "DEV10X_HOOK_DISABLE",
+    "DEV10X_HOOK_EXPERIMENTAL",
+)
+
+
+@pytest.fixture
+def default_hook_chain(monkeypatch: pytest.MonkeyPatch) -> Generator[None]:
+    """Run the real validator chain at its default profile, whatever the shell sets.
+
+    A developer with ``DEV10X_HOOK_DISABLE=DX004`` must not turn a test that
+    relies on DX004 denying ``psql`` red (GH-1790 review).
+    """
+    for name in _HOOK_PROFILE_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    reset_registry()
+    yield
+    reset_registry()
 
 
 @pytest.fixture(autouse=True)

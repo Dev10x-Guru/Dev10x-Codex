@@ -5,14 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from dev10x.validators.execution_safety import (
+
+from dev10x.core.validators.execution_safety import (
     INPLACE_EDIT_MSG,
     PYTHON3_INLINE_MSG,
     SHELL_INTERP_MSG,
     SHELL_WRITE_MSG,
     ExecutionSafetyValidator,
 )
-
 from tests.fakers import BashHookInputFaker
 
 
@@ -120,6 +120,86 @@ class TestShellWrites:
     ) -> None:
         assert validator.validate(inp=_make_input(command=command)) is not None
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # GH-1816: the redirect sits on the group, not on the verb.
+            "{ echo hi; } > src/x.py",
+            "(cat a b) > out.py",
+            "{ printf x; } >> f",
+            "( echo hi ) 2>/dev/null > f",
+            "{ { echo hi; } 2>/dev/null; } > f",
+            "{ true; echo hi; } > f",
+            "(echo hi)>f",
+            "{ echo hi; '}'; } > f",
+            "{ echo hi; case x in x) :;; esac; } > f",
+            "echo $(date) > f",
+            "cd x && { echo hi; } > f",
+            "( echo hi; case x in x) :;; esac ) > f",
+            "( case x in a|b) echo hi;; esac ) > f",
+            "( case x in\n x) echo hi;; esac ) > f",
+            "(echo hi; 'case') > f",
+            "cat <(true) > f",
+            "cat < $(true) > f",
+            "echo $(date) more > f",
+            "echo $(a) $(b) > f",
+            "(echo $(date) case) > f",
+            "cat < <(a) > f",
+            # GH-1876: the scanner emits substitution openers, backticks
+            # included, so the redirect lands on the command holding them.
+            "echo `date` > f",
+            "echo `a` more > f",
+            "echo $(a $(b)) > f",
+            "echo > >(a) > f",
+            "echo $((1+2)) > f",
+            # GH-1876: a compound command carries its redirect inward.
+            "if true; then echo hi; fi > f",
+            "while true; do echo hi; done > f",
+            "until false; do printf x; done >> f",
+            "for x in a b; do echo $x; done > f",
+            "case x in a) echo hi;; esac > f",
+            "for x in a; do if true; then cat; fi; done > f",
+            "case x in a) echo hi;; if) :;; esac > f",
+            "case x in\n  a) ls ;;\n  if) echo hi ;;\nesac > f",
+            "case x in a|if) echo hi;; esac > f",
+            "case x in a) :;& fi) echo hi;; esac > f",
+            "$(true) echo hi > f",
+            "$(:)echo hi > f",
+            "> o$(x) echo hi",
+        ],
+    )
+    def test_blocks_a_write_redirected_on_a_command_group(
+        self, validator: ExecutionSafetyValidator, command: str
+    ) -> None:
+        assert validator.validate(inp=_make_input(command=command)) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # A group redirect counts like a bare one: only a write verb
+            # inside the group makes it a shell write (GH-1816).
+            "{ ls; } 2>/dev/null",
+            "( ls -la ) > f",
+            "{ git status; git diff; } > out.txt",
+            "{ echo hi; } < f",
+            "ls $(cat a) > f",
+            "grep x $(cat list) > out",
+            "{ ls cat; } > f",
+            "{ echo hi; } ; > f",
+            "ls <(true) > f",
+            "( case x in x) ls;; esac ) > f",
+            "echo $(a); { ls; } c > f",
+            "ls `cat a` > f",
+            "if true; then ls; fi > f",
+            "for x in a; do ls $x; done > f",
+            "if true; then echo hi; fi; ls > f",
+        ],
+    )
+    def test_allows_a_group_redirect_without_a_write_verb(
+        self, validator: ExecutionSafetyValidator, command: str
+    ) -> None:
+        assert validator.validate(inp=_make_input(command=command)) is None
+
 
 class TestPython3Inline:
     @pytest.fixture()
@@ -202,6 +282,7 @@ class TestPythonInlineAcrossNamesAndLaunchers:
             "uv run python <<'PY'\nprint(1)\nPY",
             "FOO=1 uv run python -c 'print(1)'",
             "python /tmp/malicious.py",
+            "$'\\160ython3' -c 'import os'",
         ],
     )
     def test_blocks_inline_python(self, validator: ExecutionSafetyValidator, command: str) -> None:
@@ -264,6 +345,52 @@ class TestPythonInlineAcrossNamesAndLaunchers:
         self, validator: ExecutionSafetyValidator
     ) -> None:
         assert validator.validate(inp=_make_input(command="uv run --project")) is None
+
+
+class TestLauncherRegexStopsAtFirstPositional:
+    """GH-1733 (a): the whole-command regexes must not read an argument as
+    the interpreter. Only launcher OPTIONS may sit between the launcher and
+    python; the first positional is the program the launcher runs."""
+
+    @pytest.fixture()
+    def validator(self) -> ExecutionSafetyValidator:
+        return ExecutionSafetyValidator()
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "uv run pytest -k python <<'EOF'\nx\nEOF",
+            "poetry run alembic --name python <<EOF\nx\nEOF",
+            "uvx cowsay python <<<'hi'",
+            'uv run pytest -k python "unbalanced',
+            "uv run mytool tests/python/x 'unbalanced",
+        ],
+    )
+    def test_allows_python_named_as_an_argument(
+        self, validator: ExecutionSafetyValidator, command: str
+    ) -> None:
+        assert validator.validate(inp=_make_input(command=command)) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "uv run --with requests python <<'PY'\nprint(1)\nPY",
+            "uv --project apps/api run python3 <<<'print(1)'",
+            'uv --project "my dir" run python <<PY\nprint(1)\nPY',
+            "poetry -P apps/api run python <<PY\nprint(1)\nPY",
+            "uv run --directory my\\ dir python <<PY\nprint(1)\nPY",
+            "uv --project apps/api run python -c 'print(\"x)",
+            "uv run --frozen python -c 'print(\"x)",
+            "uvx --from foo python -c 'print(\"x)",
+        ],
+    )
+    def test_still_blocks_python_after_launcher_options(
+        self, validator: ExecutionSafetyValidator, command: str
+    ) -> None:
+        result = validator.validate(inp=_make_input(command=command))
+
+        assert result is not None
+        assert result.message == PYTHON3_INLINE_MSG
 
 
 class TestInplaceEdit:
@@ -354,10 +481,11 @@ class TestInplaceEdit:
         result = validator.validate(inp=inp)
         assert result is None
 
-    def test_returns_none_on_unbalanced_quotes(self, validator: ExecutionSafetyValidator) -> None:
+    def test_blocks_on_unbalanced_quotes(self, validator: ExecutionSafetyValidator) -> None:
+        """GH-1798: an untokenizable in-place edit fails closed."""
         inp = _make_input(command="sed -i 's/a/b")
         result = validator.validate(inp=inp)
-        assert result is None
+        assert result is not None
 
     def test_allows_non_inplace_command_in_pipeline(
         self, validator: ExecutionSafetyValidator
@@ -380,7 +508,7 @@ class TestInplaceEditHelpers:
     """Unit tests for module-level helpers in execution_safety."""
 
     def test_has_inplace_flag_returns_false_for_unknown_cmd(self) -> None:
-        from dev10x.validators.execution_safety import _has_inplace_flag
+        from dev10x.core.validators.execution_safety import _has_inplace_flag
 
         assert _has_inplace_flag(argv=["-i", "file.txt"], cmd="unknown") is False
 
@@ -822,3 +950,212 @@ class TestReadOnlyUtilityWithShellScriptArgument:
         result = validator.validate(inp=inp)
         assert result is not None
         assert result.message == SHELL_INTERP_MSG
+
+
+class TestEveryOperatorAndRunner:
+    """GH-1773/GH-1774: chaining or a runner must not hide the command."""
+
+    @pytest.fixture()
+    def validator(self) -> ExecutionSafetyValidator:
+        return ExecutionSafetyValidator()
+
+    @pytest.mark.parametrize(
+        ("command", "message"),
+        [
+            ("true;python -c 'x'", PYTHON3_INLINE_MSG),
+            ("true & python -c 'x'", PYTHON3_INLINE_MSG),
+            ("true\npython -c 'x'", PYTHON3_INLINE_MSG),
+            ("(python -c 'x')", PYTHON3_INLINE_MSG),
+            ("true # note\npython -c 'x'", PYTHON3_INLINE_MSG),
+            ("sudo python -c 'x'", PYTHON3_INLINE_MSG),
+            ("sudo -iu app python -c 'x'", PYTHON3_INLINE_MSG),
+            ("echo f | xargs python -c 'x'", PYTHON3_INLINE_MSG),
+            ("ssh host 'python -c x'", PYTHON3_INLINE_MSG),
+            ("su app -c 'bash -c x'", SHELL_INTERP_MSG),
+            ("docker exec c sh -c 'x'", SHELL_INTERP_MSG),
+            ("kubectl exec p -- bash -c x", SHELL_INTERP_MSG),
+            ("true;sed -i s/a/b/ f", INPLACE_EDIT_MSG),
+            ("find . -name '*.py' -exec sed -i s/a/b/ {} \\;", INPLACE_EDIT_MSG),
+            ("echo $(true; perl -pi -e s/a/b/ f)", INPLACE_EDIT_MSG),
+            ("true;dd if=/dev/zero of=f", INPLACE_EDIT_MSG),
+            ("true;echo x > f", SHELL_WRITE_MSG),
+            ("true&&echo x > f", SHELL_WRITE_MSG),
+            ("sudo echo x > f", SHELL_WRITE_MSG),
+            ("true;echo x &>f", SHELL_WRITE_MSG),
+            ("true;echo 'x > f", SHELL_WRITE_MSG),
+            ("echo ';' > f", SHELL_WRITE_MSG),
+            ("sed -e ';' -i f", INPLACE_EDIT_MSG),
+            ("sed -i s/a/b/ f # don't", INPLACE_EDIT_MSG),
+            ("find . \\( -name a -o -name b \\) -exec python3 -c x {} \\;", PYTHON3_INLINE_MSG),
+            ("find . -exec echo {} \\; -exec sed -i s/a/b/ {} \\;", INPLACE_EDIT_MSG),
+            ("docker run --rm img python -c x", PYTHON3_INLINE_MSG),
+            ("kubectl exec mypod -n prod -- python -c x", PYTHON3_INLINE_MSG),
+            ("ssh db01 -t python -c x", PYTHON3_INLINE_MSG),
+            ("s''sh h 'python -c x'", PYTHON3_INLINE_MSG),
+            ("su app -c 'python /srv/untrusted.py'", PYTHON3_INLINE_MSG),
+            (">/dev/null python -c 'x'", PYTHON3_INLINE_MSG),
+            ("echo x | cat | python", PYTHON3_INLINE_MSG),
+            ("true; echo x | python", PYTHON3_INLINE_MSG),
+            ("2>/dev/null python3 -c x", PYTHON3_INLINE_MSG),
+            ("sudo python3 <<'EOF'\nprint(1)\nEOF", PYTHON3_INLINE_MSG),
+            ("timeout 5 bash <<EOF\necho hi\nEOF", SHELL_INTERP_MSG),
+        ],
+    )
+    def test_blocks(self, validator: ExecutionSafetyValidator, command: str, message: str) -> None:
+        result = validator.validate(inp=_make_input(command=command))
+
+        assert result is not None
+        assert result.message == message
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cd x; python",
+            "echo x | cat; python",
+            "cd x && python script.py",
+            "true; python -m pytest",
+            "make 2>&1 | tee build.log",
+            "ssh host uptime",
+            "find . -name x -exec grep foo {} +",
+            "sudo ls /var/lib && echo done",
+            "true;dd if=f of=/dev/null",
+            "kubectl exec p -- python /app/manage.py migrate",
+            "docker exec c bash /docker-entrypoint.sh",
+            "ssh host python /srv/app.py",
+            "docker images python",
+        ],
+    )
+    def test_allows(self, validator: ExecutionSafetyValidator, command: str) -> None:
+        assert validator.validate(inp=_make_input(command=command)) is None
+
+
+class TestSharedSegmenterRouting:
+    """GH-1798: probes, redirects and heredocs go through one segmenter."""
+
+    @pytest.fixture()
+    def validator(self) -> ExecutionSafetyValidator:
+        return ExecutionSafetyValidator()
+
+    @pytest.mark.parametrize(
+        ("command", "message"),
+        [
+            ("p''ython -c x", PYTHON3_INLINE_MSG),
+            ("py\\thon3 -c x", PYTHON3_INLINE_MSG),
+            ("ba''sh -c x", SHELL_INTERP_MSG),
+            ("python >/dev/null -c x", PYTHON3_INLINE_MSG),
+            ("python 2>&1 -c x", PYTHON3_INLINE_MSG),
+            ("python3<<EOF\nimport os\nEOF", PYTHON3_INLINE_MSG),
+            ("python3 0<<EOF\nimport os\nEOF", PYTHON3_INLINE_MSG),
+            ("python3 x.py 2>err <<<'import os'", PYTHON3_INLINE_MSG),
+            ("echo a>f", SHELL_WRITE_MSG),
+            ("echo 'a'>>f", SHELL_WRITE_MSG),
+            ("printf x >| f", SHELL_WRITE_MSG),
+            ("cat<<EOF > f\nbody\nEOF", SHELL_WRITE_MSG),
+            ("ssh h 'python -c x' > out.log", PYTHON3_INLINE_MSG),
+        ],
+    )
+    def test_blocks(self, validator: ExecutionSafetyValidator, command: str, message: str) -> None:
+        result = validator.validate(inp=_make_input(command=command))
+
+        assert result is not None
+        assert result.message == message
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo 'a>b'",
+            'echo "x > y" "<<EOF"',
+            "echo \\> x",
+            "python3 tool.py | sort <<EOF\nbody\nEOF",
+            "uv run pytest -k python <<EOF\nbody\nEOF",
+            "ssh host python /srv/app.py > out.log",
+        ],
+    )
+    def test_allows(self, validator: ExecutionSafetyValidator, command: str) -> None:
+        assert validator.validate(inp=_make_input(command=command)) is None
+
+
+class TestInplaceEditFailsClosed:
+    """GH-1798: an untokenizable in-place edit is blocked, not skipped."""
+
+    @pytest.fixture()
+    def validator(self) -> ExecutionSafetyValidator:
+        return ExecutionSafetyValidator()
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "sed -i 's/a/b/ f",
+            "true; sudo sed -ni 's/a/b/ f",
+            "perl -pi -e 's/a/b/ f",
+            "gawk -i inplace '{print} f",
+            "dd if=/dev/zero of=disk.img 'x",
+            "su app -c 'sed -i s/a/b/ f",
+        ],
+    )
+    def test_blocks(self, validator: ExecutionSafetyValidator, command: str) -> None:
+        result = validator._check_inplace_edit(command=command)
+
+        assert result is not None
+        assert result.message == INPLACE_EDIT_MSG
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "sed -n 's/a/b/ f",
+            "awk '{print} f",
+            "dd if=f of=/dev/null 'x",
+            "grep sed -i 'x",
+        ],
+    )
+    def test_allows(self, validator: ExecutionSafetyValidator, command: str) -> None:
+        assert validator._check_inplace_edit(command=command) is None
+
+
+class TestExtraRunners:
+    """GH-1798: setsid, pkexec, chroot, nsenter, flock, watch, eval, env -S."""
+
+    @pytest.fixture()
+    def validator(self) -> ExecutionSafetyValidator:
+        return ExecutionSafetyValidator()
+
+    @pytest.mark.parametrize(
+        ("command", "message"),
+        [
+            ("setsid -f python -c x", PYTHON3_INLINE_MSG),
+            ("pkexec --user root bash -c x", SHELL_INTERP_MSG),
+            ("chroot /srv/root python3 -c x", PYTHON3_INLINE_MSG),
+            ("nsenter -t 1 -m python -c x", PYTHON3_INLINE_MSG),
+            ("flock /tmp/l python -c x", PYTHON3_INLINE_MSG),
+            ("flock -w 5 /tmp/l -c 'python -c x'", PYTHON3_INLINE_MSG),
+            ("flock --command='bash -c x' /tmp/l", SHELL_INTERP_MSG),
+            ("watch -n 5 python -c x", PYTHON3_INLINE_MSG),
+            ("eval 'python -c x'", PYTHON3_INLINE_MSG),
+            ("eval sed -i s/a/b/ f", INPLACE_EDIT_MSG),
+            ("env -S 'python -c x'", PYTHON3_INLINE_MSG),
+            ("env -u HOME -S'bash -c x'", SHELL_INTERP_MSG),
+            ("env --split-string='-i python -c x'", PYTHON3_INLINE_MSG),
+            ("setsid sed -i s/a/b/ f", INPLACE_EDIT_MSG),
+            ("/bin/bash -c x", SHELL_INTERP_MSG),
+            ("sudo /usr/bin/sh -c x", SHELL_INTERP_MSG),
+            ("/usr/bin/zsh <<EOF\nrm x\nEOF", SHELL_INTERP_MSG),
+        ],
+    )
+    def test_blocks(self, validator: ExecutionSafetyValidator, command: str, message: str) -> None:
+        result = validator.validate(inp=_make_input(command=command))
+
+        assert result is not None
+        assert result.message == message
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "watch -n 2 git status",
+            "flock /tmp/l make build",
+            "eval echo hi",
+            "env -S 'git status'",
+            "setsid python script.py",
+        ],
+    )
+    def test_allows(self, validator: ExecutionSafetyValidator, command: str) -> None:
+        assert validator.validate(inp=_make_input(command=command)) is None

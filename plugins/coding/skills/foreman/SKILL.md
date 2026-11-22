@@ -1,0 +1,95 @@
+---
+name: dev10x-coding:foreman
+description: >
+  Unattended overnight delivery of a milestone/bundle queue — a
+  two-tier harness (watchdog main session + cheap foreman overseer +
+  work-on crew) that pre-flights permissions while the supervisor is
+  still present, loops the queue, defers questionable scope to the
+  end, survives quota-block rollovers, and self-audits its friction
+  at dawn. Defaults to the adaptive auto-advance + afk gate policy
+  (guided/strict on request) — never YOLO auto-mode.
+  TRIGGER when: the supervisor is leaving (AFK / overnight / "ship
+  these milestones while I sleep") with 1+ milestones or issue
+  bundles queued for autonomous delivery.
+  DO NOT TRIGGER when: single attended bundle (use dev10x-coding:work-on),
+  parallel independent items while attended (use dev10x-coding:fanout), or
+  only the gate policy is wanted (use dev10x:afk).
+user-invocable: true
+invocation-name: dev10x-coding:foreman
+allowed-tools:
+  - AskUserQuestion
+  - Read(~/.config/Dev10x/friction.yaml)
+  - mcp__plugin_dev10x_cli__preset_pin_status
+  - mcp__plugin_dev10x_cli__resolve_gate
+  - Agent
+  - SendMessage
+  - TaskStop
+  - Bash(dev10x foreman:*)
+  - Bash(uv run dev10x foreman:*)
+  - ToolSearch
+  - Skill(dev10x:afk)
+  - Skill(dev10x-coding:work-on)
+  - Skill(dev10x-coding:gh-pr-merge)
+  - Skill(dev10x-coding:fanout)
+  - Skill(dev10x:diag-friction)
+  - Skill(dev10x-teach:skill-audit-queue)
+  - Skill(dev10x-tasks:session-wrap-up)
+  - mcp__plugin_dev10x_cli__issue_list
+  - mcp__plugin_dev10x_cli__issue_get
+  - mcp__plugin_dev10x_cli__issue_comment
+  - mcp__plugin_dev10x_cli__issue_create
+  - mcp__plugin_dev10x_cli__issue_close
+  - mcp__plugin_dev10x_cli__pr_get
+  - mcp__plugin_dev10x_cli__ci_check_status
+  - mcp__plugin_dev10x_cli__review_readiness_audit
+  - mcp__plugin_dev10x_cli__milestone_close
+  - mcp__plugin_dev10x_cli__background_preamble
+  - mcp__plugin_dev10x_cli__resolve_gate
+  - mcp__plugin_dev10x_cli__mktmp
+---
+
+# dev10x-coding:foreman — Overnight Milestone Delivery Harness
+
+**Announce:** "Using dev10x-coding:foreman to pre-flight and run the
+unattended delivery of [queue] while you're away."
+
+The supervisor leaves the site; the foreman runs the crew; the
+watchdog only restarts the foreman. In the morning the supervisor
+reads the shift log — merged PRs, closed milestones, every decision
+recorded, deferred scope commented on its issues.
+
+## Instructions
+
+The full workflow — Phase 0 pre-flight (the one-time permission
+window), the two-tier night loop, stall/quota/base-movement
+recovery, and the dawn self-audit — lives in
+[`instructions.md`](instructions.md).
+
+When this skill is invoked, Read `instructions.md` now and follow it
+end-to-end. The Phase 0 `AskUserQuestion` gate (queue plan + model
+mapping) and the pre-flight enumeration are REQUIRED — they are what
+makes the night survivable. The Phase 0.3 gate-policy gate is an
+override opportunity, not a question: the default is
+`gate_preset: adaptive` + `gate_overlays: [afk]`, and a durable
+policy already on disk is honored without asking (GH-944).
+
+Before writing any crew or foreman prompt, also Read
+[`references/tool-surface.md`](references/tool-surface.md): subagents
+cannot call `Skill(...)` and reach MCP wrappers only via a
+`ToolSearch` select-query, so crew workers stop at PR-open and the
+merge gate stays with this top-level session.
+
+When resuming a run whose previous session died — or when writing a
+handover another session will read — Read
+[`references/durability-envelope.md`](references/durability-envelope.md)
+first: only pushed commits and issue comments survive a session
+death, an inherited brief is a hypothesis until re-derived from
+origin, and a foreman cannot spawn named teammates (GH-965).
+
+**Optional review-readiness sweep (GH-1834).** Only when the
+supervisor asks for it at Phase 0: once per periodic status, call
+`mcp__plugin_dev10x_cli__review_readiness_audit` per manifest repo and
+list its `SENT-NOT-READY` rows in the status. Read-only — never
+comment, request review or relabel. See
+[`references/review-readiness.md`](../../references/review-readiness.md)
+§ Periodic sweep under foreman.

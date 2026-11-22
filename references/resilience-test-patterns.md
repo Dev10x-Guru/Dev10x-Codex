@@ -14,7 +14,7 @@ Test orchestrators by mocking this failure after agent spawn:
 @pytest.fixture
 def mock_session_death():
     """Mock SendMessage failure that signals session death."""
-    with patch("dev10x.domain.github.SendMessage") as mock_send:
+    with patch("dev10x.core.domain.github.SendMessage") as mock_send:
         mock_send.side_effect = Exception("No transcript found for agent ID: ...")
         yield mock_send
 ```
@@ -202,5 +202,5 @@ branch_exists = git_branch("-r").find(branch_name) >= 0
 
 - `references/resilience-patterns.md` — the contract that tests
   verify (Rules 1-4)
-- `references/orchestration/subagent-status-protocol.md` — agent
-  status reporting that orchestrators parse when resuming
+- `references/orchestration/subagent-status-operations.md` — the
+  resume-first rule and non-resumable cases orchestrators apply

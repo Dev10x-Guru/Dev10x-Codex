@@ -4,19 +4,21 @@ A skill that names ``${CLAUDE_PLUGIN_ROOT}/skills/<other>/`` reaches into
 another skill's folder. Inside one plugin that is harmless; once Stage B
 gives each plugin its own root, a path into a sibling plugin stops
 resolving. A skill may therefore reach only its own plugin's folders or
-core's, mirroring the Python import boundary.
+core's, mirroring the Python import boundary. Once its plugin is
+extracted (GH-1564) the root is the satellite's own, so even core's
+folders are out of reach.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
 from dev10x.core.plugin_map import PluginMap
 
 CORE_PLUGIN = "core"
-SKILL_FILE = "SKILL.md"
 SKILL_FOLDER_PATH = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/skills/([a-z0-9][a-z0-9-]*)/")
 
 
@@ -30,15 +32,22 @@ def skill_folder_targets(*, text: str) -> list[str]:
     return sorted(set(SKILL_FOLDER_PATH.findall(text)))
 
 
-def cross_plugin_edges(*, skills_root: Path, plugin_map: PluginMap) -> list[SkillPathEdge]:
+def cross_plugin_edges(
+    *,
+    skill_files: Iterable[Path],
+    plugin_map: PluginMap,
+) -> list[SkillPathEdge]:
     edges: list[SkillPathEdge] = []
-    for skill_file in sorted(skills_root.glob(f"*/{SKILL_FILE}")):
+    for skill_file in skill_files:
         skill = skill_file.parent.name
         own = plugin_map.plugin_for(skill=skill)
+        reachable: set[str | None] = {own}
+        if not (own and plugin_map.is_extracted(key=own)):
+            reachable.add(CORE_PLUGIN)
         for target in skill_folder_targets(text=skill_file.read_text()):
-            if plugin_map.plugin_for(skill=target) not in {own, CORE_PLUGIN}:
+            if plugin_map.plugin_for(skill=target) not in reachable:
                 edges.append(SkillPathEdge(skill=skill, target=target))
-    return edges
+    return sorted(edges)
 
 
 __all__ = [

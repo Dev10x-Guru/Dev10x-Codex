@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from dev10x.core.paths import skill_roots
+
 _SKILLS = Path(__file__).parents[2] / "skills"
 
 _ENFORCEMENT_MARKER = "End-to-end read enforcement"
@@ -57,7 +59,11 @@ _SINGLE_READ_BYTES = int(_CHARS_PER_TOKEN * _READ_TOKEN_CAP * _SAFETY_MARGIN)
 
 
 def _instruction_files() -> list[Path]:
-    return sorted(_SKILLS.glob("*/instructions.md"))
+    return [
+        path
+        for root in skill_roots(repo_root=_SKILLS.parent)
+        for path in sorted(root.glob("*/instructions.md"))
+    ]
 
 
 def _oversized() -> list[Path]:
@@ -132,6 +138,10 @@ class TestTheThresholdMatchesObservedTruncation:
         # call, so a threshold that flagged it would be a false positive.
         # This one DOES read the live file on purpose — it is the guard
         # against lowering the margin until real files trip it.
-        size = (_SKILLS / "git-commit" / "instructions.md").stat().st_size
+        size = (
+            (_SKILLS.parent / "plugins" / "coding" / "skills" / "git-commit" / "instructions.md")
+            .stat()
+            .st_size
+        )
 
         assert size < _SINGLE_READ_BYTES

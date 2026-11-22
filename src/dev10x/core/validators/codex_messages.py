@@ -3,7 +3,7 @@ from __future__ import annotations
 import functools
 import re
 
-from dev10x.domain.rules.validation_rule import Compensation
+from dev10x.core.domain.rules.validation_rule import Compensation
 from dev10x.skills.codex.catalog import codex_skill_for, to_codex_casing
 
 ISSUE_REPO = "https://github.com/Dev10x-Guru/Dev10x-Codex"
@@ -205,7 +205,7 @@ def _chain_block(shape: str) -> str:
 
 @functools.cache
 def _upstream_blocks() -> tuple[tuple[re.Pattern[str], str], ...]:
-    from dev10x.validators.prefix_friction import (
+    from dev10x.core.validators.prefix_friction import (
         NEWLINE_CHAIN_MSG,
         OR_CHAIN_MSG,
         REDIRECT_THEN_POSITIONAL_MSG,

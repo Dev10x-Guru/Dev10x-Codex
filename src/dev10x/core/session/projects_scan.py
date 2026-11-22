@@ -11,7 +11,7 @@ prose-resolved files against ``nameWithOwner``. An absent file produces
 no finding — only a list that was evaluated (present, and readable) is
 worth a reader's attention. A present-but-malformed file degrades to an
 empty mapping via the canonical
-:func:`dev10x.domain.common.config_io.load_yaml` seam (GH-1450) rather
+:func:`dev10x.core.domain.common.config_io.load_yaml` seam (GH-1450) rather
 than a bespoke read, which reports it as carrying no ``projects:`` list
 (``ABSENT``) — the same degrade-quietly contract every other Tier-2
 reader on this seam already has.
@@ -22,16 +22,16 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from dev10x.domain.common.config_io import load_yaml
-from dev10x.domain.common.result import SuccessResult
-from dev10x.domain.dev10x_paths import Dev10xConfigDir
-from dev10x.domain.project_match import (
+from dev10x.core.domain.common.config_io import load_yaml
+from dev10x.core.domain.common.result import SuccessResult
+from dev10x.core.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.core.domain.project_match import (
     MatchScheme,
     ProjectsReport,
     evaluate_projects,
 )
-from dev10x.session.preset_pin import probe_path, resolve_repo_identity
-from dev10x.session.repo_address import resolve_name_with_owner
+from dev10x.core.session.preset_pin import probe_path, resolve_repo_identity
+from dev10x.core.session.repo_address import resolve_name_with_owner
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ def _repo_scheme_files() -> list[Path]:
     files = [
         Dev10xConfigDir.settings_pr_merge_yaml(),
         Dev10xConfigDir.gitmoji_yaml(),
+        Dev10xConfigDir.knowledge_vault_yaml(),
     ]
     playbooks = Dev10xConfigDir.playbooks_dir()
     if playbooks.is_dir():

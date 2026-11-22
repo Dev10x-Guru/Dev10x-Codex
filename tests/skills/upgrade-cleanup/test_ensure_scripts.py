@@ -1,11 +1,13 @@
 """Tests for the ensure-scripts feature of update_paths module."""
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from dev10x.skills.permission import update_paths
+from dev10x.core.plugin_map import PluginMap
+from dev10x.core.skills.permission import update_paths
 
 
 class TestScanPluginScripts:
@@ -179,7 +181,11 @@ class TestEnsureScriptRules:
         path.write_text(json.dumps({"permissions": {"allow": ["Bash(git log:*)"]}}))
         return path
 
-    def test_adds_missing_rules(self, settings_file: Path) -> None:
+    def test_adds_missing_rules(
+        self,
+        settings_file: Path,
+        read_allow: Callable[[Path], list[str]],
+    ) -> None:
         missing = ["Bash(/cache/bin/mktmp.sh:*)"]
 
         count, messages = update_paths.ensure_script_rules(
@@ -188,9 +194,9 @@ class TestEnsureScriptRules:
         )
 
         assert count == 1
-        data = json.loads(settings_file.read_text())
-        assert "Bash(/cache/bin/mktmp.sh:*)" in data["permissions"]["allow"]
-        assert "Bash(git log:*)" in data["permissions"]["allow"]
+        allow = read_allow(settings_file)
+        assert "Bash(/cache/bin/mktmp.sh:*)" in allow
+        assert "Bash(git log:*)" in allow
 
     def test_dry_run_does_not_write(self, settings_file: Path) -> None:
         original = settings_file.read_text()
@@ -239,7 +245,11 @@ class TestPurgeDeadGlobScriptRules:
     def settings_file(self, tmp_path: Path) -> Path:
         return tmp_path / "settings.local.json"
 
-    def test_removes_dead_glob_keeps_others(self, settings_file: Path) -> None:
+    def test_removes_dead_glob_keeps_others(
+        self,
+        settings_file: Path,
+        read_allow: Callable[[Path], list[str]],
+    ) -> None:
         dead = "Bash(~/.claude/plugins/cache/Dev10x-Guru/Dev10x/**/bin/mktmp.sh:*)"
         keep_read = "Read(~/.claude/plugins/marketplaces/Dev10x-Guru/**)"
         keep_bash = "Bash(git log:*)"
@@ -251,7 +261,7 @@ class TestPurgeDeadGlobScriptRules:
 
         assert count == 1
         assert len(messages) == 1
-        allow = json.loads(settings_file.read_text())["permissions"]["allow"]
+        allow = read_allow(settings_file)
         assert dead not in allow
         assert keep_read in allow
         assert keep_bash in allow
@@ -284,7 +294,11 @@ class TestPurgeDeadGlobScriptRules:
 
 
 class TestEnsureScriptsReplacesDeadGlobs:
-    def test_purges_dead_glob_and_adds_concrete(self, tmp_path: Path) -> None:
+    def test_purges_dead_glob_and_adds_concrete(
+        self,
+        tmp_path: Path,
+        read_allow: Callable[[Path], list[str]],
+    ) -> None:
         cache_dir = tmp_path / "cache"
         plugin_root = cache_dir / "0.78.0"
         (plugin_root / "bin").mkdir(parents=True)
@@ -302,7 +316,7 @@ class TestEnsureScriptsReplacesDeadGlobs:
         )
 
         assert result["exit_code"] == 0
-        allow = json.loads(settings.read_text())["permissions"]["allow"]
+        allow = read_allow(settings)
         assert dead not in allow
         assert f"Bash({plugin_root}/bin/mktmp.sh:*)" in allow
 
@@ -367,7 +381,12 @@ class TestEnsureScriptsFunction:
         assert settings.read_text() == original
         assert any("Would update" in m for m in result["messages"])
 
-    def test_purges_when_concrete_already_present(self, tmp_path: Path, cache_dir: Path) -> None:
+    def test_purges_when_concrete_already_present(
+        self,
+        tmp_path: Path,
+        cache_dir: Path,
+        read_allow: Callable[[Path], list[str]],
+    ) -> None:
         settings = tmp_path / "settings.local.json"
         dead = "Bash(~/.claude/plugins/cache/Dev10x-Guru/Dev10x/**/bin/mktmp.sh:*)"
         settings.write_text(
@@ -381,7 +400,7 @@ class TestEnsureScriptsFunction:
             quiet=True,
         )
 
-        allow = json.loads(settings.read_text())["permissions"]["allow"]
+        allow = read_allow(settings)
         assert dead not in allow
         assert self._concrete(cache_dir) in allow
         assert result["files_changed"] == 1
@@ -417,6 +436,171 @@ class TestEnsureScriptsFunction:
 
         assert result["exit_code"] == 0
         assert any("No callable scripts" in m for m in result["messages"])
+
+
+# ── GH-1807: satellite plugins seed their own script and Read grants ────
+
+
+@pytest.fixture()
+def satellite_plugin_map(make_plugin_map: Callable[..., PluginMap]) -> PluginMap:
+    return make_plugin_map(
+        plugins={"qa": ["tts"], "infra": ["k8s"]},
+        plugin_names={"qa": "dev10x-qa", "infra": "dev10x-infra"},
+    )
+
+
+@pytest.fixture()
+def empty_core_cache(make_plugin_cache: Callable[..., Path]) -> Path:
+    root = make_plugin_cache(plugin_name="dev10x", version="0.115.0")
+    (root / "skills" / "ask").mkdir(parents=True)
+    return root.parent
+
+
+@pytest.fixture()
+def core_cache(empty_core_cache: Path) -> Path:
+    (empty_core_cache / "0.115.0" / "bin").mkdir()
+    (empty_core_cache / "0.115.0" / "bin" / "mktmp.sh").touch()
+    return empty_core_cache
+
+
+@pytest.fixture()
+def qa_root(make_plugin_cache: Callable[..., Path]) -> Path:
+    root = make_plugin_cache(plugin_name="dev10x-qa", version="0.115.0")
+    (root / "skills" / "tts").mkdir(parents=True)
+    return root
+
+
+@pytest.fixture()
+def qa_script(qa_root: Path) -> Path:
+    scripts = qa_root / "skills" / "tts" / "scripts"
+    scripts.mkdir()
+    script = scripts / "say.py"
+    script.touch()
+    return script
+
+
+class TestEnsureScriptsSeedsSatellites:
+    """GH-1807: a skill that moved to a satellite plugin gets its grants too."""
+
+    @pytest.fixture()
+    def result(
+        self,
+        core_cache: Path,
+        qa_script: Path,
+        settings_file: Path,
+        satellite_plugin_map: PluginMap,
+    ) -> dict[str, object]:
+        return update_paths.ensure_scripts(
+            config={"plugin_cache": str(core_cache)},
+            settings_files=[settings_file],
+            dry_run=False,
+            quiet=False,
+            plugin_map=satellite_plugin_map,
+        )
+
+    @pytest.fixture()
+    def allow(
+        self,
+        result: dict[str, object],
+        settings_file: Path,
+        read_allow: Callable[[Path], list[str]],
+    ) -> list[str]:
+        return read_allow(settings_file)
+
+    def test_seeds_satellite_cache_rule(self, allow: list[str], qa_script: Path) -> None:
+        assert f"Bash({qa_script}:*)" in allow
+
+    def test_keeps_core_cache_rule(self, allow: list[str], core_cache: Path) -> None:
+        assert f"Bash({core_cache}/0.115.0/bin/mktmp.sh:*)" in allow
+
+    def test_seeds_satellite_marketplace_twins_with_plugins_infix(
+        self, allow: list[str], fake_home: Path
+    ) -> None:
+        rel = ".claude/plugins/marketplaces/Dev10x-Guru/plugins/qa/skills/tts/scripts/say.py"
+        assert f"Bash(~/{rel}:*)" in allow
+        assert f"Bash({fake_home}/{rel}:*)" in allow
+        assert not any("marketplaces/Dev10x-Guru/skills/tts/" in rule for rule in allow)
+
+    def test_only_installed_satellite_is_seeded(self, allow: list[str], qa_script: Path) -> None:
+        assert f"Bash({qa_script}:*)" in allow
+        assert not any("dev10x-infra" in rule or "plugins/infra" in rule for rule in allow)
+
+    def test_reports_every_scanned_root(self, result: dict[str, object], core_cache: Path) -> None:
+        joined = "\n".join(result["messages"])
+        assert f"Plugin root: {core_cache / '0.115.0'}" in joined
+        assert f"Plugin root: {core_cache.parent / 'dev10x-qa' / '0.115.0'}" in joined
+        assert "Scripts found: 2" in joined
+
+
+class TestEnsureScriptsSeedsSatelliteOnly:
+    """GH-1807: a satellite's scripts seed even when core itself has none."""
+
+    @pytest.fixture()
+    def result(
+        self,
+        empty_core_cache: Path,
+        qa_script: Path,
+        settings_file: Path,
+        satellite_plugin_map: PluginMap,
+    ) -> dict[str, object]:
+        return update_paths.ensure_scripts(
+            config={"plugin_cache": str(empty_core_cache)},
+            settings_files=[settings_file],
+            dry_run=False,
+            quiet=True,
+            plugin_map=satellite_plugin_map,
+        )
+
+    def test_writes_the_settings_file(self, result: dict[str, object]) -> None:
+        assert result["files_changed"] == 1
+
+    def test_seeds_the_satellite_rule(
+        self,
+        result: dict[str, object],
+        settings_file: Path,
+        qa_script: Path,
+        read_allow: Callable[[Path], list[str]],
+    ) -> None:
+        assert f"Bash({qa_script}:*)" in read_allow(settings_file)
+
+    def test_does_not_report_no_scripts(self, result: dict[str, object]) -> None:
+        assert not any("No callable scripts" in m for m in result["messages"])
+
+
+class TestEnsureReadsSeedsSatellites:
+    """GH-1807: a satellite's skill folders get versioned Read rules too."""
+
+    @pytest.fixture()
+    def allow(
+        self,
+        empty_core_cache: Path,
+        qa_root: Path,
+        settings_file: Path,
+        satellite_plugin_map: PluginMap,
+        read_allow: Callable[[Path], list[str]],
+    ) -> list[str]:
+        update_paths.ensure_reads(
+            config={"plugin_cache": str(empty_core_cache)},
+            settings_files=[settings_file],
+            dry_run=False,
+            quiet=True,
+            plugin_map=satellite_plugin_map,
+        )
+        return read_allow(settings_file)
+
+    def test_seeds_satellite_skill_read_rules(self, allow: list[str], fake_home: Path) -> None:
+        rel = ".claude/plugins/cache/Dev10x-Guru/dev10x-qa/0.115.0/skills/tts"
+        assert f"Read(~/{rel}/*)" in allow
+        assert f"Read({fake_home}/{rel}/*)" in allow
+
+    def test_keeps_core_skill_read_rules(self, allow: list[str], fake_home: Path) -> None:
+        rel = ".claude/plugins/cache/Dev10x-Guru/dev10x/0.115.0/skills/ask"
+        assert f"Read(~/{rel}/*)" in allow
+        assert f"Read({fake_home}/{rel}/*)" in allow
+
+    def test_only_installed_satellite_gets_read_rules(self, allow: list[str]) -> None:
+        assert any("dev10x-qa" in rule for rule in allow)
+        assert not any("dev10x-infra" in rule for rule in allow)
 
 
 # ── GH-606 AC2: user-skill script enumeration ───────────────────────────
@@ -545,7 +729,12 @@ class TestEnsureUserSkillScripts:
         (root / "aws-vault" / "scripts" / "wrap.sh").write_text(_VERB_BLIND_WRAPPER)
         return root
 
-    def test_adds_rules_and_skips_verb_blind(self, tmp_path: Path, skills_root: Path) -> None:
+    def test_adds_rules_and_skips_verb_blind(
+        self,
+        tmp_path: Path,
+        skills_root: Path,
+        read_allow: Callable[[Path], list[str]],
+    ) -> None:
         settings = tmp_path / "settings.local.json"
         settings.write_text(json.dumps({"permissions": {"allow": []}}))
 
@@ -557,7 +746,7 @@ class TestEnsureUserSkillScripts:
             quiet=True,
         )
 
-        allow = json.loads(settings.read_text())["permissions"]["allow"]
+        allow = read_allow(settings)
         assert "Bash(~/.claude/skills/kb-checkin/scripts/checkin.py:*)" in allow
         assert not any("wrap.sh" in r for r in allow)
         assert result["files_changed"] == 1

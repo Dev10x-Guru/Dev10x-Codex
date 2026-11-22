@@ -7,7 +7,7 @@ from enum import StrEnum
 from functools import cached_property, lru_cache
 from typing import Any
 
-from dev10x.domain.common.bash_tokens import ANY_CASE_ENV_VAR_RE, split_tokens
+from dev10x.core.domain.common.bash_tokens import ANY_CASE_ENV_VAR_RE, split_tokens
 
 _SUBCOMMAND_BOUNDARY = r"(?![-\w])"
 
@@ -257,7 +257,7 @@ def _strip_global_options(*, command: str) -> str:
     patterns individually.
 
     Generalizes the ``-C``-only rewriting that
-    :data:`~dev10x.domain.common.bash_tokens.GIT_C_DIR_RE` supports for
+    :data:`~dev10x.core.domain.common.bash_tokens.GIT_C_DIR_RE` supports for
     DX007's advisory no-op check — that regex covers one option and only
     fires when the path equals the CWD, so it cannot close this hole. Extend
     the option sets above rather than adding a second normalizer (GH-583 N24
@@ -339,6 +339,7 @@ class MatchingRule:
     except_: list[str] = field(default_factory=list)
     compensations: list[Compensation] = field(default_factory=list)
     hook_block: bool = True
+    live_hint: bool = False
     reason: str = ""
     message: str = ""
     related: list[str] = field(default_factory=list)
@@ -424,6 +425,7 @@ class MatchingRule:
             except_=entry.get("except", []),
             compensations=compensations,
             hook_block=entry.get("hook_block", True),
+            live_hint=entry.get("live_hint", False),
             reason=entry.get("reason", ""),
             message=entry.get("message", ""),
             related=entry.get("related", []),

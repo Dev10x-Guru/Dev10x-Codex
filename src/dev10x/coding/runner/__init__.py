@@ -1,6 +1,6 @@
 """Test runner module — invokes ``pytest`` via ``uv run`` from MCP.
 
-Provides a structured entry point for the ``dev10x:py-test`` skill so
+Provides a structured entry point for the ``dev10x-coding:py-test`` skill so
 the test gate works inside worktree sessions where ``pytest`` is not
 on PATH and the Bash PreToolUse hook blocks every direct invocation
 form (``pytest``, ``python -m pytest``, ``uv run pytest``). Because
@@ -14,17 +14,18 @@ import json
 import os
 import re
 import subprocess
+import time
 import tomllib
 from pathlib import Path
 from typing import Any
 
-from dev10x.domain.common.result import Result, err, ok
-from dev10x.domain.transport_budget import (
+from dev10x.core.domain.common.result import Result, err, ok
+from dev10x.core.domain.transport_budget import (
     MAX_TOOL_CALL_SECONDS,
     ClampedTimeout,
     clamp_tool_timeout,
 )
-from dev10x.subprocess_utils import async_run, effective_cwd
+from dev10x.core.subprocess_utils import async_run, effective_cwd
 
 # GH-1285: the outcome vocabulary used to be a closed set, so a run
 # reporting an outcome outside it broke the comma-separated chain and the
@@ -73,10 +74,38 @@ _EXTRA_PREFERENCE = ("test", "tests", "dev", "develop", "testing")
 # Collection died because an import was missing, rather than a test failing.
 _MISSING_MODULE_RE = re.compile(r"ModuleNotFoundError: No module named", re.MULTILINE)
 
+# GH-1730: uv reports its own failures (an undefined extra, a Python it
+# cannot download) on one `error:` line. Without it the caller sees only
+# a non-zero exit and empty stdout.
+_UV_ERROR_RE = re.compile(r"^error: .+$", re.MULTILINE)
+
+_RETRY_EXTRA = "dev"
+
+# A retry with less than this left would time out before collecting.
+_MIN_RETRY_SECONDS = 30.0
+
 
 def _requirement_name(*, requirement: str) -> str:
     """Return the bare package name from a PEP 508 requirement string."""
     return re.split(r"[\s\[<>=!~;(]", requirement.strip(), maxsplit=1)[0].lower()
+
+
+def _project_root(*, cwd: str | None = None) -> Path:
+    return Path(cwd or effective_cwd() or os.getcwd())
+
+
+def read_pyproject(*, cwd: str | None = None) -> dict[str, Any] | None:
+    """Return the parsed ``pyproject.toml``, or None when absent or unparseable."""
+    try:
+        text = (_project_root(cwd=cwd) / _PYPROJECT).read_text(encoding="utf-8")
+        return tomllib.loads(text)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+
+
+def _optional_dependency_groups(*, pyproject: dict[str, Any] | None) -> dict[str, Any]:
+    groups = (pyproject or {}).get("project", {}).get("optional-dependencies", {})
+    return groups if isinstance(groups, dict) else {}
 
 
 def resolve_test_extras(*, cwd: str | None = None) -> list[str]:
@@ -86,15 +115,7 @@ def resolve_test_extras(*, cwd: str | None = None) -> list[str]:
     optional-dependency group declares pytest -- all of which mean a bare
     ``uv run pytest`` is the right command and nothing needs adding.
     """
-    root = Path(cwd or effective_cwd() or os.getcwd())
-    try:
-        parsed = tomllib.loads((root / _PYPROJECT).read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return []
-
-    groups = parsed.get("project", {}).get("optional-dependencies", {})
-    if not isinstance(groups, dict):
-        return []
+    groups = _optional_dependency_groups(pyproject=read_pyproject(cwd=cwd))
 
     qualifying = [
         name
@@ -114,11 +135,37 @@ def resolve_test_extras(*, cwd: str | None = None) -> list[str]:
     return [sorted(qualifying)[0]]
 
 
-def _pytest_command(*, extras: list[str], coverage: bool, extra_args: list[str]) -> list[str]:
-    cmd = ["uv", "run"]
-    for extra in extras:
-        cmd += ["--extra", extra]
-    cmd += ["pytest"]
+def _uv_can_resolve(*, pyproject: dict[str, Any]) -> bool:
+    # Virtual uv projects carry [tool.uv] or [dependency-groups] but no [project].
+    has_tool_uv = "uv" in pyproject.get("tool", {})
+    return "project" in pyproject or has_tool_uv or "dependency-groups" in pyproject
+
+
+def _venv_python(*, root: Path) -> Path | None:
+    candidate = root / ".venv" / "bin" / "python"
+    return candidate if candidate.is_file() else None
+
+
+def _uv_error_line(*, stderr: str) -> str | None:
+    """uv's own ``error:`` line, e.g. "No interpreter found" or an undefined extra."""
+    match = _UV_ERROR_RE.search(stderr)
+    return match.group(0).strip() if match else None
+
+
+def _pytest_command(
+    *,
+    extras: list[str],
+    coverage: bool,
+    extra_args: list[str],
+    python: Path | None = None,
+) -> list[str]:
+    if python is not None:
+        cmd = [str(python), "-m", "pytest"]
+    else:
+        cmd = ["uv", "run"]
+        for extra in extras:
+            cmd += ["--extra", extra]
+        cmd += ["pytest"]
     if coverage:
         cmd += ["--cov", "--cov-report=term-missing"]
     cmd += ["--tb=short", "--color=no"]
@@ -182,21 +229,53 @@ async def run_tests(
             "missing_coverage": [{"file": str, "percent": int, "lines": str}, ...],
             "extras": list[str],       # optional-dependency extras applied
             "retried_with_extras": bool,
+            "launcher": "uv" | "venv", # how pytest was started (GH-1730)
+            "uv_error": str | None,    # uv's own `error:` line, if any
             "stdout": str,
             "stderr": str,
         })
 
-        err(...) only when ``uv`` itself is missing or the subprocess
-        times out. A non-zero pytest returncode is *not* an MCP-level
-        error — the caller reads ``returncode`` and ``failed_tests``.
+        err(...) when ``uv`` itself is missing, the subprocess times out,
+        or the ``pyproject.toml`` has no ``[project]`` table and no
+        ``.venv`` to fall back on (``verdict: "no_project_table"``). A
+        non-zero pytest returncode is *not* an MCP-level error — the
+        caller reads ``returncode`` and ``failed_tests``.
     """
     extra_args = list(args) if args else []
+    root = _project_root()
+    pyproject = read_pyproject()
     extras = resolve_test_extras()
     budget = clamp_tool_timeout(timeout)
+    deadline = time.monotonic() + budget.seconds
+
+    # GH-1730: with no PEP 621 [project] table (poetry, a bare tool-config
+    # file) uv ignores the repo's Python pin and cannot see its
+    # dependencies, so `uv run pytest` fails with nothing pointing at the
+    # layout. An existing virtualenv is the environment the project's own
+    # tooling built; without one, say what is wrong.
+    python: Path | None = None
+    if pyproject is not None and not _uv_can_resolve(pyproject=pyproject):
+        python = _venv_python(root=root)
+        if python is None:
+            return err(
+                f"{root / _PYPROJECT} has no [project] table (poetry or a "
+                "tool-config-only file), so `uv run pytest` cannot resolve "
+                "its Python version or dependencies. Create the project's "
+                "virtualenv at .venv (e.g. `poetry install` with "
+                "virtualenvs.in-project) and retry, or add a PEP 621 "
+                "[project] table.",
+                verdict="no_project_table",
+            )
+        extras = []
 
     try:
         proc = await async_run(
-            args=_pytest_command(extras=extras, coverage=coverage, extra_args=extra_args),
+            args=_pytest_command(
+                extras=extras,
+                coverage=coverage,
+                extra_args=extra_args,
+                python=python,
+            ),
             timeout=budget.seconds,
         )
     except FileNotFoundError:
@@ -205,49 +284,95 @@ async def run_tests(
             "test skill's documented fallback."
         )
 
-    if proc.returncode == -1 and "timed out" in proc.stderr.lower():
-        return err(
-            _timed_out_message(
-                runner="pytest",
-                budget=budget,
-                narrowing=(
-                    "Narrow the run (-k, a path) or invoke pytest through the "
-                    "test skill's documented fallback for a full serial suite."
-                ),
-            ),
-            verdict="timeout",
-            elapsed=budget.seconds,
-            timeout_clamped=budget.was_clamped,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
+    if _did_time_out(proc=proc):
+        return _timeout_error(
+            runner="pytest", narrowing=_PYTEST_NARROWING, proc=proc, budget=budget
         )
 
     # Safety net for the case resolution cannot see: a group that carries the
     # test deps without declaring pytest itself (a shared `conftest` import
-    # like factory-boy), or a project whose pyproject is unreadable. Retrying
-    # once here is what keeps the caller from reaching for the raw command.
+    # like factory-boy). Retrying once here is what keeps the caller from
+    # reaching for the raw command. Only when the extra exists: uv rejects
+    # an undeclared one outright, which replaced a useful collection error
+    # with a misleading one (GH-1730).
+    #
+    # GH-1760: the retry spends what the first run left of one budget, not
+    # a fresh one — two full budgets back to back is twice the ceiling the
+    # transport will sit through. Too little left and the retry would only
+    # time out, replacing the first run's import error with a timeout.
     retried = False
-    if not extras and _looks_like_missing_dependency(proc=proc):
+    remaining = deadline - time.monotonic()
+    can_retry = python is None and _RETRY_EXTRA in _optional_dependency_groups(pyproject=pyproject)
+    worth_retrying = remaining >= _MIN_RETRY_SECONDS
+    if not extras and can_retry and worth_retrying and _looks_like_missing_dependency(proc=proc):
         retried = True
-        extras = ["dev"]
+        extras = [_RETRY_EXTRA]
         try:
             proc = await async_run(
                 args=_pytest_command(extras=extras, coverage=coverage, extra_args=extra_args),
-                timeout=budget.seconds,
+                timeout=remaining,
             )
         except FileNotFoundError:  # pragma: no cover - first call already proved uv exists
             pass
+        if _did_time_out(proc=proc):
+            return _timeout_error(
+                runner="pytest", narrowing=_PYTEST_NARROWING, proc=proc, budget=budget
+            )
 
     parsed = _parse(proc.stdout)
     payload: dict[str, Any] = {
         "returncode": proc.returncode,
         "extras": extras,
         "retried_with_extras": retried,
+        "launcher": "uv" if python is None else "venv",
+        "uv_error": _uv_error_line(stderr=proc.stderr) if python is None else None,
         "stdout": proc.stdout,
         "stderr": proc.stderr,
         **parsed,
     }
     return ok(payload)
+
+
+def _did_time_out(*, proc: subprocess.CompletedProcess[str]) -> bool:
+    return proc.returncode == -1 and "timed out" in proc.stderr.lower()
+
+
+_PYTEST_NARROWING = (
+    "Narrow the run (-k, a path) or invoke pytest through the "
+    "test skill's documented fallback for a full serial suite."
+)
+_NODE_NARROWING = "Narrow the run (a test-name filter, a path) or split the suite across calls."
+
+
+def _timeout_error(
+    *,
+    runner: str,
+    narrowing: str,
+    proc: subprocess.CompletedProcess[str],
+    budget: ClampedTimeout,
+) -> Result[dict[str, Any]]:
+    """Report a timed-out run — or one that never started (GH-1760).
+
+    A call that spent its budget waiting for a subprocess slot ran nothing,
+    so narrowing advice would send the caller after the wrong problem.
+    """
+    if getattr(proc, "queued", False):
+        return err(
+            f"{runner} never started — every subprocess slot "
+            "(DEV10X_MCP_MAX_SUBPROCESSES) stayed busy for the whole budget. "
+            "Retry once the other in-flight tool calls finish.",
+            verdict="queue_timeout",
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+        )
+    return err(
+        _timed_out_message(runner=runner, budget=budget, narrowing=narrowing),
+        verdict="timeout",
+        elapsed=budget.seconds,
+        timeout_clamped=budget.was_clamped,
+        stdout=proc.stdout,
+        stderr=proc.stderr,
+    )
 
 
 def _looks_like_missing_dependency(*, proc: subprocess.CompletedProcess[str]) -> bool:
@@ -432,20 +557,9 @@ async def run_node_tests(
             f"test via the documented fallback."
         )
 
-    if proc.returncode == -1 and "timed out" in proc.stderr.lower():
-        return err(
-            _timed_out_message(
-                runner="node tests",
-                budget=budget,
-                narrowing=(
-                    "Narrow the run (a test-name filter, a path) or split the suite across calls."
-                ),
-            ),
-            verdict="timeout",
-            elapsed=budget.seconds,
-            timeout_clamped=budget.was_clamped,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
+    if _did_time_out(proc=proc):
+        return _timeout_error(
+            runner="node tests", narrowing=_NODE_NARROWING, proc=proc, budget=budget
         )
 
     # jest/vitest write their summary to stderr; scan both streams.

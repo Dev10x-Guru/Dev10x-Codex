@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from dev10x.harness import HARNESS_ENV_VAR, Harness, current_harness, is_codex
+from dev10x.core.harness import HARNESS_ENV_VAR, Harness, current_harness, is_codex
 
 
 class TestCurrentHarness:

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dev10x.domain.common.result import Result
-from dev10x.mcp._app import mcp_tool
+from dev10x.core.domain.common.result import Result
+from dev10x.core.mcp._app import mcp_tool
 
 
 @mcp_tool
@@ -92,7 +92,7 @@ async def resolve_plugin_origin(skill_paths: list[str]) -> Result[dict]:
         marketplace, plugin, version, repo, issue_tracker, is_dev10x,
         skill_paths), unresolved, target_count, unresolved_count.
     """
-    from dev10x.domain.plugin_origin import resolve_skill_origins
+    from dev10x.core.domain.plugin_origin import resolve_skill_origins
 
     return resolve_skill_origins(skill_paths=skill_paths)
 
@@ -101,7 +101,7 @@ async def resolve_plugin_origin(skill_paths: list[str]) -> Result[dict]:
 async def audit_hook_log_path() -> Result[dict]:
     """Return the active audit-wrap JSONL log directory and today's log file.
 
-    Resolves DEV10X_HOOK_AUDIT_DIR (default /tmp/Dev10x/hook-audit) so
+    Resolves DEV10X_HOOK_AUDIT_DIR (default /tmp/Dev10x/logs) so
     agents can locate hook-audit data without grep-hunting (GH-29).
 
     Returns:
