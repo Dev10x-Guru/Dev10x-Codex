@@ -51,7 +51,7 @@ All evals live in `skills/<feature>/evals/evals.json`:
 
 | Type | Use | Example |
 |------|-----|---------|
-| `output_contains` | Signal appears in skill output | `"signal": "Deploy successful"` |
+| `output_contains` | Text appears in skill output | `"value": "Deploy successful"` (older evals: `"signal"`) |
 | `output_not_contains` | Signal does NOT appear | Verify cleanup happened |
 | `command_contains` | Command was executed | `"signals": ["gh pr create", "--draft"]` |
 | `command_absent` | Command was NOT executed | Verify no destructive operations |
@@ -72,6 +72,10 @@ All evals live in `skills/<feature>/evals/evals.json`:
 | `tool_called` | Tool was invoked | `"signals": ["Agent", "subagent_type"]` |
 | `tool_called_count` | Count of tool calls | Signal format: `"="` or `">"`/`"<"` (e.g., `"=4"`) |
 | `tool_not_called` | Tool was NOT invoked | Verify no unintended delegation |
+| `tool_called_before` | First `signals` token appears before the second | `"signals": ["AskUserQuestion", "Approve"]` |
+
+`references/eval-schema.md` § Check Types is the authoritative table;
+keep the two in step.
 
 ### Behavioral Checks
 
@@ -85,7 +89,7 @@ All evals live in `skills/<feature>/evals/evals.json`:
 
 Dimensions are orthogonal quality axes (not sequential steps). Examples:
 
-**dev10x:work-on** (6 dimensions):
+**dev10x-coding:work-on** (6 dimensions):
 - `classify` — input type identification (URL, ID, free text)
 - `gather` — parallel subagent context gathering
 - `plan` — task list generation with mandatory elements
@@ -93,7 +97,7 @@ Dimensions are orthogonal quality axes (not sequential steps). Examples:
 - `task-structure` — 4 phase-level tasks + dependencies
 - `workspace` — early workspace decision (main repo vs. worktree)
 
-**dev10x:git-commit** (5 dimensions):
+**dev10x-coding:git-commit** (5 dimensions):
 - `format` — gitmoji + ticket + description pattern
 - `jtbd` — outcome-focus verb enforcement
 - `extraction` — ticket ID from branch name
@@ -123,8 +127,8 @@ Aim for **5–6 examples each** (should_trigger, should_not_trigger).
 ## Scenario Best Practices
 
 1. **Concrete + Representative** — Use real-world prompts
-   - ✅ `/dev10x:work-on https://github.com/org/repo/issues/42`
-   - ❌ `/dev10x:work-on test`
+   - ✅ `/dev10x-coding:work-on https://github.com/org/repo/issues/42`
+   - ❌ `/dev10x-coding:work-on test`
 
 2. **One dimension per scenario** — Scenarios focus on specific quality axis
    - Don't test all dimensions in one scenario

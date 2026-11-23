@@ -2,12 +2,12 @@
 name: git-groom
 description: 'Restructure, polish, and clean up git commit history in the current branch before merging. Creates atomic, well-organized commits that tell a clear story. TRIGGER when: branch is ready for merge and commit history needs cleanup (squash fixups, reorder, reword). DO NOT TRIGGER when: branch has clean history already, or splitting individual commits (use Dev10x:git-commit-split).'
 metadata:
-  upstream: skills/git-groom/SKILL.md
+  upstream: plugins/coding/skills/git-groom/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/git-groom/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/git-groom/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/git-groom/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/git-groom/`.
 
 # Git Branch History Grooming
 

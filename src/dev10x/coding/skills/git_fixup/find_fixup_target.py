@@ -1,7 +1,7 @@
 """Resolve fixup target commits via git blame on staged hunks.
 
-The legacy approach in ``dev10x:git-fixup`` selected the fixup target as
-the first commit on the branch (``git log --reverse | head -1``), which
+The legacy approach in ``dev10x-coding:git-fixup`` selected the fixup target
+as the first commit on the branch (``git log --reverse | head -1``), which
 attributes fixes to commits that did not own the edited lines. When the
 fixup is reordered by ``git rebase -i --autosquash``, a later commit
 that touches the same files no longer applies cleanly and conflicts on
@@ -75,7 +75,7 @@ def _run(args: list[str], *, cwd: Path | None = None) -> str:
 
 def detect_base_branch(*, cwd: Path | None = None) -> str:
     """Detect the base branch — prefer develop, fall back to main/master."""
-    # Local copy of dev10x.domain.common.branch_name.BASE_BRANCH_PRIORITY:
+    # Local copy of dev10x.core.domain.common.branch_name.BASE_BRANCH_PRIORITY:
     # this script runs standalone via `uv run --script` in an isolated
     # venv, so it must not import the dev10x package (GH-583).
     candidates = ("develop", "development", "main", "master", "trunk")

@@ -1,16 +1,16 @@
-"""Session event dispatch — thin SessionStart / SessionStop / PreCompact handlers.
+"""Session event dispatch — thin SessionStart / SessionStop handlers.
 
 Event-routing module. Owns the entry points referenced by
 ``hooks/scripts/session-*.py`` and ``commands/hook.py``. Rendering and
 data assembly live elsewhere:
 
-* Session orchestration / context builders — :mod:`dev10x.session.service`.
-* Document I/O — :mod:`dev10x.domain.session_document`.
+* Session orchestration / context builders — :mod:`dev10x.core.session.service`.
+* Document I/O — :mod:`dev10x.core.domain.session_document`.
 * Named policies (friction parsing, permission migration, decision
-  guidance) — :mod:`dev10x.hooks.session_policy`.
+  guidance) — :mod:`dev10x.core.hooks.session_policy`.
 * Place provisioning (``/tmp`` setup, git alias inventory) —
-  :mod:`dev10x.hooks.session_place`.
-* Aggregated query + formatters — :mod:`dev10x.domain.documents.session_context`.
+  :mod:`dev10x.core.hooks.session_place`.
+* Aggregated query + formatters — :mod:`dev10x.core.domain.documents.session_context`.
 """
 
 from __future__ import annotations
@@ -22,18 +22,17 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from dev10x.core.plan_mirror import read_plan_summary
-from dev10x.domain.claude_paths import ClaudeDir
-from dev10x.domain.documents.session_state import SessionState
-from dev10x.domain.git_context import GitContext
-from dev10x.domain.session_document import (
+from dev10x.core.domain.claude_paths import ClaudeDir
+from dev10x.core.domain.documents.session_state import SessionState
+from dev10x.core.domain.git_context import GitContext
+from dev10x.core.domain.session_document import (
     plan_path_for_toplevel,
     state_path_for_toplevel,
     write_state,
 )
-from dev10x.hooks.audit_emit import set_decision_attribution
-from dev10x.hooks.session_policy import MigratePluginPermissionsRule
-from dev10x.hooks.stop_verdict import (
+from dev10x.core.hooks.audit_emit import set_decision_attribution
+from dev10x.core.hooks.session_policy import MigratePluginPermissionsRule
+from dev10x.core.hooks.stop_verdict import (
     StopVerdict,
     clear_stand_down,
     decide,
@@ -43,23 +42,14 @@ from dev10x.hooks.stop_verdict import (
     record_block,
     record_stand_down,
 )
-from dev10x.session.service import SessionService
+from dev10x.core.plan_mirror import read_plan_summary
+from dev10x.core.session.service import SessionService
 
 
 def _get_toplevel() -> str | None:
     # GH-979 (H11): fresh GitContext per call — no module-level singleton,
     # which would pin the first-call CWD across MCP invocations.
     return GitContext().toplevel
-
-
-def _escape_for_json(*, s: str) -> str:
-    return (
-        s.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-        .replace("\t", "\\t")
-    )
 
 
 def _emit_context(content: str) -> None:
@@ -72,11 +62,13 @@ def _emit_context(content: str) -> None:
     """
     if not content:
         sys.exit(0)
-    escaped = _escape_for_json(s=content)
-    print(
-        '{"hookSpecificOutput":{"hookEventName":"SessionStart",'
-        f'"additionalContext":"{escaped}"}}}}'
-    )
+    envelope = {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": content,
+        }
+    }
+    print(json.dumps(envelope))
 
 
 def _run_git_safe(git: GitContext, *args: str) -> str:
@@ -90,19 +82,6 @@ def _plugin_root() -> Path:
     return Path(__file__).parents[4]
 
 
-def drain_stdin() -> None:
-    """Discard the hook payload Claude Code writes to stdin (GH-249 H5).
-
-    Hooks that never read stdin can leave the writer's pipe full; draining
-    it avoids a ``BrokenPipeError`` on the Claude Code side. Best-effort —
-    any read failure (already closed, empty) is swallowed.
-    """
-    try:
-        sys.stdin.read()
-    except Exception:
-        pass
-
-
 def build_reload_context() -> str:
     """Build the session-reload additionalContext string. Empty when no state."""
     return SessionService().build_reload_context(toplevel=_get_toplevel())
@@ -112,14 +91,29 @@ def session_reload() -> None:
     _emit_context(build_reload_context())
 
 
+COMPACT_SOURCE = "compact"
+
+
+def build_compaction_context(*, data: dict | None = None) -> str:
+    """Post-compaction recovery context, or empty outside a compaction restart.
+
+    SessionStart fires with ``source: "compact"`` once a compaction is
+    done, and its ``additionalContext`` is what reaches the model. The
+    PreCompact event cannot carry this: Claude Code rejects a PreCompact
+    ``hookSpecificOutput`` and discards its ``systemMessage`` (GH-1788).
+    """
+    if (data or {}).get("source") != COMPACT_SOURCE:
+        return ""
+    return SessionService().build_compaction_context(toplevel=_get_toplevel())
+
+
 def context_compact() -> None:
-    drain_stdin()
-    service = SessionService()
-    summary = service.build_compaction_context(toplevel=_get_toplevel())
-    if not summary:
-        sys.exit(0)
-    escaped = _escape_for_json(s=summary)
-    print(f'{{"hookSpecificOutput":{{"systemMessage":"{escaped}"}}}}')
+    try:
+        data = json.load(sys.stdin)
+    except (ValueError, EOFError):
+        # ValueError covers both JSONDecodeError and UnicodeDecodeError.
+        data = {}
+    _emit_context(build_compaction_context(data=data if isinstance(data, dict) else {}))
 
 
 def build_guidance_context() -> str:
@@ -305,7 +299,7 @@ def build_stop_verdict(data: dict | None = None) -> StopVerdict | None:
     :class:`StopVerdict` with ``block=True`` carries the steer text the
     orchestrator hands back as the continued turn's instruction.
 
-    The decision itself lives in :mod:`dev10x.hooks.stop_verdict` so it
+    The decision itself lives in :mod:`dev10x.core.hooks.stop_verdict` so it
     is testable without a subprocess; this function is only the wiring
     that finds the persisted plan and reads the working tree.
     """
@@ -396,6 +390,7 @@ __all__ = [
     "build_reload_context",
     "build_autonomy_reassurance_context",
     "build_auto_plan_guidance_context",
+    "build_compaction_context",
     "build_guidance_context",
     "build_skills_index_context",
     "session_reload",

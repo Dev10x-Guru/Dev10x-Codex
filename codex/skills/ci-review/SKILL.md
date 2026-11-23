@@ -1,13 +1,13 @@
 ---
 name: ci-review
-description: 'Use when a change to a Claude CI review prompt, args file, reviewer agent or CLI pin needs checking before it merges — so you read what the CI code review and PR hygiene check would post on a real PR, without anything reaching GitHub. TRIGGER when: "what would the CI review say", replaying the Claude CI review locally, verifying a review prompt or model change on a PR. DO NOT TRIGGER when: self-reviewing a branch with no PR (use Dev10x:review), or reviewing someone''s PR and posting (use Dev10x:gh-pr-review).'
+description: 'Use when a change to a Claude CI review prompt, args file, reviewer agent or CLI pin needs checking before it merges — so you read what the CI code review and PR hygiene check would post on a real PR, with nothing reaching GitHub unless you choose, after reading the report, to share it as one marked replica comment. TRIGGER when: "what would the CI review say", replaying the Claude CI review locally, verifying a review prompt or model change on a PR. DO NOT TRIGGER when: self-reviewing a branch with no PR (use Dev10x:review), or reviewing someone''s PR and posting (use Dev10x:gh-pr-review).'
 metadata:
-  upstream: skills/ci-review/SKILL.md
+  upstream: plugins/coding/skills/ci-review/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/ci-review/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/ci-review/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/ci-review/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/ci-review/`.
 > **Not supported in Codex yet**: this skill depends on Claude Code features Codex lacks (Dev10x-Codex#19). Use it from Claude Code; Codex runs it only when invoked by name.
 
 # Dev10x:ci-review
@@ -38,7 +38,15 @@ Mark completed when done: `TaskUpdate(taskId, status="completed")`
 - replays the post-steps.
 
 Every GitHub write the run attempts goes to an outbox instead of
-posting. The skill wraps the command. It never posts to GitHub.
+posting. The skill wraps the command. It posts to GitHub only through
+`--post-run-dir`, after the user has read the report and answered the
+Step 6 gate, as one comment from the user headed
+`Local CI replica` and marked `<!-- dev10x-local-ci-review -->`, so CI's
+round numbering and its hygiene comment lookup never see it.
+
+The command also warns (it does not refuse) when no changed file
+matches the workflow's `on.pull_request.paths` filter: CI would never
+have run that review on this PR.
 
 It cannot reproduce the bot identity, check runs, the
 `pull_request` trigger, the CI token's scope or model nondeterminism.
@@ -85,16 +93,50 @@ blocks execution until the user responds. Options:
 uvx dev10x ci-review --pr <N> --workflow <all|code-review|hygiene>
 ```
 
-Pass the same `--rules` value as Step 2.
+Pass the same `--rules` value as Step 2. Never pass `--post` from this
+skill: it shares the replica before anyone has read it (GH-1762) —
+Step 6 posts the finished run instead. When the user named a CI run
+to check against, add `--compare-ci <run-id>` (code review only): the
+report gains a table of each finding's `path:line` with the local and
+CI severity, and both verdicts.
 
 ### Step 5: Present
 
 Relay the command's report:
 
+- any `⚠️` paths-filter warning, first;
 - the inline comments as `path:line` with each one's first line;
 - the would-be `gh` writes (review summary, draft conversion, hygiene
   comment);
+- the comparison table, when `--compare-ci` was passed;
 - the usage table, labeled notional when it ran on a subscription;
 - the run directory, which holds `outbox.jsonl` and `execution.json`.
 
-Say plainly that nothing was posted.
+Say plainly that the review's own writes were not posted.
+
+### Step 6: Confirm sharing the replica
+
+Ask only now, after Step 5 put the report in front of the user: the
+decision to share a replica belongs after reading it, and posting a
+finished run directory costs no second model run (GH-1762). The post
+is a comment on the PR under the user's name, which others read.
+Never post without an answer, in any session mode.
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text). This
+blocks execution until the user responds. Options:
+
+- Keep it local (Recommended): nothing reaches the PR
+- Post the replica to PR #<N>: one `Local CI replica` comment per
+  workflow that ran
+
+On "Post", run once per run directory Step 5 relayed:
+
+```bash
+uvx dev10x ci-review --pr <N> --post-run-dir <run dir>
+```
+
+The command rebuilds the replica from the directory's `report.md` and
+`outbox.jsonl`, keeps the `Local CI replica` header and the
+`<!-- dev10x-local-ci-review -->` marker, and refuses a directory with
+no `report.md` or one recorded for another PR. Relay each `posted:`
+URL and say that the replica comment, and only it, reached the PR.

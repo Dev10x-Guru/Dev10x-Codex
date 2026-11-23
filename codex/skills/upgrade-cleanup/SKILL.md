@@ -63,13 +63,20 @@ Step 1c — rewrite skill names that a plugin extraction renamed
 (GH-1559, ADR-0034). When a skill moves from `dev10x:<skill>` to
 `dev10x-<area>:<skill>`, this rewrites the old name in
 `friction.yaml`, `dod-acceptance-criteria.yaml` and the playbook
-overrides. Idempotent; until the first extraction ships it reports
-nothing to migrate.
+overrides. Idempotent: a second run reports nothing to migrate.
 
 ```
 Bash("dev10x config migrate-skill-names --dry-run")
 Bash("dev10x config migrate-skill-names")
 ```
+
+Renaming a config entry does not install the satellite plugin a skill
+moved to. When the dry run rewrote a name, or the user asks for a
+skill that moved, follow
+[`references/satellite-plugins.md`](references/satellite-plugins.md):
+it says where the moved skills' grants go and how to check
+`enabledPlugins`. Never install a satellite for the user — tell them
+the `claude plugin install` command instead; installing is their call.
 
 Step 2 — delegate to the maintenance skill in `full` mode:
 
@@ -109,44 +116,11 @@ then and warns the user to reload. See
 [`references/plugin-load-race.md`](../../../references/plugin-load-race.md)
 for the failure mode and diagnosis chain.
 
-1. **Copy the guard into userspace** (survives plugin-load failure —
-   it must NOT live under the versioned plugin cache):
-   - Source: `<plugin-root>/hooks/scripts/plugin-load-guard.sh`
-   - Destination: `~/.claude/hooks/dev10x-plugin-load-guard.sh`
-     (create `~/.claude/hooks/` if absent; `chmod 0755` the copy)
-
-2. **Register it as a userspace SessionStart hook** in
-   `~/.claude/settings.json` (idempotent — skip if an entry whose
-   command ends in `dev10x-plugin-load-guard.sh` already exists):
-
-   ```json
-   {
-     "hooks": {
-       "SessionStart": [
-         {
-           "matcher": "*",
-           "hooks": [
-             {
-               "type": "command",
-               "command": "~/.claude/hooks/dev10x-plugin-load-guard.sh",
-               "timeout": 10
-             }
-           ]
-         }
-       ]
-     }
-   }
-   ```
-
-   Merge into any existing `SessionStart` array rather than replacing
-   it. If the harness does not tilde-expand the command, use the
-   absolute path (`/home/<user>/.claude/hooks/...`).
-
-3. **Remove stale versioned-path copies** — delete any prior guard
-   registration whose command points into a versioned plugin-cache path
-   (`~/.claude/plugins/cache/.../<version>/hooks/scripts/plugin-load-guard.sh`).
-   Such a copy defeats the guard's purpose: it disappears exactly when
-   plugin discovery is skipped.
+Run the three steps in
+[`references/plugin-load-guard.md`](references/plugin-load-guard.md):
+copy the guard to `~/.claude/hooks/`, register it as a userspace
+`SessionStart` hook in `~/.claude/settings.json`, and remove any
+registration that points into a versioned plugin-cache path.
 
 After the maintenance pass succeeds, record the plugin version
 so the SessionStart install-check stays silent until the next
@@ -163,6 +137,15 @@ maintenance pass reported failures — leaving `version.yml`
 stale keeps the upgrade prompt visible until the issue is
 resolved.
 
+## Auto mode sessions (GH-1868)
+
+In auto mode the classifier can deny reads and writes of the user-level
+settings files that Step 2's audit and Step 3's guard registration
+touch. Follow [`references/auto-mode.md`](references/auto-mode.md):
+restrictive half of a paired edit first, no retry by another route,
+hand the exact change to the supervisor, and never put a denied
+project rule in the global file instead.
+
 ## Post-upgrade verification (GH-1137)
 
 **A clean maintenance log is not proof the upgrade landed.** GH-1136
@@ -174,8 +157,8 @@ and a wrong outcome. Verify against the files, not the log.
 Run the four checks in
 [`references/post-upgrade-verification.md`](references/post-upgrade-verification.md):
 catalog reach across every worktree, no git-tracked settings file
-written, the `disableAutoMode` / `disableBypassPermissionsMode`
-string values intact, and a spot-check that a sanctioned command
+written, the safety-key string values intact (`disableAutoMode` is
+opt-out, GH-1856), and a spot-check that a sanctioned command
 does not prompt.
 
 ## Configuration

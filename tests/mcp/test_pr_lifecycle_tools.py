@@ -20,34 +20,22 @@ Contract class: mock
 from __future__ import annotations
 
 import json
-import subprocess
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from dev10x.domain.common.repository_ref import RepositoryRef
-from dev10x.domain.common.result import ErrorResult, SuccessResult, ok
 
-gh = pytest.importorskip("dev10x.github", reason="dev10x not installed")
+from dev10x.core.domain.common.repository_ref import RepositoryRef
+from dev10x.core.domain.common.result import ErrorResult, SuccessResult, ok
+from tests.fakers.process import completed as _completed
 
-
-def _completed(
-    *,
-    returncode: int = 0,
-    stdout: str = "",
-    stderr: str = "",
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(
-        args=[],
-        returncode=returncode,
-        stdout=stdout,
-        stderr=stderr,
-    )
+gh = pytest.importorskip("dev10x.coding.github", reason="dev10x not installed")
+gateway = pytest.importorskip("dev10x.core.github._gateway", reason="dev10x not installed")
 
 
 @pytest.fixture
 def mock_resolve_repo() -> AsyncMock:
     with patch.object(
-        gh._gateway,
+        gateway,
         "_resolve_repo",
         new_callable=AsyncMock,
         return_value=ok(RepositoryRef(owner="owner", name="repo")),
@@ -59,7 +47,7 @@ class TestUnresolvedThreadsContract:
     """gh.unresolved_threads — standalone function, not pr_comments."""
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_empty_list_returns_count_zero(
         self,
         mock_run: AsyncMock,
@@ -73,7 +61,7 @@ class TestUnresolvedThreadsContract:
         assert result.value["prs"] == []
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_non_empty_list_returns_correct_count(
         self,
         mock_run: AsyncMock,
@@ -88,7 +76,7 @@ class TestUnresolvedThreadsContract:
         assert len(result.value["prs"]) == 2
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_repo_is_forwarded_to_script(
         self,
         mock_run: AsyncMock,
@@ -102,7 +90,7 @@ class TestUnresolvedThreadsContract:
         assert "acme/widget" in args_list
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_limit_is_forwarded_to_script(
         self,
         mock_run: AsyncMock,
@@ -116,7 +104,7 @@ class TestUnresolvedThreadsContract:
         assert "50" in args_list
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_script_failure_returns_error(
         self,
         mock_run: AsyncMock,
@@ -129,7 +117,7 @@ class TestUnresolvedThreadsContract:
         assert "rate limit" in result.error
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_malformed_json_returns_error(
         self,
         mock_run: AsyncMock,
@@ -142,8 +130,8 @@ class TestUnresolvedThreadsContract:
         assert "JSON" in result.error or "Invalid" in result.error
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_pr_number_uses_fast_single_pr_path(
         self,
         mock_api_raw: AsyncMock,
@@ -166,8 +154,8 @@ class TestUnresolvedThreadsContract:
         assert "pullRequest(number: 706)" in query
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_pr_number_counts_only_unresolved(
         self,
         mock_api_raw: AsyncMock,
@@ -210,7 +198,7 @@ class TestMergePrContract:
     """gh.merge_pr — argument construction and error propagation."""
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_merge_strategy_passes_correct_flag(
         self,
         mock_run: AsyncMock,
@@ -224,7 +212,7 @@ class TestMergePrContract:
         assert "--merge" in called_args
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_repo_flag_always_present_for_worktree_safety(
         self,
         mock_run: AsyncMock,
@@ -240,7 +228,7 @@ class TestMergePrContract:
         assert "--repo" in called_args
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_draft_state_error_surfaces_as_err(
         self,
         mock_run: AsyncMock,
@@ -259,7 +247,7 @@ class TestMergePrContract:
         assert "draft" in result.error.lower()
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway.async_run", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run", new_callable=AsyncMock)
     async def test_unmerged_threads_error_surfaces_as_err(
         self,
         mock_run: AsyncMock,
@@ -303,7 +291,7 @@ class TestResolveReviewThreadContract:
         assert "thread_ids" in result.error
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_multiple_thread_ids_batched_in_single_call(
         self,
         mock_api: AsyncMock,
@@ -326,7 +314,7 @@ class TestResolveReviewThreadContract:
         assert mock_api.call_count == 1
 
     @pytest.mark.asyncio
-    @patch("dev10x.github._gateway._gh_api_raw", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway._gh_api_raw", new_callable=AsyncMock)
     async def test_comment_ids_trigger_lookup_before_mutation(
         self,
         mock_api: AsyncMock,

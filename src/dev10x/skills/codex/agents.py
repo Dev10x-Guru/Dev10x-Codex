@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 from dev10x.skills.codex.catalog import DEFERRED_AGENTS
 from dev10x.skills.codex.translate import (
     PLUGIN_ROOT_PLACEHOLDER,
     TOOL_EQUIVALENTS_RELPATH,
+    UPSTREAM_PLUGINS_RELPATH,
     InvalidPluginRoot,
     rewrite_text,
     split_front_matter,
@@ -88,7 +90,14 @@ def toml_multiline_string(text: str) -> str:
     return '"""\n' + escaped.replace('"""', '""\\"') + '"""'
 
 
-def render_instructions(*, stem: str, body: str, read_only: bool) -> str:
+def render_instructions(
+    *,
+    stem: str,
+    body: str,
+    read_only: bool,
+    plugin_dir: PurePosixPath = PurePosixPath(),
+    exists: Callable[[PurePosixPath], bool] | None = None,
+) -> str:
     equivalents = f"{PLUGIN_ROOT_PLACEHOLDER}/{TOOL_EQUIVALENTS_RELPATH.as_posix()}"
     lines = [
         f"You are the Dev10x `{stem}` agent, running as a Codex subagent.",
@@ -100,11 +109,19 @@ def render_instructions(*, stem: str, body: str, read_only: bool) -> str:
             "Read-only: never create, modify or delete files and never commit. Codex cannot "
             "restrict your tools, so keeping this rule is up to you."
         )
-    return "\n".join(lines) + "\n\n" + rewrite_text(body).strip() + "\n"
+    rewritten = rewrite_text(body, plugin_dir=plugin_dir, exists=exists).strip()
+    return "\n".join(lines) + "\n\n" + rewritten + "\n"
 
 
-def render_role(*, stem: str, description: str, effort: str, instructions: str) -> str:
-    upstream = (UPSTREAM_AGENTS_RELPATH / f"{stem}.md").as_posix()
+def render_role(
+    *,
+    stem: str,
+    description: str,
+    effort: str,
+    instructions: str,
+    source: PurePosixPath | None = None,
+) -> str:
+    upstream = (source or UPSTREAM_AGENTS_RELPATH / f"{stem}.md").as_posix()
     return (
         f"# Generated from {upstream} by `dev10x skill codex-agents` — edit the upstream "
         "agent, not this file.\n"
@@ -124,24 +141,51 @@ def codex_role_description(description: object, *, source: PurePosixPath) -> str
     return " ".join(rewrite_text(description).split())
 
 
-def _agent_files(root: Path) -> list[Path]:
-    agents_root = root / UPSTREAM_AGENTS_RELPATH
-    files = sorted(agents_root.glob("*.md")) if agents_root.is_dir() else []
-    if not files:
-        raise InvalidPluginRoot(
-            f"{agents_root} holds no agent files — refusing to translate an empty plugin"
+def _agents_roots(root: Path) -> list[tuple[PurePosixPath, PurePosixPath]]:
+    plugins = root / UPSTREAM_PLUGINS_RELPATH
+    satellites = (
+        sorted(
+            UPSTREAM_PLUGINS_RELPATH / path.name
+            for path in plugins.iterdir()
+            if (path / UPSTREAM_AGENTS_RELPATH).is_dir()
         )
-    return files
+        if plugins.is_dir()
+        else []
+    )
+    return [(UPSTREAM_AGENTS_RELPATH, PurePosixPath())] + [
+        (plugin / UPSTREAM_AGENTS_RELPATH, plugin) for plugin in satellites
+    ]
+
+
+def _agent_files(root: Path) -> list[tuple[Path, PurePosixPath, PurePosixPath]]:
+    found: dict[str, tuple[Path, PurePosixPath, PurePosixPath]] = {}
+    for agents_root, plugin_dir in _agents_roots(root):
+        folder = root / agents_root
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.glob("*.md")):
+            source = agents_root / path.name
+            if path.stem in found:
+                raise InvalidPluginRoot(
+                    f"agent {path.stem!r} exists in both {found[path.stem][1]} and {source}; "
+                    "the bundled Codex plugin has one role namespace"
+                )
+            found[path.stem] = (path, source, plugin_dir)
+    if not found:
+        raise InvalidPluginRoot(
+            f"{root / UPSTREAM_AGENTS_RELPATH} holds no agent files — refusing to translate an "
+            "empty plugin"
+        )
+    return [found[stem] for stem in sorted(found)]
 
 
 def translate_agents(root: Path) -> GeneratedTree:
     files: dict[PurePosixPath, str] = {}
     warnings: list[str] = []
-    for path in _agent_files(root):
+    for path, source, plugin_dir in _agent_files(root):
         stem = path.stem
         if stem in DEFERRED_AGENTS:
             continue
-        source = UPSTREAM_AGENTS_RELPATH / path.name
         front_matter, body = split_front_matter(path.read_text(encoding="utf-8"), source=source)
         if not body.strip():
             raise InvalidAgentFile(f"{source}: agent body is empty — the role would carry no task")
@@ -163,6 +207,9 @@ def translate_agents(root: Path) -> GeneratedTree:
                 stem=stem,
                 body=body,
                 read_only=is_read_only(agent_tools(front_matter.get("tools"), source=source)),
+                plugin_dir=plugin_dir,
+                exists=lambda path: (root / path).exists(),
             ),
+            source=source,
         )
     return GeneratedTree(output=CODEX_AGENTS_RELPATH, files=files, warnings=warnings)

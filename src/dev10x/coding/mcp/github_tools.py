@@ -8,9 +8,9 @@ from __future__ import annotations
 # `from __future__ import annotations`.
 from mcp.server.fastmcp import Context  # noqa: F401
 
-from dev10x import github as gh
-from dev10x.domain.common.result import Result, err, to_wire
-from dev10x.mcp._app import mcp_tool, server
+from dev10x.coding import github as gh
+from dev10x.core.domain.common.result import Result, err, to_wire
+from dev10x.core.mcp._app import mcp_tool, server
 
 #: Historical name for this module's original decorator, generalized to
 #: ``mcp_tool`` (GH-1426) and migrated onto it here so the two names stay
@@ -311,7 +311,7 @@ async def pr_labels(
     """List, add, or remove labels on a PR (GH-1008).
 
     The durable per-PR signal surface. Its first consumer is
-    `dev10x:gh-pr-request-review`'s stand-by clearance gate, which
+    `dev10x-coding:gh-pr-request-review`'s stand-by clearance gate, which
     writes `review:cleared` so the clearance outlives the session that
     granted it — previously the gate re-asked on every new session.
     Reach for this instead of `gh pr edit --add-label`, which is the
@@ -356,10 +356,12 @@ async def ci_rerun(
     Actions runs are re-run via `rerun-failed-jobs` (or a full `rerun`
     when `failed_only=false`); third-party GitHub App check suites are
     re-requested via `check-suites/{id}/rerequest`. Actions runs are
-    capped at 3 attempts (counted on GitHub); third-party suites expose
-    no attempt counter, so they are bounded per call only (at most 10
-    re-runs per call). Reach for this instead of `gh api --method POST
-    .../rerequest`, which sits on an ask rule.
+    capped at 3 attempts (counted on GitHub); third-party suites have no
+    GitHub counter, so their re-requests are counted locally per repo + PR
+    and stop at the same cap (GH-1724). One call issues at most 10
+    re-runs. Both listings are paginated; `truncated` is true when the
+    page ceiling cut them short. Reach for this instead of `gh api
+    --method POST .../rerequest`, which sits on an ask rule.
 
     Args:
         pr_number: PR whose head SHA is targeted (give this or head_sha).
@@ -371,8 +373,8 @@ async def ci_rerun(
 
     Returns:
         Dictionary with keys: repo, head_sha, failed_only,
-        max_attempts, retried (each retry recorded), skipped (with
-        reason), failed.
+        max_attempts, truncated, retried (each retry recorded), skipped
+        (with reason), failed, warnings.
     """
     return await gh.ci_rerun(
         pr_number=pr_number,
@@ -721,7 +723,7 @@ async def create_pr(
     Returns:
         Dictionary with keys: pr_number (int), url (str)
     """
-    from dev10x.subprocess_utils import use_cwd
+    from dev10x.core.subprocess_utils import use_cwd
 
     if ctx is not None:
         await ctx.report_progress(progress=0, total=100, message=f"Creating PR: {title}")
@@ -818,9 +820,9 @@ async def merge_pr(
     """Merge a pull request via ``gh pr merge`` (GH-232).
 
     Symmetric to ``create_pr``/``update_pr``. Provides a structured
-    MCP entry point for the merge so ``dev10x:gh-pr-merge`` Step 5
-    can ship the merge without hitting the PreToolUse hook that
-    blocks raw ``gh pr merge`` Bash invocations.
+    MCP entry point for the merge so ``dev10x-coding:gh-pr-merge``
+    Step 5 can ship the merge without hitting the PreToolUse hook
+    that blocks raw ``gh pr merge`` Bash invocations.
 
     The skill must still run all 9 pre-merge checks before calling
     this tool — the hook block was the only reason the documented
@@ -839,7 +841,7 @@ async def merge_pr(
             privileges to merge a PR left ``BLOCKED`` by a
             required-review rule the account cannot satisfy (e.g. a
             solo maintainer who cannot self-approve). Only the
-            ``dev10x:gh-pr-merge`` Step 5 admin-override gate should
+            ``dev10x-coding:gh-pr-merge`` Step 5 admin-override gate should
             set this, and only after the 7 non-approval checks pass
             (GH-733).
         auto: Pass ``--auto`` when True — enable GitHub auto-merge so
@@ -1454,7 +1456,12 @@ async def resolve_review_thread(
         cwd: Effective working directory (GH-979).
 
     Returns:
-        Dictionary with GraphQL mutation results per resolved thread
+        Dictionary with ``data`` (the GraphQL mutation results) and
+        ``resolved`` (thread IDs GitHub reports resolved). A batch where
+        only some threads resolved is still a success: it adds ``failed``
+        (thread IDs that did not resolve) and ``warnings`` (one message
+        per GraphQL error, naming its thread). Only a batch where nothing
+        resolved returns ``{"error": ...}`` (GH-1913).
     """
     return await gh.resolve_review_thread(
         thread_ids=thread_ids,
@@ -1480,6 +1487,73 @@ async def check_top_level_comments(
         Dictionary with keys: findings (list), count (int)
     """
     return await gh.check_top_level_comments(pr_number=pr_number, repo=repo)
+
+
+@github_tool
+async def bot_review_status(
+    pr_number: int,
+    repo: str | None = None,
+    cwd: str | None = None,
+) -> Result[dict]:
+    """Report whether each review bot has reviewed the current PR head (GH-1832).
+
+    Comment text alone cannot say a PR is clean: bots skip drafts, some
+    hide findings in inline comments under an empty review body, some
+    post an issue comment instead of a review, and a review of an older
+    push says nothing about the head. This compares each bot's reviewed
+    commit with the head.
+
+    Args:
+        pr_number: PR number to inspect
+        repo: Repository in owner/repo format. Auto-detected from cwd if omitted.
+        cwd: Effective working directory (GH-979).
+
+    Returns:
+        Dictionary with keys: pr_number, repo, head_sha,
+        head_committed_at, head_pushed_at (the basis a comment-only bot
+        is judged against, GH-1857), is_draft, bots (per bot: login, kind
+        review|comment, reviewed_sha, at_head true|false|null,
+        at_head_basis sha|timestamp, review_state, review_body_empty,
+        open_inline_comments — unresolved review threads the bot
+        started, empty_body_with_inline, last_activity, blocking),
+        blocking_bots (globs from ``settings-pr-merge.yaml``),
+        missing_blocking_bots, truncated (connections past 100 items),
+        ready (bool), reasons (list[str]), config_source, config_found,
+        project_status, notes (informational: why nothing blocks when
+        the config is absent or matched no project — never blocks).
+    """
+    return await gh.bot_review_status(pr_number=pr_number, repo=repo)
+
+
+@github_tool
+async def review_readiness_audit(
+    repo: str | None = None,
+    pr_number: int | None = None,
+    limit: int = 20,
+    cwd: str | None = None,
+) -> Result[dict]:
+    """Classify review-requested PRs by when their problems appeared (GH-1834).
+
+    For each open PR with a review request, lists what stops it being
+    ready now — draft, CI not green, unresolved review threads, a
+    blocking bot not at head — with the time each began, and compares
+    those times with the latest review request.
+
+    Args:
+        repo: Repository in owner/repo format. Auto-detected from cwd if omitted.
+        pr_number: Audit only this PR (reported even with no review request).
+        limit: Open PRs to scan, most recently updated first (1-50, default 20).
+        cwd: Effective working directory (GH-979).
+
+    Returns:
+        Dictionary with keys: repo, scanned, more_open_prs, prs (per PR:
+        number, title, url, is_draft, requested_at, head_arrived_at,
+        head_arrived_basis force_push|ci_start|committed, verdict
+        READY|SENT-NOT-READY|WENT-RED-AFTER|UNKNOWN, problems (kind
+        draft|ci|thread|bot, detail, since), truncated), counts (per
+        verdict), blocking_bots, config_source.
+    """
+    return await gh.review_readiness_audit(repo=repo, pr_number=pr_number, limit=limit)
 
 
 @github_tool

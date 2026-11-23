@@ -2,12 +2,12 @@
 name: jira
 description: Use when querying, linking, or fetching JIRA issues — so credentials, hook-safe curl patterns, and hierarchy gotchas are always at hand
 metadata:
-  upstream: skills/jira/SKILL.md
+  upstream: plugins/scoping/skills/jira/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/jira/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/scoping/skills/jira/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/jira/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/scoping/skills/jira/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 > **In Codex:** Creating issues needs an Atlassian MCP server configured in Codex; its tool names replace the mcp__claude_ai_Atlassian__* names used here.
 
@@ -34,7 +34,7 @@ secret-tool store --label "JIRA API token" service jira key api_token
 
 ## Scripts
 
-All scripts live in `<plugin-root>/skills/jira/scripts/` and are
+All scripts live in `<plugin-root>/plugins/scoping/skills/jira/scripts/` and are
 pre-approved via `allowed-tools`.
 
 | Script | Purpose | Example |
@@ -61,7 +61,7 @@ command-line env prefix:**
 
 ```bash
 # ❌ Anti-pattern — env prefix shifts the allow-rule prefix
-JIRA_TENANT=acme <plugin-root>/skills/jira/scripts/jira-get.sh PROJ-1
+JIRA_TENANT=acme <plugin-root>/plugins/scoping/skills/jira/scripts/jira-get.sh PROJ-1
 ```
 
 The leading `JIRA_TENANT=acme` shifts the effective Bash command
@@ -75,7 +75,7 @@ argument, so the allow rule still matches and no wrapper is needed:
 
 ```bash
 # ✅ Flag form — tenant is an argument, allow rule matches (GH-311)
-<plugin-root>/skills/jira/scripts/jira-get.sh --tenant acme PROJ-1
+<plugin-root>/plugins/scoping/skills/jira/scripts/jira-get.sh --tenant acme PROJ-1
 ```
 
 **To bind a *fixed* tenant across many ops, ship a wrapper script**
@@ -88,7 +88,7 @@ is what the allow rule matches:
 ```
 
 A copy-paste starting point lives at
-[`templates/jira-wrap.sh.example`](../../../skills/jira/templates/jira-wrap.sh.example).
+[`templates/jira-wrap.sh.example`](../../../plugins/scoping/skills/jira/templates/jira-wrap.sh.example).
 Each thin wrapper `export JIRA_TENANT=<tenant>` then `exec`s the
 matching base script. Pre-approve the wrapper directory with one rule:
 
@@ -114,8 +114,8 @@ The PreToolUse hook **blocks `for` loops** in Bash commands. Always call scripts
 for payload in '...' '...'; do curl ...; done
 
 # ✅ Separate tool calls
-<plugin-root>/skills/jira/scripts/jira-link.sh PROJ-100 "1-Relates" PROJ-200
-<plugin-root>/skills/jira/scripts/jira-link.sh PROJ-100 "1-Relates" PROJ-300
+<plugin-root>/plugins/scoping/skills/jira/scripts/jira-link.sh PROJ-100 "1-Relates" PROJ-200
+<plugin-root>/plugins/scoping/skills/jira/scripts/jira-link.sh PROJ-100 "1-Relates" PROJ-300
 ```
 
 ## JIRA Hierarchy Gotcha
@@ -134,34 +134,34 @@ Tasks can only be children of Epics. Use **issue links** instead for same-level 
 
 ### Fetch an issue
 ```bash
-<plugin-root>/skills/jira/scripts/jira-get.sh PROJ-100
+<plugin-root>/plugins/scoping/skills/jira/scripts/jira-get.sh PROJ-100
 ```
 
 ### Search issues
 ```bash
-<plugin-root>/skills/jira/scripts/jira-search.sh "text ~ 'search term' ORDER BY created DESC"
+<plugin-root>/plugins/scoping/skills/jira/scripts/jira-search.sh "text ~ 'search term' ORDER BY created DESC"
 ```
 
 ### Link tickets (inward [type] outward)
 ```bash
-<plugin-root>/skills/jira/scripts/jira-link.sh PROJ-100 "1-Relates" PROJ-200
-<plugin-root>/skills/jira/scripts/jira-link.sh PROJ-100 "Blocks" PROJ-200
+<plugin-root>/plugins/scoping/skills/jira/scripts/jira-link.sh PROJ-100 "1-Relates" PROJ-200
+<plugin-root>/plugins/scoping/skills/jira/scripts/jira-link.sh PROJ-100 "Blocks" PROJ-200
 ```
 HTTP 201 = success.
 
 ### Update an issue from JSON payload
 ```bash
 # Write ADF payload to a file first, then update
-<plugin-root>/skills/jira/scripts/jira-update.sh PROJ-100 /tmp/claude/jira-payload.json
+<plugin-root>/plugins/scoping/skills/jira/scripts/jira-update.sh PROJ-100 /tmp/claude/jira-payload.json
 ```
 HTTP 204 = success.
 
 ### Add a comment from a file
 ```bash
-<plugin-root>/skills/jira/scripts/jira-comment.sh PROJ-100 /tmp/claude/comment-body.md
+<plugin-root>/plugins/scoping/skills/jira/scripts/jira-comment.sh PROJ-100 /tmp/claude/comment-body.md
 ```
 
 ### List link types
 ```bash
-<plugin-root>/skills/jira/scripts/jira-link-types.sh
+<plugin-root>/plugins/scoping/skills/jira/scripts/jira-link-types.sh
 ```

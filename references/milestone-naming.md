@@ -43,13 +43,13 @@ MCP: Installable GitHub bot/Action
 ### Ordering is a dependency, not a number (GH-1515)
 
 A sequence number after the prefix (`AUD-M1`, `CREW-M2`) is what
-`dev10x:project-scope` forbids since GH-1509: numbered names make
+`dev10x-scoping:project-scope` forbids since GH-1509: numbered names make
 milestones hard to split or merge, because every later title has to
 be renamed. The prefix namespaces; it does not order.
 
 Record ordering in the milestone **description** instead, as a
 `Depends on: <milestone name>` line, using the format in
-[`skills/project-scope/references/milestone-description.md`](../skills/project-scope/references/milestone-description.md).
+[`plugins/scoping/skills/project-scope/references/milestone-description.md`](../plugins/scoping/skills/project-scope/references/milestone-description.md).
 Omit the line only when the milestone can start now.
 
 ## Registered Initiative Prefixes
@@ -79,6 +79,18 @@ Omit the line only when the milestone can start now.
 When starting a new initiative that spans multiple milestones, register
 its prefix here before creating the first milestone. Pick a prefix that
 does not conflict with an existing entry.
+
+**Enforced at creation (GH-1690).** `milestone_create` — and so
+`milestones_bulk_create`, which calls it per entry — reads this table
+from the current checkout and refuses a title whose `<INIT>` prefix is
+missing, before any API call. The error names the row to add. Legacy
+`<INIT>-M<n>: ` titles are read by their `<INIT>`. A checkout without
+this file is not guarded, so the tool still serves other repos.
+
+The check runs only when a milestone is created, so prefixes of closed
+milestones created before it (`CONC`, `FOREMAN`, `GHTOOL`) need no
+rows. A milestone created in the web UI bypasses it; the periodic sweep
+still covers that path.
 
 ## Lifecycle Rule
 

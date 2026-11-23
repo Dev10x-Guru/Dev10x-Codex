@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Worktree Prune"
+policy:
+  allow_implicit_invocation: true

@@ -2,12 +2,12 @@
 name: git-commit
 description: 'Create a properly formatted git commit following project conventions (gitmoji, ticket reference, 72 char limit). Extracts ticket ID from branch name, prompts for description and solution points, stages changes, and creates the commit. TRIGGER when: creating a git commit with proper formatting. DO NOT TRIGGER when: amending commits, creating fixup! commits (use Dev10x:git-fixup), or splitting commits (use Dev10x:git-commit-split).'
 metadata:
-  upstream: skills/git-commit/SKILL.md
+  upstream: plugins/coding/skills/git-commit/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/git-commit/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/git-commit/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/git-commit/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/git-commit/`.
 
 # Create Commit
 

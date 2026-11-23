@@ -1,3 +1,11 @@
+---
+paths:
+  - "agents/**"
+  - "skills/**"
+  - "plugins/*/agents/**"
+  - "plugins/*/skills/**"
+---
+
 # Model & Effort Selection for Agent Dispatch
 
 Guide for choosing the right model and reasoning effort when
@@ -29,8 +37,8 @@ compound-failure scenarios with actionable minimal-change
 proposals. Skills dispatching discussion agents MUST let the
 user pick the tier once per session (frontier recommended,
 haiku only with an explicit naive-output warning) instead of
-hard-coding a cheap tier. `dev10x:ddd` implements this gate;
-`dev10x:adr-evaluate` architect panels already dispatch at
+hard-coding a cheap tier. `dev10x-scoping:ddd` implements this gate;
+`dev10x-scoping:adr-evaluate` architect panels already dispatch at
 Design tier (`opus`). Reviewer panels (named agents pinned to
 `sonnet`) share the failure mode — prefer promoting a reviewer
 spec's `model:` over accepting shallow findings.

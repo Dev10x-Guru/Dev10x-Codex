@@ -4,9 +4,9 @@ description: >
   Diagnose drift between user intent and observed agent behavior in
   Dev10x sessions. Runs pluggable strategies that each detect one
   drift category (MCP-vs-script confusion, missing dir coverage,
-  stale memories, monorepo uv-run-project friction, missing local
-  skill pre-approvals), explain the root cause, and propose a
-  remediation patch — never auto-applied; always confirmed via
+  stale memories, uv-run-project friction, missing local skill
+  pre-approvals, a satellite enabled without core), explain the
+  root cause, and propose a remediation patch — never auto-applied; always confirmed via
   AskUserQuestion.
   TRIGGER when: user hits repeated permission friction despite prior
   cleanup, notices the agent reaching for shell-script fallbacks
@@ -49,7 +49,7 @@ change.
 |----------|-------|-----------|
 | `dev10x:permission-investigator` | Rule shape mutation matrix | Doesn't read memories or doc drift |
 | `dev10x:plugin-maintenance` | Ensures permissions present | Doesn't diagnose why intent breaks |
-| `dev10x:memory-maintenance` | Memory consolidation | Doesn't link drift to permission friction |
+| `dev10x-teach:memory-maintenance` | Memory consolidation | Doesn't link drift to permission friction |
 
 `dev10x:plugin-doctor` orchestrates these as remediation targets — it
 diagnoses, then delegates concrete edits.
@@ -104,7 +104,7 @@ class Strategy:
 
 `Context` carries paths to settings files, memory directories, and
 hook log access — strategies read but do not mutate. The first
-shipped strategy is :mod:`dev10x.skills.doctor.strategies.mcp_vs_script_drift`
+shipped strategy is :mod:`dev10x.core.skills.doctor.strategies.mcp_vs_script_drift`
 (MCP tool vs shell fallback). See
 [`references/strategy-catalog.md`](references/strategy-catalog.md)
 for the planned strategy roster.
@@ -141,7 +141,10 @@ Each remediation either:
 
 - Edits a memory file in place (use `Edit`)
 - Delegates to `dev10x:plugin-maintenance` for settings changes
-- Delegates to `dev10x:memory-maintenance` for memory restructuring
+- Calls the MCP tool a remediation names in `action.tool` with its
+  `action.arguments` (e.g. `sibling-only-grants` →
+  `permission_grant(..., remember=true)`)
+- Delegates to `dev10x-teach:memory-maintenance` for memory restructuring
 - Files an upstream issue via `mcp__plugin_dev10x_cli__issue_create`
   when the drift originates in the plugin itself
 

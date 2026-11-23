@@ -3,10 +3,10 @@
 Durable prefs live in three documents with different lifetimes, each in
 its own module:
 
-- :class:`~dev10x.domain.documents.friction_yaml.FrictionYamlDocument` —
+- :class:`~dev10x.core.domain.documents.friction_yaml.FrictionYamlDocument` —
   the **global** ``~/.config/Dev10x/friction.yaml``, cross-repo, keyed by
   project globs, with its own reap/GC semantics (ADR-0018).
-- :class:`~dev10x.domain.documents.config_yaml.ConfigYamlDocument` — the
+- :class:`~dev10x.core.domain.documents.config_yaml.ConfigYamlDocument` — the
   legacy **per-repo** ``.claude/Dev10x/config.yaml``, a one-cycle
   migration fallback.
 - :class:`SessionYamlDocument` (here) — the **per-worktree**
@@ -17,7 +17,7 @@ the three in ADR-0018 precedence and the typed readers coerce the result
 (ADR-0007 D3 keeps Policy Rules I/O-free).
 
 The names that moved out in GH-1431 are re-exported below so every
-existing ``from dev10x.domain.documents.session_yaml import ...`` keeps
+existing ``from dev10x.core.domain.documents.session_yaml import ...`` keeps
 resolving; new code should import from the owning module.
 """
 
@@ -27,12 +27,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from dev10x.domain.documents.config_yaml import (
+from dev10x.core.domain.documents.config_yaml import (
     FRICTION_SETUP_SKIP_MODE,
     ConfigYamlDocument,
     set_playbook_modes,
 )
-from dev10x.domain.documents.friction_yaml import (
+from dev10x.core.domain.documents.friction_yaml import (
     _DURABLE_KEYS,
     DURABLE_KEYS,
     PIN_SCOPES,
@@ -48,10 +48,9 @@ from dev10x.domain.documents.friction_yaml import (
     seed_safe_baseline_if_absent,
     upsert_project_prefs,
 )
-from dev10x.domain.documents.yaml_mapping import load_yaml_mapping
-from dev10x.domain.friction_level import FrictionLevel
-from dev10x.domain.gate_policy import (
-    SUPERVISOR_REVIEW_NONE,
+from dev10x.core.domain.documents.yaml_mapping import load_yaml_mapping
+from dev10x.core.domain.friction_level import FrictionLevel
+from dev10x.core.domain.gate_policy import (
     SUPERVISOR_REVIEW_REQUIRED,
     coerce_supervisor_review,
 )
@@ -70,22 +69,6 @@ def _coerce_allowed_overlays(value: Any) -> list[str] | None:
     if not isinstance(value, list):
         return None
     return [str(overlay) for overlay in value]
-
-
-def _coerce_human_review(value: Any) -> bool:
-    """Coerce a durable ``human_review`` value to the review posture (ADR-0019).
-
-    ``True`` — the default — means humans (including the session
-    supervisor) are in the review loop: reviewers get requested and the
-    unresolved-threads / review-requested DoD checks run. Only a real
-    boolean ``False`` disables them.
-
-    An absent, ``None``, or non-boolean value (e.g. the string ``"no"``)
-    resolves to ``True`` so a malformed setting fails toward MORE
-    oversight, never less — the same safe direction ``allowed_overlays``
-    takes when it cannot parse a policy.
-    """
-    return value if isinstance(value, bool) else True
 
 
 def _coerce_protected_branches(value: Any) -> list[str] | None:
@@ -128,8 +111,8 @@ def _modes_with_overlays_folded_in(data: dict[str, Any]) -> list[str]:
 
     A repo that migrated to ``gate_preset`` + ``gate_overlays`` names its
     posture only in overlay vocabulary. Without this fold, ``resolve_gate``
-    saw solo-maintainer while ``dev10x:verify-acc-dod``'s mode filter and
-    ``dev10x:work-on``'s playbook ``modes:`` mapping saw nothing — one
+    saw solo-maintainer while ``dev10x-coding:verify-acc-dod``'s mode filter and
+    ``dev10x-coding:work-on``'s playbook ``modes:`` mapping saw nothing — one
     posture, two answers, so the "Review requested" DoD check fired red on
     a PR whose ``request_review`` gate had already resolved to ``skip``.
 
@@ -252,10 +235,8 @@ class SessionYamlDocument:
 
         Absent, unrecognised, or malformed values read as ``required``, so an
         unconfigured repo keeps oversight and every typo fails toward more of
-        it. The deprecated ``human_review`` boolean is honoured as an alias
-        until its removal version in :mod:`dev10x.domain.deprecations`:
-        ``true`` → ``required``, ``false`` → ``none``. An
-        explicit ``supervisor_review`` always wins over it.
+        it. The retired ``human_review`` boolean is not read here (GH-1771);
+        ``dev10x config migrate-schema`` converts it to ``supervisor_review``.
 
         ``data`` lets a caller that has already loaded ``_durable()`` reuse
         it — the reader is not memoised, and the gate path resolves this on
@@ -264,12 +245,6 @@ class SessionYamlDocument:
         prefs = self._durable() if data is None else data
         if "supervisor_review" in prefs:
             return coerce_supervisor_review(prefs["supervisor_review"])
-        if "human_review" in prefs:
-            return (
-                SUPERVISOR_REVIEW_REQUIRED
-                if _coerce_human_review(prefs["human_review"])
-                else SUPERVISOR_REVIEW_NONE
-            )
         return SUPERVISOR_REVIEW_REQUIRED
 
     def read_protected_branches(self) -> list[str] | None:
@@ -299,7 +274,7 @@ class SessionYamlDocument:
         The v1 keys (``friction_level``, ``walk_away``, and
         ``active_modes``) still ride along, but nothing translates them
         into a posture any more (GH-1162). They are reported so
-        :func:`dev10x.domain.gate_policy.legacy_policy_keys` can *detect*
+        :func:`dev10x.core.domain.gate_policy.legacy_policy_keys` can *detect*
         an un-migrated config and refuse it by name — resolving one at the
         sole remaining baseline would widen autonomy on a repo that had
         pinned a stricter posture.
@@ -308,8 +283,7 @@ class SessionYamlDocument:
         ``None`` when unset (permissive), else the whitelist the resolver
         filters the computed overlays against before resolving a gate.
 
-        ``supervisor_review`` (ADR-0022 D-2, superseding ADR-0019's
-        ``human_review``) rides along because the review-boundary gate needs
+        ``supervisor_review`` (ADR-0022 D-2) rides along because the review-boundary gate needs
         it and ``_durable()`` is not memoised — reading it via
         :meth:`read_supervisor_review` instead would re-open and re-parse the
         same YAML a second time on every gate resolution.
@@ -347,7 +321,7 @@ class SessionYamlDocument:
 
     # ADR-0018: session identity (branch/tickets) is no longer persisted
     # under .claude/Dev10x/session.yaml. Staleness reads it from plan-sync
-    # via dev10x.domain.session_document.read_plan_identity instead, and
+    # via dev10x.core.domain.session_document.read_plan_identity instead, and
     # nothing writes session.yaml — so the self-settings gate never fires.
     # ``_load``/``path`` survive only to read a legacy pre-split session.yaml
     # as a durable-prefs migration fallback in ``_durable``.

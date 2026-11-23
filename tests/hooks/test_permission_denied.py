@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 
 import pytest
-from dev10x.domain.events.hook_input import HookRetry
-from dev10x.hooks.hook_transport import emit
 
+from dev10x.core.domain.events.hook_input import HookRetry
+from dev10x.core.hooks.hook_transport import emit
 from tests.fakers import BashHookInputFaker
 
 
@@ -27,14 +27,17 @@ class TestHookRetry:
             emit(hook_retry)
         assert exc_info.value.code == 0
 
-    def test_emit_writes_json_to_stderr(
+    def test_emit_writes_json_to_stdout(
         self,
         hook_retry: HookRetry,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
+        """GH-1775: an exit-0 envelope on stderr is never read."""
         with pytest.raises(SystemExit):
             emit(hook_retry)
-        output = json.loads(capsys.readouterr().err)
+        captured = capsys.readouterr()
+        output = json.loads(captured.out)
+        assert captured.err == ""
         assert output["hookSpecificOutput"]["hookEventName"] == "PermissionDenied"
         assert output["hookSpecificOutput"]["retry"] is True
         assert output["systemMessage"] == "Use Skill(dev10x:git-commit) instead"
@@ -46,7 +49,7 @@ class TestHookRetry:
         retry = HookRetry(message="")
         with pytest.raises(SystemExit):
             emit(retry)
-        output = json.loads(capsys.readouterr().err)
+        output = json.loads(capsys.readouterr().out)
         assert "systemMessage" not in output
 
     def test_frozen(self, hook_retry: HookRetry) -> None:
@@ -57,7 +60,7 @@ class TestHookRetry:
 class TestSkillRedirectCorrect:
     @pytest.fixture()
     def validator(self):
-        from dev10x.validators.skill_redirect import SkillRedirectValidator
+        from dev10x.core.validators.skill_redirect import SkillRedirectValidator
 
         return SkillRedirectValidator()
 
@@ -68,7 +71,7 @@ class TestSkillRedirectCorrect:
         result = validator.correct(inp=inp)
         assert result is not None
         assert isinstance(result, HookRetry)
-        assert "dev10x:git-commit" in result.message
+        assert "dev10x-coding:git-commit" in result.message
 
     def test_returns_none_for_allowed_commit(self, validator) -> None:
         inp = BashHookInputFaker.build(
@@ -99,7 +102,7 @@ class TestSkillRedirectCorrect:
 class TestPrefixFrictionCorrect:
     @pytest.fixture()
     def validator(self):
-        from dev10x.validators.prefix_friction import PrefixFrictionValidator
+        from dev10x.core.validators.prefix_friction import PrefixFrictionValidator
 
         return PrefixFrictionValidator()
 
@@ -128,19 +131,19 @@ class TestPrefixFrictionCorrect:
 
 class TestCorrectorProtocol:
     def test_skill_redirect_is_corrector(self) -> None:
-        from dev10x.validators.base import Corrector
-        from dev10x.validators.skill_redirect import SkillRedirectValidator
+        from dev10x.core.validators.base import Corrector
+        from dev10x.core.validators.skill_redirect import SkillRedirectValidator
 
         assert isinstance(SkillRedirectValidator(), Corrector)
 
     def test_prefix_friction_is_corrector(self) -> None:
-        from dev10x.validators.base import Corrector
-        from dev10x.validators.prefix_friction import PrefixFrictionValidator
+        from dev10x.core.validators.base import Corrector
+        from dev10x.core.validators.prefix_friction import PrefixFrictionValidator
 
         assert isinstance(PrefixFrictionValidator(), Corrector)
 
     def test_non_corrector_validator_is_not_corrector(self) -> None:
-        from dev10x.validators.base import Corrector
-        from dev10x.validators.execution_safety import ExecutionSafetyValidator
+        from dev10x.core.validators.base import Corrector
+        from dev10x.core.validators.execution_safety import ExecutionSafetyValidator
 
         assert not isinstance(ExecutionSafetyValidator(), Corrector)

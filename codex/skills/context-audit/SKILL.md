@@ -2,12 +2,12 @@
 name: context-audit
 description: 'Audit context window utilization — CLAUDE.md files, rules, agent specs, references, and memories. Reports budget compliance, flags oversized files, and suggests pruning actions. TRIGGER when: user wants to optimize context usage, after adding many rules or memories, or when sessions feel sluggish from context bloat. DO NOT TRIGGER when: auditing memory content quality (use Dev10x:memory-maintenance instead).'
 metadata:
-  upstream: skills/context-audit/SKILL.md
+  upstream: plugins/teach/skills/context-audit/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/context-audit/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/teach/skills/context-audit/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/context-audit/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/teach/skills/context-audit/`.
 > **Not supported in Codex yet**: this skill depends on Claude Code features Codex lacks (Dev10x-Codex#17). Use it from Claude Code; Codex runs it only when invoked by name.
 
 # Dev10x:context-audit — Context Window Optimizer

@@ -5,14 +5,14 @@ from pathlib import Path
 
 import pytest
 import yaml
-from dev10x.skills.permission.catalog_load import (
+
+from dev10x.core.skills.permission import catalog_load
+from dev10x.core.skills.permission.catalog_load import (
     extract_cache_plugin_dir,
     extract_cache_publisher,
     find_settings_files,
     init_userspace_config,
 )
-
-from dev10x.skills.permission import catalog_load
 
 
 class TestExtractCachePublisher:
@@ -77,13 +77,6 @@ class TestFindSettingsFilesUserGlobal:
     """Regression: ~/.claude/settings.json was skipped by find_settings_files
     when include_user=True (Dev10x-Claude2#982). Both user-global files must
     be discovered so versioned plugin paths are rewritten there too."""
-
-    @pytest.fixture()
-    def fake_home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        home = tmp_path / "home"
-        (home / ".claude").mkdir(parents=True)
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-        return home
 
     def test_includes_both_user_global_files_when_include_user(
         self,
@@ -253,7 +246,7 @@ class TestInitUserspaceConfig:
             memory.write_text("roots: [/work/winner]\n")
             yield
 
-        monkeypatch.setattr("dev10x.domain.file_locks.file_lock", racing_lock)
+        monkeypatch.setattr("dev10x.core.domain.file_locks.file_lock", racing_lock)
 
         result = init_userspace_config()
 

@@ -43,33 +43,36 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dev10x.domain.claude_paths import ClaudeDir
-from dev10x.domain.common.allow_rule import AllowRule
-from dev10x.domain.common.plugin_version import SEMVER_PATTERN, PluginVersion
-from dev10x.domain.common.result import Result
-from dev10x.domain.dev10x_paths import Dev10xConfigDir
-from dev10x.domain.plugin_identity import PLUGIN_NAMES
-from dev10x.skills.permission.catalog_paths import shipped_projects_catalog
-from dev10x.skills.permission.config import parse_config, resolve_config
-from dev10x.skills.permission.doctor import has_double_slash_typo
-from dev10x.skills.permission.legacy_namespace import (
+from dev10x.core.domain.claude_paths import ClaudeDir
+from dev10x.core.domain.common.allow_rule import AllowRule
+from dev10x.core.domain.common.plugin_version import SEMVER_PATTERN, PluginVersion
+from dev10x.core.domain.common.result import Result
+from dev10x.core.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.core.domain.plugin_identity import CORE_PLUGIN_NAMES, PLUGIN_NAMES
+from dev10x.core.skills.doctor.strategies.mcp_vs_script_drift import SCRIPT_TO_MCP
+from dev10x.core.skills.permission.catalog_paths import shipped_projects_catalog
+from dev10x.core.skills.permission.config import parse_config, resolve_config
+from dev10x.core.skills.permission.doctor import has_double_slash_typo
+from dev10x.core.skills.permission.legacy_namespace import (
     NamespaceMigration,
     migrate_legacy_namespace,
 )
-from dev10x.skills.permission.settings_discovery import (
+from dev10x.core.skills.permission.settings_discovery import (
     VENDORED_DIRS,
     discover_settings,
     vendored_dirs,
 )
-from dev10x.skills.permission.star_prefix import StarPrefixRepair, repair_star_prefix
+from dev10x.core.skills.permission.star_prefix import StarPrefixRepair, repair_star_prefix
 
 MEMORY_CONFIG = Dev10xConfigDir.projects_yaml()
 USERSPACE_CONFIG = Dev10xConfigDir.upgrade_cleanup_projects_yaml()
 PLUGIN_CONFIG = shipped_projects_catalog()
 GLOBAL_SETTINGS = ClaudeDir.settings_json()
 
+# Core only: `current_version` is core's, and a satellite installed at a
+# different version must not have its working rules pruned (GH-1564).
 VERSION_PATTERN = re.compile(
-    rf"plugins/cache/[^/]+/{PLUGIN_NAMES}/({SEMVER_PATTERN})", re.IGNORECASE
+    rf"plugins/cache/[^/]+/{CORE_PLUGIN_NAMES}/({SEMVER_PATTERN})", re.IGNORECASE
 )
 PUBLISHER_PATTERN = re.compile(rf"plugins/cache/([^/]+)/{PLUGIN_NAMES}/", re.IGNORECASE)
 
@@ -108,6 +111,24 @@ DEPRECATED_READ_GLOBS: tuple[re.Pattern[str], ...] = (
 
 def is_deprecated_read_glob(rule: str) -> bool:
     return any(p.match(rule) for p in DEPRECATED_READ_GLOBS)
+
+
+# Case-sensitive on purpose: the plugin cache directory kept its uppercase
+# spelling only before the rename, and `~/.config/Dev10x` or
+# `Read(~/.claude/skills/Dev10x:...)` rules are still live (GH-1501).
+UPPERCASE_PLUGIN_READ_GLOB = re.compile(r"^Read\(.*plugins/cache/[^/]+/Dev10x/.*\*\*.*\)$")
+
+
+def is_uppercase_plugin_read_glob(rule: str) -> bool:
+    return UPPERCASE_PLUGIN_READ_GLOB.match(rule) is not None
+
+
+def is_wrapped_script_rule(rule: str) -> bool:
+    parsed = AllowRule.parse(rule)
+    if parsed.tool != "Bash":
+        return False
+    command = re.split(r"[\s:]", parsed.inner, maxsplit=1)[0]
+    return any(command == script or command.endswith(f"/{script}") for script in SCRIPT_TO_MCP)
 
 
 HOOK_ENABLED_INNER_PREFIXES: tuple[str, ...] = (
@@ -207,6 +228,8 @@ class RemovalResult:
     ask_shadowed_by_allow: list[tuple[str, str]] = field(default_factory=list)
     deprecated_globs: list[str] = field(default_factory=list)
     unmatchable_prefix: list[str] = field(default_factory=list)
+    uppercase_plugin_reads: list[str] = field(default_factory=list)
+    wrapped_scripts: list[str] = field(default_factory=list)
     kept: list[str] = field(default_factory=list)
     namespace_migration: NamespaceMigration = field(default_factory=NamespaceMigration)
     star_prefix_repair: StarPrefixRepair = field(default_factory=StarPrefixRepair)
@@ -226,6 +249,8 @@ class RemovalResult:
             + len(self.shell_fragments)
             + len(self.double_slash)
             + len(self.deprecated_globs)
+            + len(self.uppercase_plugin_reads)
+            + len(self.wrapped_scripts)
         )
 
 
@@ -446,6 +471,14 @@ def classify_rules(
             result.deprecated_globs.append(rule)
             continue
 
+        if is_uppercase_plugin_read_glob(rule):
+            result.uppercase_plugin_reads.append(rule)
+            continue
+
+        if is_wrapped_script_rule(rule):
+            result.wrapped_scripts.append(rule)
+            continue
+
         result.kept.append(rule)
 
     return result
@@ -501,7 +534,7 @@ def clean_file(
         return result, []
 
     if not dry_run and (result.total_removed > 0 or result.repaired):
-        _write(path=path, kept_allow=result.kept if result.total_removed > 0 else None)
+        _write(path=path, remove_allow=set(allow_list) - set(result.kept))
 
     messages = _format_messages(result, verbose=verbose)
     return result, messages
@@ -514,23 +547,28 @@ def _repair(data: dict) -> tuple[dict, NamespaceMigration, StarPrefixRepair]:
     return repaired, migration, star_repair
 
 
-def _write(*, path: Path, kept_allow: list[str] | None) -> None:
+def _write(*, path: Path, remove_allow: set[str]) -> None:
     """Back up ``path``, then apply the rule repairs and any pruning.
 
     The repairs are re-derived from the live document inside the lock
     rather than written from the snapshot read above, so a concurrent
-    writer's unrelated keys survive.
+    writer's unrelated keys survive. Pruning is a set of rules to drop,
+    applied to the live allow list, so an allow another writer appended
+    after the snapshot survives too (GH-1712).
     """
-    from dev10x.skills.permission.backup import create_backup
-    from dev10x.skills.permission.file_lock import locked_json_update
+    from dev10x.core.skills.permission import backup
+    from dev10x.core.skills.permission.file_lock import locked_json_update
 
-    create_backup(path)
+    backup.create_backup(path)
     with locked_json_update(path=path) as live_data:
         repaired, _, _ = _repair(live_data)
         live_data.clear()
         live_data.update(repaired)
-        if kept_allow is not None:
-            live_data["permissions"]["allow"] = kept_allow
+        allow = live_data.get("permissions", {}).get("allow")
+        if remove_allow and isinstance(allow, list):
+            live_data["permissions"]["allow"] = [
+                rule for rule in allow if rule not in remove_allow
+            ]
 
 
 def migrate_file(
@@ -555,7 +593,7 @@ def migrate_file(
     if not result.repaired:
         return result, []
     if not dry_run:
-        _write(path=path, kept_allow=None)
+        _write(path=path, remove_allow=set())
     return result, [*_format_migration(migration), *_format_star_repair(star_repair)]
 
 
@@ -692,6 +730,24 @@ def _format_messages(
             for rule in result.deprecated_globs:
                 messages.append(f"    {rule}")
 
+    if result.uppercase_plugin_reads:
+        messages.append(
+            f"  - {len(result.uppercase_plugin_reads)} Read globs on the pre-rename"
+            " uppercase Dev10x/ plugin directory"
+        )
+        if verbose:
+            for rule in result.uppercase_plugin_reads:
+                messages.append(f"    {rule}")
+
+    if result.wrapped_scripts:
+        messages.append(
+            f"  - {len(result.wrapped_scripts)} direct-script rules for scripts"
+            " a skill or MCP tool now wraps"
+        )
+        if verbose:
+            for rule in result.wrapped_scripts:
+                messages.append(f"    {rule}")
+
     if result.hook_enabled:
         messages.append(f"  - {len(result.hook_enabled)} hook-enabled rules (kept)")
         if verbose:
@@ -770,10 +826,19 @@ def run_clean(
     verbose: bool,
     skip_global_dedup: bool,
     migration_layers: list[Path] | None = None,
+    global_file: Path | None = None,
 ) -> CleanRunResult:
-    """Clean every settings file, migrate every other layer, and aggregate."""
+    """Clean every settings file, migrate every other layer, and aggregate.
+
+    ``global_file`` is the user ``settings.json`` opted in with
+    ``clean --global`` (GH-1868). It gets the full clean but never global
+    dedup: deduplicating the global file against itself would empty it.
+    """
     run = CleanRunResult()
-    for path in sorted(settings_files):
+    targets = [(path, skip_global_dedup) for path in sorted(settings_files)]
+    if global_file is not None:
+        targets.append((global_file, True))
+    for path, skip_dedup in targets:
         result, messages = clean_file(
             path,
             global_rules=global_rules,
@@ -782,10 +847,12 @@ def run_clean(
             cache_root=cache_root,
             dry_run=dry_run,
             verbose=verbose,
-            skip_global_dedup=skip_global_dedup,
+            skip_global_dedup=skip_dedup,
         )
         _record(run=run, outcome=CleanFileOutcome(path=path, messages=messages, result=result))
     for path in migration_layers or []:
+        if global_file is not None and path.resolve() == global_file.resolve():
+            continue
         result, messages = migrate_file(path, dry_run=dry_run)
         _record(run=run, outcome=CleanFileOutcome(path=path, messages=messages, result=result))
     return run
@@ -810,7 +877,7 @@ def _record(*, run: CleanRunResult, outcome: CleanFileOutcome) -> None:
 
 
 def _restore(*, config_path: Path) -> int:
-    from dev10x.skills.permission.backup import restore_report
+    from dev10x.core.skills.permission.backup import restore_report
 
     config = load_config(config_path)
     settings_files = find_settings_files(

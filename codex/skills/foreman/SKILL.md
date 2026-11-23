@@ -2,12 +2,12 @@
 name: foreman
 description: 'Unattended overnight delivery of a milestone/bundle queue — a two-tier harness (watchdog main session + cheap foreman overseer + work-on crew) that pre-flights permissions while the supervisor is still present, loops the queue, defers questionable scope to the end, survives quota-block rollovers, and self-audits its friction at dawn. Defaults to the adaptive auto-advance + afk gate policy (guided/strict on request) — never YOLO auto-mode. TRIGGER when: the supervisor is leaving (AFK / overnight / "ship these milestones while I sleep") with 1+ milestones or issue bundles queued for autonomous delivery. DO NOT TRIGGER when: single attended bundle (use Dev10x:work-on), parallel independent items while attended (use Dev10x:fanout), or only the gate policy is wanted (use Dev10x:afk).'
 metadata:
-  upstream: skills/foreman/SKILL.md
+  upstream: plugins/coding/skills/foreman/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/foreman/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/foreman/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/foreman/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/foreman/`.
 > **Not supported in Codex yet**: this skill depends on Claude Code features Codex lacks (Dev10x-Codex#11). Use it from Claude Code; Codex runs it only when invoked by name.
 
 # Dev10x:foreman — Overnight Milestone Delivery Harness
@@ -47,3 +47,11 @@ handover another session will read — Read
 first: only pushed commits and issue comments survive a session
 death, an inherited brief is a hypothesis until re-derived from
 origin, and a foreman cannot spawn named teammates (GH-965).
+
+**Optional review-readiness sweep (GH-1834).** Only when the
+supervisor asks for it at Phase 0: once per periodic status, call
+`mcp__cli__review_readiness_audit` per manifest repo and
+list its `SENT-NOT-READY` rows in the status. Read-only — never
+comment, request review or relabel. See
+[`references/review-readiness.md`](../../references/review-readiness.md)
+§ Periodic sweep under foreman.

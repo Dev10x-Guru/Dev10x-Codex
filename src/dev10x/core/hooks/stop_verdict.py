@@ -3,14 +3,14 @@
 Every mechanism that enforced "do not end a turn on a decision question"
 was model-side instruction, and therefore skippable. `dev10x:ask` owns
 the reformulation but is invoked by hand; the GH-149 task-list invariant
-is prose in `essentials.md`; `dev10x:session-wrap-up` runs after the
+is prose in `essentials.md`; `dev10x-tasks:session-wrap-up` runs after the
 fact. A Stop hook was already wired and could enforce none of it,
 because the orchestrator discarded every feature's return value.
 
 This module is the decision half. It reads the payload and the
 transcript and returns a :class:`StopVerdict`; the orchestrator owns
 the envelope. Keeping the two apart is what makes the rule testable
-without a subprocess — the separation `dev10x.hooks.format_scope` got
+without a subprocess — the separation `dev10x.core.hooks.format_scope` got
 under GH-1143.
 
 **The rule.** A turn that ends on an *unanswered decision* hands the
@@ -51,10 +51,11 @@ that emptiness "must not be treated as evidence of anything else".
 Conflating the two would block every turn of every such session, which
 is the very over-firing this rule ends.
 
-That leaves exactly one blocking state: a task list that exists and is
-wholly completed. There the next move genuinely is the supervisor's,
+That leaves one blocking state on the task list: a list that exists and
+is wholly completed. There the next move genuinely is the supervisor's,
 and the steer asks to stand down — carrying its own recommended option
-rather than an open-ended "reformulate something".
+rather than an open-ended "reformulate something". (GH-1365 adds the
+dirty-tree block on that same finished list.)
 
 **A deferral in prose is not a decision.** An earlier cut of this rule
 also blocked on closing shapes like "shall I push?" / "want me to…",
@@ -64,6 +65,17 @@ and reversible, so the answer is always yes, and asking is the defect.
 Blocking never made the agent push — it made it render a widget about
 work it should have simply done. Removing that carve-out took the last
 guess about English out of the gate; everything left is structural.
+
+**A promise nothing kept is the one exception (GH-1829).** "Now I'll
+run the tests" with no tool after it is not a deferral — it tells the
+supervisor work is under way when nothing is. Detecting it needs
+phrases, so they live in ``stop_intent_patterns.yaml`` rather than in
+code, keyed by language, with exemptions for a wait, a promise
+conditioned on the supervisor's word, and deliberate deferral. The
+check runs after both loop guards, standby and an open widget, and
+before the task list, so it fires with or without a plan — except
+for a turn parked on dispatched subagents (GH-1464). A pattern file
+that cannot be read disarms it rather than blocking.
 
 **The loop guard is not optional.** A hook that always blocks, without
 one, never lets a turn finish. Two independent guards, because the
@@ -78,10 +90,11 @@ presumes a supervisor on the other end of it, and two cases have none:
   - a **subagent**, whose final message is its report to whoever
     dispatched it. One was observed echoing the no-open-work steer back
     as a status question — complying with a block it should never have
-    received. The branch GH-1314 added for it never once fired, because
-    every discriminator it keyed on was a guess at the payload shape;
-    GH-1340 replaced the guess with the transcript layout, which is
-    observable and was captured before being relied on;
+    received. The branch GH-1314 added for it never fired, and GH-1475
+    captured why: Stop is not invoked for a subagent at all (two
+    completions, zero Stop records, harness 2.1.316). So there is no
+    subagent branch; the empty-list steer carries a text disposition
+    for any reader without a supervisor instead;
   - a session the supervisor has put **on standby**. "Are we done?" had
     no terminal answer, so confirming it only re-armed the gate next
     turn. Standby is that answer, scoped to the supervisor's next
@@ -104,15 +117,18 @@ import re
 import sys
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
 
-from dev10x.domain.documents.plan import is_terminal_task_subject
-from dev10x.domain.file_locks import atomic_write_text
-from dev10x.domain.session_document import plan_identity
-from dev10x.domain.session_staleness import session_stale
+import yaml
+
+from dev10x.core.domain.documents.plan import is_terminal_task_subject
+from dev10x.core.domain.file_locks import atomic_write_text
+from dev10x.core.domain.session_document import plan_identity
+from dev10x.core.domain.session_staleness import session_stale
 
 
 def _diagnose(*, what: str, error: OSError | ValueError) -> None:
@@ -145,29 +161,6 @@ _STANDBY_RE = re.compile(r"\bon standby\b", re.IGNORECASE)
 #: this answer outlives the turn: a question that merely mentions standing
 #: down must not silence the gate until the task list changes.
 _STAND_DOWN_RE = re.compile(r'="\s*stand(?:ing)?[\s-]+down\b', re.IGNORECASE)
-
-#: The documented payload marker of a subagent's stop (GH-1314): the
-#: harness contracts a ``SubagentStop`` event for a dispatched agent.
-#:
-#: GH-1314 also checked five guessed keys (``is_subagent``, ``subagent``,
-#: ``subagent_id``, ``agent_id``, ``parent_session_id``). GH-1347 retired
-#: them on the evidence: ``StopSignal.SUBAGENT`` fired 0 times in 224
-#: records (GH-1340) and the subagent branch 0 times in 488 records on a
-#: day five subagents ran to completion. A name nobody has seen arrive
-#: reads as coverage without being any. Payload keys are now captured
-#: under ``DEV10X_STOP_PAYLOAD_KEYS`` (see ``session_dispatch``), so a
-#: real discriminator is re-added from a recorded payload, not a guess.
-_SUBAGENT_EVENT = "SubagentStop"
-
-#: The directory a subagent's transcript lives in, and its filename
-#: prefix (GH-1340). Captured from live dispatches rather than inferred:
-#: a session writes ``<project>/<session-uuid>.jsonl`` while its
-#: subagents write ``<project>/<session-uuid>/subagents/agent-<id>.jsonl``.
-#: This is the one discriminator observed to arrive, and ``decide``
-#: already reads ``transcript_path``, so it costs no new payload
-#: dependency.
-_SUBAGENT_DIR = "subagents"
-_SUBAGENT_FILE_PREFIX = "agent-"
 
 #: The keys a widget answer carries on its top-level ``toolUseResult``
 #: (GH-1336). Captured from a live transcript before being relied on,
@@ -202,9 +195,9 @@ class StopSignal(StrEnum):
     audit log is the evidence that retiring the cooldown marker needs,
     and until it appears the marker is the only guard known to work.
 
-    ``SUBAGENT`` and ``STANDBY`` are named for the same reason (GH-1314):
-    each is a new way for a turn to end legitimately, and a branch nobody
-    can observe is a branch nobody can retire or trust.
+    ``STANDBY`` is named for the same reason (GH-1314): it is a way for
+    a turn to end legitimately, and a branch nobody can observe is a
+    branch nobody can retire or trust.
 
     ``OPEN_WORK`` and ``NO_TASK_LIST`` are the two GH-1339 advances, kept
     apart because they answer different questions: the first says the
@@ -213,16 +206,15 @@ class StopSignal(StrEnum):
     GH-1377 turned ``OPEN_WORK`` into a blocking ``CONTINUE``; with that
     block retired the name returns, since the turn now ends again.
 
-    ``SUBAGENT_PATH`` is separated from ``SUBAGENT`` for the same reason
-    (GH-1340). The payload-key discriminators have never fired, and the
-    only way to learn whether the transcript-layout check carries the
-    population — and so whether the old guesses can be retired — is for
-    the audit log to say which of the two matched.
-
     ``STOOD_DOWN`` and ``FOREIGN_PLAN`` are GH-1470's two quiet endings: a
     stand-down answer held until the task set changes, and a persisted
     plan this session did not write. Each is its own member so the audit
     log can say which one kept a session quiet.
+
+    ``PROMISED_ACTION`` is GH-1829's block: a turn that closes on "now
+    I'll run the tests" with no tool after it. Its own member so the
+    audit log can show how often the phrase list fires — the evidence
+    any later widening or narrowing of that list needs.
     """
 
     STOP_HOOK_ACTIVE = "stop_hook_active"
@@ -233,47 +225,15 @@ class StopSignal(StrEnum):
     FOREIGN_PLAN = "foreign_plan"
     STOOD_DOWN = "stood_down"
     DIRTY_TREE = "dirty_tree"
-    SUBAGENT = "subagent"
-    SUBAGENT_PATH = "subagent_path"
     STANDBY = "standby"
     COOLDOWN = "cooldown_marker"
     NO_TRANSCRIPT = "no_transcript"
     ASKED = "asked"
+    PROMISED_ACTION = "promised_action"
     BLOCKED = "blocked"
 
     def __repr__(self) -> str:
         return f"StopSignal.{self.name}"
-
-
-def subagent_signal(*, data: dict) -> StopSignal | None:
-    """Which discriminator marks this Stop as a subagent's, or ``None``.
-
-    A subagent has no supervisor to hand a widget to. Its final message
-    is its report to whoever dispatched it, so blocking that message
-    both corrupts the report — the observed subagent echoed this
-    module's own steer text back as a status question — and risks
-    hanging an unattended run that cannot answer.
-
-    Degrades toward **not** blocking only on positive evidence: an
-    absent discriminator leaves the session treated as a main session,
-    which is the pre-GH-1314 behaviour. Guessing the other way would
-    silently disable the gate everywhere the payload shape surprises us.
-
-    The transcript path is checked because no payload discriminator has
-    ever arrived (GH-1340, GH-1347). It infers identity from a directory
-    layout the harness has not contracted to keep, so it is the fallback
-    until a captured payload names a field that does.
-
-    Returning *which* one matched, rather than a bool, is deliberate:
-    the audit log has to separate the transcript check from the guesses
-    it replaces, and deciding that a second time at the call site would
-    let the attribution drift from what actually matched here.
-    """
-    if data.get("hook_event_name") == _SUBAGENT_EVENT:
-        return StopSignal.SUBAGENT
-    if _is_subagent_transcript(path=str(data.get("transcript_path") or "")):
-        return StopSignal.SUBAGENT_PATH
-    return None
 
 
 #: Opt-in flag for recording the Stop payload's shape (GH-1347).
@@ -288,10 +248,10 @@ def payload_capture(*, data: dict, env: Mapping[str, str]) -> dict[str, str]:
     GH-1336). Keys only, never values: a payload can carry the final
     assistant message, and the audit log is not the place for it.
     ``session_id`` is on the record so a subagent's turn can be told
-    from its parent's, which a bigger sample cannot do. That is the
-    ambiguity the 0-of-488 reading left open.
-    ``transcript_layout`` says what the path check concluded beside the
-    keys, so the two sources can be compared record by record.
+    from its parent's, which a bigger sample cannot do. GH-1475 read it
+    that way on harness 2.1.316: every record carried the parent's id,
+    so Stop never reached a subagent. The flag stays so a later harness
+    can be re-checked the same way before a subagent branch returns.
     """
     if env.get(PAYLOAD_KEYS_FLAG, "").strip().lower() not in ("1", "true", "yes"):
         return {}
@@ -299,32 +259,7 @@ def payload_capture(*, data: dict, env: Mapping[str, str]) -> dict[str, str]:
         "payload_keys": ",".join(sorted(str(key) for key in data)),
         "hook_event_name": str(data.get("hook_event_name") or ""),
         "session_id": str(data.get("session_id") or ""),
-        "transcript_layout": (
-            "subagent"
-            if _is_subagent_transcript(path=str(data.get("transcript_path") or ""))
-            else "session"
-        ),
     }
-
-
-def is_subagent(*, data: dict) -> bool:
-    """Whether this Stop belongs to a subagent rather than the session."""
-    return subagent_signal(data=data) is not None
-
-
-def _is_subagent_transcript(*, path: str) -> bool:
-    """Whether this transcript is a subagent's, by where the harness puts it.
-
-    Both halves are required. The directory alone would misread a main
-    session that merely happened to sit under one, and the prefix alone
-    would misread a project directory named after an agent.
-    """
-    if not path:
-        return False
-    transcript = Path(path)
-    return transcript.parent.name == _SUBAGENT_DIR and transcript.name.startswith(
-        _SUBAGENT_FILE_PREFIX
-    )
 
 
 @dataclass(frozen=True)
@@ -334,7 +269,7 @@ class StopVerdict:
     block: bool
     reason: str = ""
     #: Which branch of :func:`decide` produced this verdict (GH-1257).
-    #: Four of the five mean "let the turn end", and the caller needs to
+    #: Most members mean "let the turn end", and the caller needs to
     #: tell them apart: retiring the cooldown marker is only safe with
     #: positive evidence that ``stop_hook_active`` arrives set, and the
     #: audit log recorded nothing but wrap-phase timing, so the
@@ -718,7 +653,7 @@ UNKNOWN_HARNESS_VERSION = "unknown"
 def read_harness_version(*, transcript_path: str) -> str:
     """The Claude Code version that wrote this transcript (GH-1390).
 
-    ``hook-patterns.md`` makes retiring the cooldown marker conditional
+    ``hook-dispatch-patterns.md`` makes retiring the cooldown marker conditional
     on ``stop_hook_active`` appearing "across a few harness versions",
     and nothing in the Stop payload names one — so the condition could
     not be evaluated from the log at all, whatever key the signal was
@@ -886,6 +821,367 @@ def asked_a_question(*, entries: list[dict]) -> bool:
     return False
 
 
+INTENT_PATTERNS_PATH = Path(__file__).with_name("stop_intent_patterns.yaml")
+
+
+@dataclass(frozen=True)
+class IntentPatterns:
+    """The phrases that declare an imminent action, and what excuses one.
+
+    ``exempt`` names a wait, a gate on the supervisor's decision or a
+    deferral, wherever it sits in the sentence. ``preference`` names a
+    gate on what the supervisor would like, which a hedge is built
+    from. ``condition`` opens a clause that conditions it and the
+    clauses after it. ``immediate`` marks a promise as not waiting on
+    anything, which only a weak excuse in another clause gives way to.
+    """
+
+    intent: tuple[re.Pattern[str], ...] = ()
+    exempt: tuple[re.Pattern[str], ...] = ()
+    preference: tuple[re.Pattern[str], ...] = ()
+    condition: tuple[re.Pattern[str], ...] = ()
+    immediate: tuple[re.Pattern[str], ...] = ()
+
+
+def _compile_patterns(*, label: str, raw: object) -> tuple[list[re.Pattern[str]], bool]:
+    """Compile one pattern list, and say whether any entry failed.
+
+    An absent key is an empty list, not a failure. Anything else that
+    cannot become a pattern — a non-list value, a non-string entry, a
+    regex that does not compile — is dropped with one diagnostic, so a
+    one-character YAML slip is visible instead of silently disarming
+    the gate.
+    """
+    if raw is None:
+        return [], False
+    if not isinstance(raw, list):
+        _diagnose(what=f"reading {label}", error=ValueError("expected a list"))
+        return [], True
+
+    compiled: list[re.Pattern[str]] = []
+    failed = False
+    for pattern in raw:
+        if not isinstance(pattern, str):
+            _diagnose(what=f"reading {label} entry {pattern!r}", error=ValueError("not a string"))
+            failed = True
+            continue
+        try:
+            compiled.append(re.compile(pattern, re.IGNORECASE))
+        except re.error as error:
+            _diagnose(what=f"compiling {label} pattern {pattern!r}", error=ValueError(error))
+            failed = True
+    return compiled, failed
+
+
+_PATTERN_KEYS = tuple(field.name for field in fields(IntentPatterns))
+
+_EXCUSING_KEYS = frozenset({"exempt", "preference", "condition"})
+
+
+def parse_intent_patterns(*, data: object) -> IntentPatterns:
+    """Merge every language's lists from the parsed data file (GH-1829).
+
+    A language is a key under ``languages:`` so a new one is added
+    without touching code. An unusable entry is dropped with a
+    diagnostic rather than failing the hook: a pattern that cannot run
+    is not evidence that a turn broke its word.
+
+    The lists fail in opposite directions, so they are not dropped
+    alike. A lost ``intent`` or ``immediate`` pattern means fewer
+    blocks, which is the direction every degradation here takes. A lost
+    ``exempt``, ``preference`` or ``condition`` pattern means *more*
+    blocks — a promise that should have been excused starts firing — so
+    any broken one of those disarms the gate entirely.
+    """
+    languages = data.get("languages") if isinstance(data, dict) else None
+    if not isinstance(languages, dict):
+        _diagnose(what="reading the intent patterns", error=ValueError("no 'languages' mapping"))
+        return IntentPatterns()
+
+    lists: dict[str, list[re.Pattern[str]]] = {key: [] for key in _PATTERN_KEYS}
+    for name, language in languages.items():
+        if not isinstance(language, dict):
+            _diagnose(what=f"reading intent language {name!r}", error=ValueError("not a mapping"))
+            continue
+        for key in _PATTERN_KEYS:
+            compiled, failed = _compile_patterns(label=f"{name} {key}", raw=language.get(key))
+            if failed and key in _EXCUSING_KEYS:
+                return IntentPatterns()
+            lists[key].extend(compiled)
+    return IntentPatterns(**{key: tuple(patterns) for key, patterns in lists.items()})
+
+
+@lru_cache(maxsize=1)
+def load_intent_patterns(*, path: Path = INTENT_PATTERNS_PATH) -> IntentPatterns:
+    """The intent patterns shipped beside this module, read once per process.
+
+    ``UnicodeDecodeError`` is a ``ValueError``, so a corrupt file lands
+    in the parse branch rather than escaping and taking the whole Stop
+    verdict — dirty tree and stand-down included — down with it.
+    """
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except OSError as error:
+        _diagnose(what="reading the intent patterns", error=error)
+        return IntentPatterns()
+    except (ValueError, yaml.YAMLError) as error:
+        _diagnose(what="parsing the intent patterns", error=ValueError(error))
+        return IntentPatterns()
+    return parse_intent_patterns(data=data)
+
+
+#: How much of the closing paragraph the intent patterns see. A promise
+#: sits at the end of a turn, and the cap bounds the cost of every
+#: pattern a future language adds, whatever its shape.
+_CLOSING_TAIL_CHARS = 2000
+
+
+def _closing_paragraph(*, text: str) -> str:
+    """The tail of the last non-blank paragraph, apostrophes made straight.
+
+    Only the close is judged. A summary that says "I'll keep the old
+    name" three paragraphs up has moved on; the sentence the turn ends
+    on is the one a supervisor reads as the state of play.
+    """
+    paragraphs = [part for part in (raw.strip() for raw in re.split(r"\n\s*\n", text)) if part]
+    closing = paragraphs[-1][-_CLOSING_TAIL_CHARS:] if paragraphs else ""
+    return closing.replace("’", "'").replace("‘", "'")
+
+
+_ITEM_MARKER = r"(?:[-*+]|\d+[.)])"
+
+_SENTENCE_BREAK = re.compile(
+    r"(?<=[.!?])(?<!\be\.g\.)(?<!\bi\.e\.)(?<!\bvs\.)[*_`\"')\]]*\s+"
+    rf"|\n(?=[ \t]*{_ITEM_MARKER}[ \t])",
+    re.IGNORECASE,
+)
+
+_LIST_ITEM = re.compile(rf"{_ITEM_MARKER}\s")
+
+_ITEM_NUMBER = re.compile(r"\d+\.")
+
+
+def _fragments(*, text: str) -> list[str]:
+    """The text cut at every break, with item numbers kept on their item.
+
+    "1. I'll push" breaks after "1." like any full stop, at any indent
+    and any number of digits, so a fragment that is only an item number
+    is glued back onto the fragment that follows it.
+    """
+    fragments: list[str] = []
+    number = ""
+    for raw in _SENTENCE_BREAK.split(text):
+        fragment = raw.strip()
+        if not fragment:
+            continue
+        if _ITEM_NUMBER.fullmatch(fragment):
+            number = f"{fragment} "
+            continue
+        fragments.append(f"{number}{fragment}")
+        number = ""
+    return fragments
+
+
+def _sentences(*, text: str) -> list[str]:
+    """The closing paragraph cut at sentence ends (GH-1854).
+
+    An exemption speaks for the sentence it sits in. Judged across the
+    whole paragraph, "Now I'll run the tests. If you see failures, I'll
+    fix them." was exempted by its second sentence, though the first is
+    a promise nothing conditions.
+
+    Two things end a sentence: terminal punctuation followed by
+    whitespace, and a line that opens a list item (``-``, ``*``, ``+``,
+    ``1.``, ``1)``) even when the item before it has no full stop. A
+    line wrap inside a sentence does not, so a wrapped promise keeps its
+    condition, and a version number or path is never split. Markdown
+    bold or italics, a straight closing quote, a paren, bracket or
+    backtick may sit between the punctuation and the whitespace:
+    "**I'll push it now.** Once you approve…" is two sentences. "e.g.",
+    "i.e.", "vs." and an item number do not end one, since splitting
+    there would cut a condition off from the promise it governs.
+
+    A list item is judged together with the lead-in that introduces it
+    when that lead-in ends in a colon: in "Once you approve:\\n- I'll
+    merge it" the condition governs the items below it, up to the next
+    sentence that is not a list item.
+    """
+    lead_in = ""
+    judged: list[str] = []
+    for sentence in _fragments(text=text):
+        if _LIST_ITEM.match(sentence):
+            judged.append(f"{lead_in} {sentence}" if lead_in else sentence)
+            continue
+        lead_in = sentence if sentence.endswith(":") else ""
+        judged.append(sentence)
+    return judged
+
+
+_CLAUSE_BREAK = re.compile(r"[,;:—]")
+
+
+def _clause_spans(*, sentence: str) -> list[tuple[int, int]]:
+    """Where each clause of the sentence starts and ends."""
+    starts = [0, *(match.end() for match in _CLAUSE_BREAK.finditer(sentence))]
+    ends = [*(start - 1 for start in starts[1:]), len(sentence)]
+    return list(zip(starts, ends, strict=True))
+
+
+def _clause_at(*, spans: list[tuple[int, int]], offset: int) -> int:
+    return next(index for index, (_, end) in enumerate(spans) if offset <= end)
+
+
+@dataclass(frozen=True)
+class _Clauses:
+    """One sentence's clauses, and which excuse each one carries."""
+
+    spans: list[tuple[int, int]]
+    waited: bool
+    hedged: bool
+    conditioned: list[bool]
+    opening: list[bool]
+
+
+def _matches(*, patterns: tuple[re.Pattern[str], ...], text: str) -> bool:
+    return any(pattern.search(text) for pattern in patterns)
+
+
+def _read_clauses(*, sentence: str, patterns: IntentPatterns) -> _Clauses:
+    """Judge every clause once, whatever number of promises it holds."""
+    spans = _clause_spans(sentence=sentence)
+    clauses = [sentence[start:end].strip() for start, end in spans]
+    preferences = [_matches(patterns=patterns.preference, text=clause) for clause in clauses]
+    conditioned = [_matches(patterns=patterns.condition, text=clause) for clause in clauses]
+    opening = [
+        conditioned[index]
+        and not preferences[index]
+        and (index == 0 or _LIST_ITEM.match(clause) is not None)
+        for index, clause in enumerate(clauses)
+    ]
+    return _Clauses(
+        spans=spans,
+        waited=any(_matches(patterns=patterns.exempt, text=clause) for clause in clauses),
+        hedged=any(preferences),
+        conditioned=conditioned,
+        opening=opening,
+    )
+
+
+def _promise_is_excused(
+    *,
+    sentence: str,
+    clauses: _Clauses,
+    promise: re.Match[str],
+    patterns: IntentPatterns,
+) -> bool:
+    """Whether an excuse in the sentence governs this one promise (GH-1894).
+
+    "Let me know if you'd like, I'll run the tests now" hedges with a
+    preference; "Once you approve, I'll merge it now" waits on the
+    supervisor. So an excuse is strong or weak, and where it sits
+    decides. A wait (``exempt``) governs the promise from anywhere in
+    the sentence, and so does a condition that opens the sentence or a
+    list item up to the promise's own clause, unless that condition is
+    only a preference. A preference anywhere, or any other condition up
+    to the promise's clause, governs it only when the promise does not
+    say it is happening now, with or without a comma between them. A
+    condition never reaches back: "I'll run the tests, if you don't
+    mind" asks nothing of the supervisor.
+    """
+    spans = clauses.spans
+    first = _clause_at(spans=spans, offset=promise.start())
+    last = _clause_at(spans=spans, offset=max(promise.end() - 1, promise.start()))
+    if clauses.waited or any(clauses.opening[: last + 1]):
+        return True
+    promise_text = sentence[spans[first][0] : spans[last][1]]
+    if _matches(patterns=patterns.immediate, text=promise_text):
+        return False
+    return clauses.hedged or any(clauses.conditioned[: last + 1])
+
+
+def _breaks_its_word(*, sentence: str, patterns: IntentPatterns) -> bool:
+    promises = [promise for pattern in patterns.intent for promise in pattern.finditer(sentence)]
+    if not promises:
+        return False
+    clauses = _read_clauses(sentence=sentence, patterns=patterns)
+    return any(
+        not _promise_is_excused(
+            sentence=sentence, clauses=clauses, promise=promise, patterns=patterns
+        )
+        for promise in promises
+    )
+
+
+def _tool_ran_after_text(*, entries: list[dict]) -> bool:
+    """Whether any tool call follows the turn's last prose block.
+
+    A stated intention followed by the call that carries it out is
+    narration, not a broken promise — so only a turn whose prose is the
+    very last thing it emitted can have promised something it skipped.
+    """
+    seen_tool = False
+    for entry in reversed(entries):
+        for block in reversed(_content_blocks(entry=entry)):
+            if block.get("type") == "text" and str(block.get("text", "")).strip():
+                return seen_tool
+            if block.get("type") == "tool_use":
+                seen_tool = True
+    return seen_tool
+
+
+def promised_action(
+    *,
+    entries: list[dict],
+    patterns: IntentPatterns | None = None,
+) -> str:
+    """The closing paragraph when it promises an action nothing performed.
+
+    Returns ``""`` when the turn is fine: no prose, a tool ran after the
+    prose, or every sentence of the close that holds an intent phrase
+    also holds an exempt one — a wait, a promise conditioned on the
+    supervisor, or work deferred past this session on purpose. The
+    exemption is matched per sentence (GH-1854), so a conditional
+    promise cannot cover an unconditional one beside it.
+    """
+    if _tool_ran_after_text(entries=entries):
+        return ""
+    closing = _closing_paragraph(text=final_text(entries=entries))
+    if not closing:
+        return ""
+    active = load_intent_patterns() if patterns is None else patterns
+    if not any(pattern.search(closing) for pattern in active.intent):
+        return ""
+    broken = any(
+        _breaks_its_word(sentence=sentence, patterns=active)
+        for sentence in _sentences(text=closing)
+    )
+    return closing if broken else ""
+
+
+def _promised_action_reason(*, closing: str) -> str:
+    """The steer for a turn that ended on an intention instead of an action.
+
+    An instruction, not a question (GH-1339): the next action is the
+    one the agent itself just named. The only alternative offered is
+    the one that hands the supervisor something real — an explicit
+    question or an honest status line.
+    """
+    quoted = "\n".join(f"> {line}" for line in closing.splitlines())
+    return (
+        "⛔  This turn ends on a promise, and nothing ran after it:\n\n"
+        f"{quoted}\n\n"
+        "A supervisor reads that as work in progress and comes back to an "
+        "idle session.\n\n"
+        "**Do the action now** — make the tool call you just described. "
+        "Narrating the next step is not taking it.\n\n"
+        "**Or end the turn honestly.** If the step genuinely needs the "
+        "supervisor, ask through `AskUserQuestion` with the recommended "
+        "option first. If you are stopping for another reason, say so as a "
+        "status line naming what is done and what is not — not as a future "
+        "tense."
+    )
+
+
 def final_text(*, entries: list[dict]) -> str:
     """The last assistant prose in the turn, or ``""`` if there is none."""
     for entry in reversed(entries):
@@ -966,7 +1262,7 @@ def task_signal(*, plan: dict | None) -> TaskSignal:
     """Read the open-work signal out of a persisted plan.
 
     GH-1251 also detected a **phase boundary** — a completed phase parent
-    followed by a pending one — as the point `dev10x:work-on` requires a
+    followed by a pending one — as the point `dev10x-coding:work-on` requires a
     gate. GH-1339 retires it: a pending phase *is* an open task, so the
     boundary strictly implies open work and could never reach a block
     again. Keeping it would leave an unreachable branch asserting a
@@ -1040,7 +1336,7 @@ def _dirty_tree_reason(*, dirty: tuple[str, ...]) -> str:
         "says nothing about the work.\n\n"
         f"Uncommitted changes:\n\n{listed}\n\n"
         "**If these are yours, you are not done.** Commit them via "
-        "`Skill(dev10x:git-commit)` and carry on through the rest of the "
+        "`Skill(dev10x-coding:git-commit)` and carry on through the rest of the "
         "shipping pipeline. Do not ask whether to commit — a commit is a "
         "forward, reversible step, so the answer is always yes.\n\n"
         "**If you did not touch these files, do not commit them.** This "
@@ -1084,14 +1380,13 @@ def _reason(*, signal: TaskSignal) -> str:
     its result, instead of naming a winner in advance.
 
     Finally it carries a disposition for a reader that has no
-    supervisor. :func:`subagent_signal` is meant to spare subagents
-    this block entirely, but that detector has been wrong before — it
-    went 224 records without firing — and this is precisely the state
-    in which the GH-1314 subagent was observed asking a human "are we
-    done?". Naming the alternative in the text is model-side
-    instruction and so skippable, which is why it is the fallback
-    rather than the mechanism; a skippable instruction still beats none
-    when the mechanism it backs has a recorded history of missing.
+    supervisor. This is the state in which the GH-1314 subagent was
+    observed asking a human "are we done?". There is no mechanism to
+    spare such a reader: GH-1475 captured that Stop never reaches a
+    subagent, and a swarm teammate is a full session with nothing in its
+    payload to tell it apart. Naming the alternative in the text is
+    model-side instruction and so skippable, but it is the only lever
+    this hook has for a reader it cannot identify.
     """
     return (
         "⛔  The task list is empty. That is not the same as the plan "
@@ -1145,6 +1440,7 @@ def decide(
     now: float | None = None,
     session_started: str | None = None,
     current_branch: str | None = None,
+    patterns: IntentPatterns | None = None,
 ) -> StopVerdict:
     """Return the Stop verdict for one hook invocation.
 
@@ -1161,17 +1457,14 @@ def decide(
     ``session_started`` and ``current_branch`` arrive the same way
     (GH-1470): they decide whether ``plan`` is this session's at all,
     and ``None`` for either skips that half of the check.
+
+    ``patterns`` are the promised-action phrases (GH-1829). ``None``
+    reads the file shipped beside this module, which is a constant of
+    the install rather than session state; passing them in keeps a
+    caller or a test independent of that file.
     """
     if data.get("stop_hook_active"):
         return StopVerdict(block=False, signal=StopSignal.STOP_HOOK_ACTIVE)
-
-    subagent = subagent_signal(data=data)
-    if subagent is not None:
-        # A subagent's last message is its report, not an unanswered
-        # question — there is nobody on the other end of a widget. The
-        # signal carries which discriminator matched, because that is the
-        # only way to learn whether the payload-key guesses ever fire.
-        return StopVerdict(block=False, signal=subagent)
 
     session_id = str(data.get("session_id") or "")
     if blocked_recently(session_id=session_id, now=now):
@@ -1192,6 +1485,17 @@ def decide(
         return StopVerdict(block=False, signal=StopSignal.ASKED)
 
     signal = task_signal(plan=plan)
+
+    # A turn parked on subagents (GH-1464) is exempt: "next I'll collate
+    # the results" is exactly what the harness will resume it to do.
+    if not signal.awaits_dispatched_work and (
+        closing := promised_action(entries=entries, patterns=patterns)
+    ):
+        return StopVerdict(
+            block=True,
+            reason=_promised_action_reason(closing=closing),
+            signal=StopSignal.PROMISED_ACTION,
+        )
 
     if not signal.has_task_list:
         # No list is no evidence either way (GH-1055). A model without

@@ -2,12 +2,12 @@
 name: park-todo
 description: 'Defer work to code or session-level storage — so items resurface when editing nearby code or starting a new session in the same project, instead of being forgotten. TRIGGER when: deferring work to code comments or the project task index. DO NOT TRIGGER when: deferring to Slack (use Dev10x:park-remind), or routing to the best destination automatically (use Dev10x:park).'
 metadata:
-  upstream: skills/park-todo/SKILL.md
+  upstream: plugins/tasks/skills/park-todo/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/park-todo/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/tasks/skills/park-todo/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/park-todo/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/tasks/skills/park-todo/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:park-todo — Persistent Code/Session Deferrals
@@ -107,10 +107,8 @@ mcp__cli__task_index_append(entry={
 2. Do NOT read-modify-write the store yourself. The tool owns the
    read-modify-write cycle; doing it by hand reintroduces both the
    lost-update race and the self-settings gate.
-3. On the first append after the GH-1009 rehome, the tool folds any
-   entries still sitting in the retired `.claude/Dev10x/session.yaml`
-   forward automatically and reports the file in `folded_legacy` —
-   nothing parked before the move is orphaned.
+3. The tool never reads the retired `.claude/Dev10x/session.yaml`.
+   Its fold-forward was removed in 0.112.0 (GH-1771).
 
 **Retired durable keys are not the index's business.** `friction_level`
 and `active_modes` are durable preferences that live in

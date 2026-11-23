@@ -1,4 +1,4 @@
-"""Tests for dev10x.config.loader — YAML config loading with msgpack cache."""
+"""Tests for dev10x.core.config.loader — YAML config loading with msgpack cache."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ from pathlib import Path
 import msgpack
 import pytest
 import yaml
-from dev10x.config.loader import (
+
+from dev10x.core.config.loader import (
     _dict_to_config,
     _parse_yaml,
     _read_cache,
@@ -145,6 +146,26 @@ class TestWriteAndReadCache:
 
         assert result is not None
         assert result.rules[0].match_position == "invocation"
+
+    def test_roundtrip_preserves_live_hint(
+        self,
+        yaml_file: Path,
+        cache_path: Path,
+    ) -> None:
+        # GH-1725: same trap as match_position — a cached load must not
+        # silently turn a live hint back into a dormant advisory rule.
+        config = _parse_yaml(yaml_path=yaml_file)
+        config.rules[0] = replace(config.rules[0], live_hint=True)
+
+        _write_cache(cache_path=cache_path, config=config)
+        result = _read_cache(
+            cache_path=cache_path,
+            yaml_path=yaml_file,
+            ttl_seconds=3600,
+        )
+
+        assert result is not None
+        assert result.rules[0].live_hint is True
 
     def test_returns_none_when_no_cache(
         self,

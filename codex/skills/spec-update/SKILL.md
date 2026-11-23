@@ -2,12 +2,12 @@
 name: spec-update
 description: 'Enforce SPDD''s "fix the prompt first" Golden Rule for logic changes. When the user wants to change behaviour (not refactor), walk them through editing the canonical spec at docs/specs/‹TICKET-ID›.md FIRST, then re-invoke Dev10x:work-on to regenerate code from the updated spec. Refuses to proceed if the user tries to edit code directly without a spec update. TRIGGER when: requirements shift mid-implementation and the canonical spec exists; user describes a behaviour change for a ticket that already has docs/specs/‹TICKET-ID›.md. DO NOT TRIGGER when: refactor without behavior change (use Dev10x:spec-sync instead); ticket has no canonical spec (regular Dev10x:work-on applies); user is creating a new spec for the first time (use Dev10x:ticket-scope).'
 metadata:
-  upstream: skills/spec-update/SKILL.md
+  upstream: plugins/scoping/skills/spec-update/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/spec-update/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/scoping/skills/spec-update/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/spec-update/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/scoping/skills/spec-update/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:spec-update — Spec-First Behaviour Change

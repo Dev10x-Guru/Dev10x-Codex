@@ -24,8 +24,10 @@ from dev10x.skills.codex.translate import (
     codex_description,
     codex_skill_name,
     display_name,
+    resolve_plugin_root,
     rewrite_links,
     rewrite_text,
+    skill_sources,
     split_front_matter,
     translate_skills,
     unknown_skill_mentions,
@@ -463,6 +465,98 @@ class TestCodexSkillsCommand:
         assert "ERROR: skills/broken/SKILL.md" in result.output
 
 
+class TestSatellitePluginSkills:
+    @pytest.fixture
+    def split_plugin(self, plugin: Path) -> Path:
+        write(
+            plugin / "plugins" / "coding" / "skills" / "work-on" / "SKILL.md",
+            "---\nname: dev10x-coding:work-on\ndescription: Start work.\n---\n\n"
+            "Run `${CLAUDE_PLUGIN_ROOT}/skills/work-on/scripts/go.sh`, then "
+            "`Skill(dev10x-coding:git-commit)`.\n"
+            "Check gaps with `${CLAUDE_PLUGIN_ROOT}/bin/core-tool.py --all`.\n",
+        )
+        write(
+            plugin / "plugins" / "coding" / "skills" / "work-on" / "scripts" / "go.sh",
+            "#!/bin/sh\n",
+        )
+        write(plugin / "bin" / "core-tool.py", "print('core')\n")
+        write(
+            plugin / "plugins" / "coding" / "skills" / "work-on" / "references" / "plays.md",
+            "Plays.\n",
+        )
+        return plugin
+
+    def test_satellite_skill_joins_the_single_codex_catalog(self, split_plugin: Path) -> None:
+        files = translate_skills(split_plugin).files
+        assert CODEX_SKILLS_RELPATH / "work-on" / "SKILL.md" in files
+        assert CODEX_SKILLS_RELPATH / "work-on" / "references" / "plays.md" in files
+
+    def test_plugin_root_points_at_the_satellite_folder(self, split_plugin: Path) -> None:
+        text = translate_skills(split_plugin).files[CODEX_SKILLS_RELPATH / "work-on" / "SKILL.md"]
+        assert f"{PLUGIN_ROOT_PLACEHOLDER}/plugins/coding/skills/work-on/scripts/go.sh" in text
+        assert "plugins/coding/skills/work-on/" in text
+
+    def test_satellite_reference_to_a_core_only_file_points_at_the_core_file(
+        self, split_plugin: Path
+    ) -> None:
+        text = translate_skills(split_plugin).files[CODEX_SKILLS_RELPATH / "work-on" / "SKILL.md"]
+        assert f"`{PLUGIN_ROOT_PLACEHOLDER}/bin/core-tool.py --all`" in text
+        assert "plugins/coding/bin/core-tool.py" not in text
+
+    def test_core_skill_plugin_root_stays_at_the_plugin_folder(self, split_plugin: Path) -> None:
+        text = translate_skills(split_plugin).files[
+            CODEX_SKILLS_RELPATH / "git-commit" / "SKILL.md"
+        ]
+        assert f"{PLUGIN_ROOT_PLACEHOLDER}/skills/git-commit/scripts/run.sh" in text
+
+    def test_satellite_skill_prefix_becomes_a_codex_reference(self, split_plugin: Path) -> None:
+        text = translate_skills(split_plugin).files[CODEX_SKILLS_RELPATH / "work-on" / "SKILL.md"]
+        assert "$Dev10x:git-commit" in text
+        assert "dev10x-coding:" not in text
+
+    def test_front_matter_names_the_satellite_upstream(self, split_plugin: Path) -> None:
+        text = translate_skills(split_plugin).files[CODEX_SKILLS_RELPATH / "work-on" / "SKILL.md"]
+        front_matter, _ = split_front_matter(text, source=PurePosixPath("work-on"))
+        assert front_matter["metadata"]["upstream"] == "plugins/coding/skills/work-on/SKILL.md"
+
+    def test_a_name_shipped_by_two_plugins_is_refused(self, split_plugin: Path) -> None:
+        write(
+            split_plugin / "plugins" / "tasks" / "skills" / "git-commit" / "SKILL.md",
+            "---\ndescription: Duplicate.\n---\n\nBody.\n",
+        )
+        with pytest.raises(InvalidPluginRoot, match="one namespace"):
+            translate_skills(split_plugin)
+
+    @pytest.mark.parametrize(
+        ("rest", "present", "expected"),
+        [
+            ("/bin/tool.py", {"bin/tool.py"}, f"{PLUGIN_ROOT_PLACEHOLDER}/bin/tool.py"),
+            (
+                "/bin/tool.py",
+                {"bin/tool.py", "plugins/coding/bin/tool.py"},
+                f"{PLUGIN_ROOT_PLACEHOLDER}/plugins/coding/bin/tool.py",
+            ),
+            ("/bin/gone.py", set(), f"{PLUGIN_ROOT_PLACEHOLDER}/plugins/coding/bin/gone.py"),
+            ("/bin/tool.py.", {"bin/tool.py"}, f"{PLUGIN_ROOT_PLACEHOLDER}/bin/tool.py."),
+            ("", {"bin/tool.py"}, f"{PLUGIN_ROOT_PLACEHOLDER}/plugins/coding"),
+        ],
+    )
+    def test_resolve_plugin_root_prefers_the_satellite_and_falls_back_to_core(
+        self, rest: str, present: set[str], expected: str
+    ) -> None:
+        resolved = resolve_plugin_root(
+            rest,
+            plugin_dir=PurePosixPath("plugins/coding"),
+            exists=lambda path: path.as_posix() in present,
+        )
+        assert resolved == expected
+
+    def test_sources_list_every_root(self, split_plugin: Path) -> None:
+        sources = {skill.name: skill for skill in skill_sources(split_plugin)}
+        assert sources["work-on"].plugin_dir == PurePosixPath("plugins/coding")
+        assert sources["git-commit"].plugin_dir == PurePosixPath()
+
+
 class TestWriteTree:
     def test_writing_removes_skills_that_no_longer_exist_upstream(self, plugin: Path) -> None:
         write(plugin / CODEX_SKILLS_RELPATH / "orphan" / "SKILL.md", "old\n")
@@ -537,11 +631,17 @@ class TestCommittedCodexSkills:
     def test_unresolved_links_are_upstream_placeholders_left_untouched(
         self, committed: dict[PurePosixPath, str]
     ) -> None:
+        upstream_dirs = {skill.name: skill.upstream_dir for skill in skill_sources(REPO_ROOT)}
         broken = []
         for path, text in committed.items():
             if path.suffix != ".md":
                 continue
-            upstream = REPO_ROOT / "skills" / path.relative_to(CODEX_SKILLS_RELPATH)
+            relative = path.relative_to(CODEX_SKILLS_RELPATH)
+            upstream = (
+                REPO_ROOT
+                / upstream_dirs[relative.parts[0]]
+                / relative.relative_to(relative.parts[0])
+            )
             upstream_links = set(MARKDOWN_LINK_RE.findall(upstream.read_text(encoding="utf-8")))
             for link in MARKDOWN_LINK_RE.findall(text):
                 target = link.partition("#")[0]

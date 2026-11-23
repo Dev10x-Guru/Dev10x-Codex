@@ -5,16 +5,18 @@ from __future__ import annotations
 import importlib
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from dev10x.domain.common.repository_ref import RepositoryRef
-from dev10x.domain.common.result import ErrorResult, SuccessResult, err, ok
 
-import dev10x.github as gh
+import dev10x.coding.github as gh
+from dev10x.core.domain.common.repository_ref import RepositoryRef
+from dev10x.core.domain.common.result import ErrorResult, SuccessResult, err, ok
 from dev10x.core.github import _gateway
 from dev10x.mcp import server_cli as cli_server
+from tests.fakers.process import completed as _completed
 
 ci_rerun_module = importlib.import_module("dev10x.coding.github.ci_rerun")
 
@@ -24,14 +26,6 @@ RUNS = f"repos/owner/repo/actions/runs?head_sha={SHA}&per_page=100"
 PULL = "repos/owner/repo/pulls/7"
 ACTIONS_APP = {"slug": "github-actions", "name": "GitHub Actions"}
 CODECOV_APP = {"slug": "codecov", "name": "Codecov"}
-
-
-def _completed(
-    *, returncode: int = 0, stdout: str = "", stderr: str = ""
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(
-        args=[], returncode=returncode, stdout=stdout, stderr=stderr
-    )
 
 
 def _suite(*, id: int, app: dict[str, str], conclusion: str, status: str = "completed") -> dict:
@@ -54,6 +48,13 @@ RUN_LIST = [
     _run(id=101, suite=3, name="Lint"),
     _run(id=102, suite=4, name="Slow", attempt=3),
 ]
+
+
+@pytest.fixture(autouse=True)
+def config_home(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    home = tmp_path / "config"
+    monkeypatch.setenv("DEV10X_CONFIG_HOME", str(home))
+    return home
 
 
 @pytest.fixture
@@ -128,10 +129,10 @@ class TestFailedOnly:
         }
 
     @pytest.mark.asyncio
-    async def test_third_party_retry_has_no_attempt_counter(self, gateway: AsyncMock) -> None:
+    async def test_first_third_party_retry_reports_attempt_one(self, gateway: AsyncMock) -> None:
         result = await gh.ci_rerun(head_sha=SHA)
 
-        assert result.value["retried"][1]["attempt_before"] is None
+        assert result.value["retried"][1]["attempt_before"] == 1
 
     @pytest.mark.asyncio
     async def test_reports_why_each_suite_was_skipped(self, gateway: AsyncMock) -> None:
@@ -152,7 +153,9 @@ class TestFailedOnly:
             result.value["head_sha"],
             result.value["failed_only"],
             result.value["max_attempts"],
-        ) == ("owner/repo", SHA, True, 3)
+            result.value["truncated"],
+            result.value["warnings"],
+        ) == ("owner/repo", SHA, True, 3, False, [])
 
 
 class TestFullRerun:
@@ -349,9 +352,137 @@ class TestPerCallBound:
         )
 
 
+def _codecov_suites(*, ids: range) -> list[dict]:
+    return [_suite(id=n, app=CODECOV_APP, conclusion="success") for n in ids]
+
+
+class TestPagination:
+    @pytest.mark.asyncio
+    async def test_follows_pages_until_a_short_one(
+        self, gateway: AsyncMock, routes: dict[str, Any]
+    ) -> None:
+        full = _codecov_suites(ids=range(10_000, 10_000 + ci_rerun_module.PAGE_SIZE))
+        routes[SUITES] = _completed(stdout=json.dumps({"check_suites": full}))
+        routes[f"{SUITES}&page=2"] = _completed(
+            stdout=json.dumps(
+                {"check_suites": [_suite(id=2, app=CODECOV_APP, conclusion="failure")]}
+            )
+        )
+
+        result = await gh.ci_rerun(head_sha=SHA)
+
+        assert (_posted(gateway=gateway), result.value["truncated"]) == (
+            ["repos/owner/repo/check-suites/2/rerequest"],
+            False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_reports_truncation_at_the_page_ceiling(
+        self, gateway: AsyncMock, routes: dict[str, Any]
+    ) -> None:
+        size = ci_rerun_module.PAGE_SIZE
+        for page in range(1, ci_rerun_module.MAX_LISTING_PAGES + 1):
+            endpoint = SUITES if page == 1 else f"{SUITES}&page={page}"
+            suites = _codecov_suites(ids=range(page * 1000, page * 1000 + size))
+            routes[endpoint] = _completed(stdout=json.dumps({"check_suites": suites}))
+
+        result = await gh.ci_rerun(head_sha=SHA)
+
+        assert result.value["truncated"] is True
+
+    @pytest.mark.parametrize(
+        "page_two",
+        [_completed(returncode=1, stderr="boom"), _completed(stdout="not json")],
+    )
+    @pytest.mark.asyncio
+    async def test_a_failed_later_page_is_an_error(
+        self, gateway: AsyncMock, routes: dict[str, Any], page_two: Any
+    ) -> None:
+        full = _codecov_suites(ids=range(10_000, 10_000 + ci_rerun_module.PAGE_SIZE))
+        routes[SUITES] = _completed(stdout=json.dumps({"check_suites": full}))
+        routes[f"{SUITES}&page=2"] = page_two
+
+        result = await gh.ci_rerun(head_sha=SHA)
+
+        assert isinstance(result, ErrorResult)
+
+
+class TestThirdPartyCap:
+    @pytest.mark.asyncio
+    async def test_cap_persists_across_calls(self, gateway: AsyncMock) -> None:
+        for _ in range(ci_rerun_module.MAX_RUN_ATTEMPTS - 1):
+            await gh.ci_rerun(pr_number=7, checks=["codecov"])
+
+        result = await gh.ci_rerun(pr_number=7, checks=["codecov"])
+
+        assert (result.value["retried"], _skipped(result=result)) == (
+            [],
+            {"Codecov": "retry cap reached (attempt 3)"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_counts_are_keyed_per_pr(self, gateway: AsyncMock) -> None:
+        await gh.ci_rerun(pr_number=7, checks=["codecov"])
+
+        stored = json.loads(ci_rerun_module.attempts_path().read_text())
+
+        assert stored == {"owner/repo#7": {"2": 1}}
+
+    @pytest.mark.asyncio
+    async def test_head_sha_calls_key_by_sha(self, gateway: AsyncMock) -> None:
+        await gh.ci_rerun(head_sha=SHA, checks=["codecov"])
+
+        stored = json.loads(ci_rerun_module.attempts_path().read_text())
+
+        assert stored == {f"owner/repo@{SHA}": {"2": 1}}
+
+    @pytest.mark.asyncio
+    async def test_actions_runs_are_not_counted_locally(self, gateway: AsyncMock) -> None:
+        await gh.ci_rerun(pr_number=7, checks=["ci"])
+
+        assert not ci_rerun_module.attempts_path().exists()
+
+    @pytest.mark.parametrize("content", ["not json", "[]", '{"owner/repo#7": "x"}'])
+    @pytest.mark.asyncio
+    async def test_unreadable_store_reads_as_no_attempts(
+        self, gateway: AsyncMock, config_home: Any, content: str
+    ) -> None:
+        config_home.mkdir(parents=True)
+        ci_rerun_module.attempts_path().write_text(content)
+
+        result = await gh.ci_rerun(pr_number=7, checks=["codecov"])
+
+        assert result.value["retried"][0]["attempt_before"] == 1
+
+    @pytest.mark.asyncio
+    async def test_store_write_failure_is_a_warning_not_an_error(
+        self, gateway: AsyncMock, config_home: Any
+    ) -> None:
+        config_home.mkdir(parents=True)
+        ci_rerun_module.attempts_path().write_text("not json")
+
+        result = await gh.ci_rerun(pr_number=7, checks=["codecov"])
+
+        assert (len(result.value["retried"]), len(result.value["warnings"])) == (1, 1)
+
+    def test_concurrent_records_lose_no_count(self) -> None:
+        workers = 8
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(
+                pool.map(
+                    lambda _: ci_rerun_module._record_third_party_attempt(key="k", suite_id=2),
+                    range(workers),
+                )
+            )
+
+        stored = json.loads(ci_rerun_module.attempts_path().read_text())
+
+        assert stored == {"k": {"2": workers}}
+
+
 class TestMcpHandler:
     @pytest.mark.asyncio
-    @patch("dev10x.github.ci_rerun", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.ci_rerun", new_callable=AsyncMock)
     async def test_delegates_and_wires_result(self, mock_fn: AsyncMock) -> None:
         mock_fn.return_value = ok({"retried": []})
 
@@ -369,7 +500,7 @@ class TestMcpHandler:
         )
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.ci_rerun", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.ci_rerun", new_callable=AsyncMock)
     async def test_error_becomes_error_payload(self, mock_fn: AsyncMock) -> None:
         mock_fn.return_value = err("nope")
 

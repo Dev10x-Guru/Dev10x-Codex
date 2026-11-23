@@ -2,12 +2,12 @@
 name: ide-normalize
 description: 'Normalize PyCharm .idea/ configuration after creating or copying a new git worktree. Fixes stale module-name references, disables ADD_CONTENT_ROOTS / ADD_SOURCE_ROOTS defaults that conflict with editable installs, backfills the Django facet settingsModule, and detects the PyCharm uv-SDK FLAVOR_DATA gap. TRIGGER when: a new worktree has been created and the .idea/ directory was copied from a sibling worktree or the main repo, OR when PyCharm crashes on launch with ModuleNotFoundError after opening a new worktree. DO NOT TRIGGER when: the project has no .idea/ directory or does not use PyCharm / JetBrains IDEs.'
 metadata:
-  upstream: skills/ide-normalize/SKILL.md
+  upstream: plugins/coding/skills/ide-normalize/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/ide-normalize/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/ide-normalize/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/ide-normalize/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/ide-normalize/`.
 > **Not supported in Codex yet**: this skill depends on Claude Code features Codex lacks (Dev10x-Codex#18). Use it from Claude Code; Codex runs it only when invoked by name.
 
 # IDE Normalize

@@ -1,0 +1,141 @@
+{
+  "skill_name": "dev10x-coding:fanout",
+  "eval_dimensions": [
+    {
+      "id": "phase0-gate",
+      "name": "Phase 0 Posture Check",
+      "description": "Phase 0 reads the durable review posture through supervisor_review_status and delegates the ask to dev10x:friction-setup before any work begins, so nested work-on invocations inherit a settled posture"
+    },
+    {
+      "id": "parallel-dispatch",
+      "name": "Parallel Work Dispatch",
+      "description": "Independent work items are dispatched to parallel agents or worktrees with proper isolation"
+    }
+  ],
+  "evals": [
+    {
+      "id": 1,
+      "name": "phase0-posture-check",
+      "prompt": "/dev10x-coding:fanout GH-100 GH-101 GH-102",
+      "description": "Tests that Phase 0 settles the review posture through supervisor_review_status before dispatching any work items, delegating the ask rather than offering a friction-level picker (ADR-0022).",
+      "expected_output": "supervisor_review_status is called before any issue processing begins; an unpinned project delegates to dev10x:friction-setup, a pinned one proceeds silently. No friction-level options are offered and no session file is written.",
+      "dimensions": ["phase0-gate"],
+      "assertions": [
+        {
+          "id": "phase0-reads-posture-via-tool",
+          "text": "supervisor_review_status is called before any work item dispatch, rather than reading friction.yaml directly",
+          "check": "tool_called_before",
+          "signals": ["supervisor_review_status", "Agent"]
+        },
+        {
+          "id": "phase0-delegates-when-unpinned",
+          "text": "When pinned is false, the ask is delegated to dev10x:friction-setup instead of being asked inline",
+          "check": "tool_called",
+          "signals": ["Skill", "dev10x:friction-setup"]
+        },
+        {
+          "id": "phase0-silent-when-already-pinned",
+          "text": "When pinned is true, the posture is adopted silently — no AskUserQuestion and no delegation",
+          "check": "behavioral",
+          "signals": ["pinned true", "no re-ask", "no delegation"]
+        },
+        {
+          "id": "phase0-offers-no-preset-picker",
+          "text": "No strict/guided/adaptive friction-level picker is offered — adaptive is the sole shipped baseline (ADR-0022 D-1)",
+          "check": "behavioral",
+          "signals": ["no preset picker", "adaptive baseline", "ADR-0022"]
+        },
+        {
+          "id": "phase0-writes-no-config",
+          "text": "fanout writes no friction.yaml or session file with the Write tool; persistence goes through the pin/set-friction writers",
+          "check": "behavioral",
+          "signals": ["no Write", "set-friction", "no .claude write"]
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "per-item-template-follows-posture",
+      "prompt": "/dev10x-coding:fanout GH-200 GH-201",
+      "setup": {
+        "supervisor_review": "required",
+        "playbook": "work-on.yaml",
+        "playbook_merge_mode": "draft",
+        "note": "Requires the user's work-on.yaml playbook to set merge_mode: draft and supervisor_review pinned to required"
+      },
+      "description": "Tests that the per-item prompt is filled from the orchestrator's resolved posture and merge mode, includes the self-review step, and that a child report without a Review line is not accepted as DONE (GH-1609 F1, GH-1604 F1/F2).",
+      "expected_output": "Each child prompt carries an overlay list without solo-maintainer and MERGE MODE: draft; children stop at a draft PR with a CI result, run dev10x-coding:review + dev10x-coding:review-fix, and report a Review line. A report missing it is treated as NEEDS_CONTEXT.",
+      "dimensions": ["parallel-dispatch"],
+      "assertions": [
+        {
+          "id": "overlay-args-omit-solo-maintainer-when-required",
+          "text": "The set-friction bootstrap in each child prompt does not pass --overlay solo-maintainer when supervisor_review is required",
+          "check": "behavioral",
+          "signals": ["overlay_args", "no solo-maintainer", "supervisor_review required"]
+        },
+        {
+          "id": "merge-mode-threaded-into-template",
+          "text": "Each child prompt names the resolved merge mode, and under draft the child neither calls pr_ready nor merges",
+          "check": "behavioral",
+          "signals": ["MERGE MODE: draft", "no pr_ready", "no merge_pr"]
+        },
+        {
+          "id": "child-runs-self-review",
+          "text": "Each child invokes dev10x-coding:review --unattended and dev10x-coding:review-fix before opening the PR",
+          "check": "tool_called",
+          "signals": ["Skill", "dev10x-coding:review"]
+        },
+        {
+          "id": "missing-review-line-is-needs-context",
+          "text": "A child report without a 'Review:' line is treated as NEEDS_CONTEXT, and 'Review: skipped' downgrades DONE to DONE_WITH_CONCERNS",
+          "check": "behavioral",
+          "signals": ["Review:", "NEEDS_CONTEXT", "skipped", "DONE_WITH_CONCERNS"]
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "herdr-dispatch-status-file",
+      "prompt": "/dev10x-coding:fanout GH-300 GH-301",
+      "setup": {
+        "env": {"HERDR_ENV": "1"},
+        "note": "Runs inside Herdr; one item's agent stops without writing its status file"
+      },
+      "description": "Tests that under Herdr each item goes through git-worktree Path C with a status file named in its brief, that the orchestrator waits without a poll loop, and that a missing status line and an unverified PR are never reported as DONE (GH-1702).",
+      "expected_output": "Each item gets its own Herdr workspace and agent; the brief names a status file; the wait is a backgrounded `herdr agent prompt --wait`; the item whose file stays empty is reported NEEDS_CONTEXT; pr_get is read before any DONE.",
+      "dimensions": ["parallel-dispatch"],
+      "assertions": [
+        {
+          "id": "herdr-path-c-per-item",
+          "text": "Under HERDR_ENV=1 each item is dispatched through dev10x-coding:git-worktree Path C, not Agent(isolation=\"worktree\")",
+          "check": "tool_called",
+          "signals": ["Skill", "dev10x-coding:git-worktree", "herdr worktree create"]
+        },
+        {
+          "id": "brief-names-status-file",
+          "text": "Each brief names an absolute status-file path and quotes the status-line contract",
+          "check": "behavioral",
+          "signals": ["status-", "Write tool", "DONE", "NEEDS_CONTEXT"]
+        },
+        {
+          "id": "wait-without-poll-loop",
+          "text": "The orchestrator waits with a backgrounded `herdr agent prompt ... --wait`, never a while/sleep loop or a Monitor poll",
+          "check": "behavioral",
+          "signals": ["--wait", "run_in_background", "no sleep loop", "no Monitor"]
+        },
+        {
+          "id": "missing-status-is-needs-context",
+          "text": "An item whose agent stops with an empty or non-terminal status file is read as NEEDS_CONTEXT, not DONE",
+          "check": "behavioral",
+          "signals": ["NEEDS_CONTEXT", "status line"]
+        },
+        {
+          "id": "pr-state-verified-before-done",
+          "text": "pr_get is called for an item's PR before that item is reported DONE",
+          "check": "tool_called",
+          "signals": ["mcp__plugin_dev10x_cli__pr_get"]
+        }
+      ]
+    }
+  ]
+}

@@ -2,12 +2,12 @@
 name: gog
 description: 'Reach Google Workspace from the command line through the `gog` CLI — Drive, Google Chat, YouTube, Gmail, Calendar — including the OAuth setup that every one of those areas shares and that fails in the same four ways for everybody. TRIGGER when: reading or writing Google Workspace data from a session (fetching a Chat thread, listing Drive files, publishing to YouTube), or when a `gog auth` grant is missing, refused, or needs re-authorizing. DO NOT TRIGGER when: publishing a recording (use Dev10x:yt-upload, which owns token borrowing and channel assertion), posting to a Chat space via the notification bot (use Dev10x:gchat), or sending Slack (use Dev10x:slack).'
 metadata:
-  upstream: skills/gog/SKILL.md
+  upstream: plugins/comm/skills/gog/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/gog/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/comm/skills/gog/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/gog/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/comm/skills/gog/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:gog — Google Workspace from the command line

@@ -6,8 +6,21 @@ UPSTREAM_MCP_PREFIX = "mcp__plugin_dev10x_"
 CODEX_MCP_PREFIX = "mcp__plugin_Dev10x_"
 CODEX_SKILL_PREFIX = "Dev10x:"
 
+UPSTREAM_SATELLITE_PLUGINS: tuple[str, ...] = (
+    "coding",
+    "comm",
+    "db",
+    "infra",
+    "qa",
+    "scoping",
+    "tasks",
+    "teach",
+)
+
 # Upstream lowercased its plugin name (GH-1499); the Codex plugin stays `Dev10x`.
-_UPSTREAM_SKILL_PREFIX_RE = re.compile(r"(?<![\w.-])dev10x:(?=[a-z0-9])")
+_UPSTREAM_SKILL_PREFIX_RE = re.compile(
+    r"(?<![\w.-])dev10x(?:-(?:" + "|".join(UPSTREAM_SATELLITE_PLUGINS) + r"))?:(?=[a-z0-9])"
+)
 
 VERIFIED_SKILLS: frozenset[str] = frozenset(
     {
@@ -59,9 +72,10 @@ DEFERRED_SKILLS: dict[str, int] = {
     "skill-audit-queue": AUDIT_ISSUE,
     "ide-normalize": IDE_ISSUE,
     "ci-review": CODEX_CI_REVIEW_ISSUE,
+    "artifact": MESSAGE_BUS_ISSUE,
     "bus": MESSAGE_BUS_ISSUE,
-    "supervisor": MESSAGE_BUS_ISSUE,
-    "voice-supervisor": MESSAGE_BUS_ISSUE,
+    "overwatch": MESSAGE_BUS_ISSUE,
+    "voice-channel": MESSAGE_BUS_ISSUE,
     "skill-prune": SKILL_PRUNE_ISSUE,
 }
 
@@ -91,6 +105,10 @@ SKILL_CAVEATS: dict[str, str] = {
     "onboarding": (
         "Skip the permission-setup step: Codex approvals come from ~/.codex/rules/dev10x.rules "
         "(see the Dev10x-Codex docs/codex.md)."
+    ),
+    "reflect": (
+        "Its agent-memory step writes Claude Code memory under ~/.claude/, which Codex does "
+        "not read; record behavior corrections in AGENTS.md instead."
     ),
     "skill-create": (
         "It creates Claude Code skills; Codex sees a new skill only after `dev10x skill "

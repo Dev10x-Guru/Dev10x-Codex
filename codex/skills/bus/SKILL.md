@@ -2,12 +2,12 @@
 name: bus
 description: 'Let this session exchange messages with other Claude sessions on the same machine through a local Maildir bus — other Claude Code sessions, and Claude Desktop / claude.ai chats (text or voice) whose Cowork agent writes the files via Desktop Commander. Opens a mailbox under /tmp/claude-bus/‹name›/, announces it in the registry, watches it with a background watch.py --once, and replies to each sender''s Reply-To mailbox. TRIGGER when: the user says "connect to the bus", "start the bus", "listen for Desktop / Cowork / voice", "send ‹session› a message via the bus", or asks for the instructions a Desktop chat needs. DO NOT TRIGGER when: messaging a session SendMessage can already reach and no Desktop chat is involved, or sending Slack / Google Chat (use Dev10x:slack / Dev10x:gchat).'
 metadata:
-  upstream: skills/bus/SKILL.md
+  upstream: plugins/comm/skills/bus/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/bus/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/comm/skills/bus/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/bus/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/comm/skills/bus/`.
 > **Not supported in Codex yet**: this skill depends on Claude Code features Codex lacks (Dev10x-Codex#43). Use it from Claude Code; Codex runs it only when invoked by name.
 
 # Dev10x:bus — Local Maildir Bus Between Claude Sessions
@@ -53,38 +53,42 @@ before talking to a `cowork` mailbox.
 
 ## Scripts
 
-All five live in `<plugin-root>/skills/bus/scripts/`; the
+All five live in `<plugin-root>/plugins/comm/skills/bus/scripts/`; the
 short `send.py` / `done.py` below always means that full path. Spell
 it out in every call, each as its own Bash command — no
 shell variable, no `&&`, no `cd`, no env prefix — or the allow rules
 `permission ensure-scripts` emitted for them will not match.
 
-- `<plugin-root>/skills/bus/scripts/send.py <to> <subject>
+- `<plugin-root>/plugins/comm/skills/bus/scripts/send.py <to> <subject>
   <body-file|-> --from <me> [--reply-to X] [--in-reply-to <id>]
   [--voice] [--thread] [--expires-in MIN] [--header K=V]` — prints
   `SENT <path>` and `Message-ID: <id>`.
-- `<plugin-root>/skills/bus/scripts/watch.py <name> --once` —
+- `<plugin-root>/plugins/comm/skills/bus/scripts/watch.py <name> --once` —
   prints a line for every message already unread in `new/` (threads
   included) and exits 0; with nothing unread it waits for the next
   arrival, prints that batch and exits 0. It skips thread mail whose
   `From:` is `<name>` — this session's own sends. The default watcher,
   run under Bash `run_in_background`.
-- `<plugin-root>/skills/bus/scripts/watch.py <name>` (no flag)
+- `<plugin-root>/plugins/comm/skills/bus/scripts/watch.py <name>` (no flag)
   — the same lines per message arriving after it starts. Runs until
   killed; only ever under `Monitor`.
 - Each line is `<VERDICT> <path>`: `NEW`, `HELD` (`--hold X`), or
   `DUP` / `EXPIRED` / `REFUSED` (`--refuse X`), already in `cur/`.
-- `<plugin-root>/skills/bus/scripts/done.py <path>…` or
+- `<plugin-root>/plugins/comm/skills/bus/scripts/done.py <path>…` or
   `… done.py <name>` (all of `new/`) — marks read. Never a raw `mv`.
-- `<plugin-root>/skills/bus/scripts/status.py <name> <state>
+- `<plugin-root>/plugins/comm/skills/bus/scripts/status.py <name> <state>
   <sentence> [--callsign X] [--notify <mailbox>]` — publishes this
   session's line on the board; `--notify` also drops a short notice
   (`Subject: <callsign>: <state>`) into that mailbox.
-- `<plugin-root>/skills/bus/scripts/board.py` — prints the
+- `<plugin-root>/plugins/comm/skills/bus/scripts/board.py` — prints the
   board; `SKIP` on stderr names an unreadable status file.
 
 Screening order, exit codes and wire format:
 [`references/watcher.md`](references/watcher.md).
+
+**Google Chat work (GH-1842):** claim, answer and ack Chat bus items
+with the `chat_queue_*` MCP tools, never the store; see
+[`references/chat-queue.md`](references/chat-queue.md).
 
 ## Dispatch on arguments
 
@@ -105,7 +109,7 @@ Args: `[start [name] [role] | send <to> <subject> | prompt | stop]`.
    receive routed chat). Then `status.py <name> working <sentence> --callsign
    <callsign>`.
 3. Start the watcher: Bash with command
-   `<plugin-root>/skills/bus/scripts/watch.py <name> --once`,
+   `<plugin-root>/plugins/comm/skills/bus/scripts/watch.py <name> --once`,
    description `claude-bus/<name>`, `run_in_background: true`. A
    hand-rolled `while` loop is hook-blocked (`watch-loop-handrolled`).
 4. **Self-test:** send yourself a message, wait for the watcher to

@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "0.110.0"
+current_version = "0.116.0"
 commit = true
 tag = false
 tag_name = "v{new_version}"
@@ -21,6 +21,86 @@ replace = "\"version\": \"{new_version}\""
 
 [[tool.bumpversion.files]]
 filename = ".claude-plugin/plugin.json"
+search = "\"v{current_version} —"
+replace = "\"v{new_version} —"
+
+[[tool.bumpversion.files]]
+filename = "plugins/qa/.claude-plugin/plugin.json"
+search = "\"version\": \"{current_version}\""
+replace = "\"version\": \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "plugins/qa/.claude-plugin/plugin.json"
+search = "\"v{current_version} —"
+replace = "\"v{new_version} —"
+
+[[tool.bumpversion.files]]
+filename = "plugins/infra/.claude-plugin/plugin.json"
+search = "\"version\": \"{current_version}\""
+replace = "\"version\": \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "plugins/infra/.claude-plugin/plugin.json"
+search = "\"v{current_version} —"
+replace = "\"v{new_version} —"
+
+[[tool.bumpversion.files]]
+filename = "plugins/db/.claude-plugin/plugin.json"
+search = "\"version\": \"{current_version}\""
+replace = "\"version\": \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "plugins/db/.claude-plugin/plugin.json"
+search = "\"v{current_version} —"
+replace = "\"v{new_version} —"
+
+[[tool.bumpversion.files]]
+filename = "plugins/comm/.claude-plugin/plugin.json"
+search = "\"version\": \"{current_version}\""
+replace = "\"version\": \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "plugins/comm/.claude-plugin/plugin.json"
+search = "\"v{current_version} —"
+replace = "\"v{new_version} —"
+
+[[tool.bumpversion.files]]
+filename = "plugins/teach/.claude-plugin/plugin.json"
+search = "\"version\": \"{current_version}\""
+replace = "\"version\": \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "plugins/teach/.claude-plugin/plugin.json"
+search = "\"v{current_version} —"
+replace = "\"v{new_version} —"
+
+[[tool.bumpversion.files]]
+filename = "plugins/tasks/.claude-plugin/plugin.json"
+search = "\"version\": \"{current_version}\""
+replace = "\"version\": \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "plugins/tasks/.claude-plugin/plugin.json"
+search = "\"v{current_version} —"
+replace = "\"v{new_version} —"
+
+[[tool.bumpversion.files]]
+filename = "plugins/scoping/.claude-plugin/plugin.json"
+search = "\"version\": \"{current_version}\""
+replace = "\"version\": \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "plugins/scoping/.claude-plugin/plugin.json"
+search = "\"v{current_version} —"
+replace = "\"v{new_version} —"
+
+[[tool.bumpversion.files]]
+filename = "plugins/coding/.claude-plugin/plugin.json"
+search = "\"version\": \"{current_version}\""
+replace = "\"version\": \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "plugins/coding/.claude-plugin/plugin.json"
 search = "\"v{current_version} —"
 replace = "\"v{new_version} —"
 

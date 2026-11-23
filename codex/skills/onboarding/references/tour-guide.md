@@ -269,8 +269,8 @@ Or use $Dev10x:work-on <ticket> for the full pipeline.
 Dev10x tracks your work across sessions:
 
 - $Dev10x:session-wrap-up — Save open work before closing
-- $Dev10x:park            — Defer a task to the right place
-- $Dev10x:park-discover   — Find deferred items at start
+- $Dev10x:park — Defer a task to the right place
+- $Dev10x:park-discover — Find deferred items at start
 ```
 
 ### 2.5 Customization
@@ -354,10 +354,10 @@ Only runs if user chose "Explore more" or "Set up customization".
 ### If "Explore more":
 
 Show additional families:
-- Testing: `/test`, `/test:fix-flaky`, `$Dev10x:qa-scope`
+- Testing: `$Dev10x:py-test`, `$Dev10x:py-test-flaky`, `$Dev10x:py-mockito`, `$Dev10x:qa-scope`
 - Architecture: `$Dev10x:adr-evaluate`, `$Dev10x:scope`
-- Operations: `$Dev10x:investigate`, `/triage-sentry`
-- Reports: `/work:daily`, `/work:weekly`
+- Operations: `$Dev10x:investigate`
+- Reports: `$Dev10x:release-notes`
 
 ### If "Set up customization":
 

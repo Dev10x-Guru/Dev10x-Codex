@@ -7,7 +7,8 @@ from typing import Any
 
 import pytest
 import yaml
-from dev10x.hooks.edit_validator import reset_engine_cache, validate_edit_write
+
+from dev10x.core.hooks.edit_validator import reset_engine_cache, validate_edit_write
 
 
 def _patch(*body: str) -> str:
@@ -141,7 +142,7 @@ class TestApplyPatchUnderCodex:
     def test_malformed_patch_falls_through_to_allow_with_a_warning(
         self, rules_yaml: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.WARNING, logger="dev10x.hooks.edit_validator")
+        caplog.set_level(logging.WARNING, logger="dev10x.core.hooks.edit_validator")
 
         code = _run(_apply_patch_payload("*** Begin Patch\n*** Add File: .env\n+X"), rules_yaml)
 

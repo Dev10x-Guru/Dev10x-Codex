@@ -1,4 +1,4 @@
-# Generated from agents/architect-db.md by `dev10x skill codex-agents` — edit the upstream agent, not this file.
+# Generated from plugins/scoping/agents/architect-db.md by `dev10x skill codex-agents` — edit the upstream agent, not this file.
 name = "Dev10x:architect-db"
 description = "Evaluate database architecture decisions — schema design, indexing, multi-tenant strategies, JSONB patterns, migration safety, and query optimization. Used by adr-evaluate for data ADRs. Triggers: invoked by adr-evaluate skill for database architecture ADRs"
 model_reasoning_effort = "medium"

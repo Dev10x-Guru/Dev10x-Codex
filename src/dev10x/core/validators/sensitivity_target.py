@@ -36,9 +36,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from dev10x.domain import HookAllow, HookAsk, HookInput
-from dev10x.domain.profile_tier import ProfileTier
-from dev10x.domain.sensitivity import (
+from dev10x.core.domain import HookAllow, HookAsk, HookInput
+from dev10x.core.domain.common.bash_tokens import is_simple_command
+from dev10x.core.domain.profile_tier import ProfileTier
+from dev10x.core.domain.sensitivity import (
     ExceptionEffect,
     SensitivityClassifier,
     SensitivityException,
@@ -46,8 +47,8 @@ from dev10x.domain.sensitivity import (
     SensitivityPattern,
     resolve_exception_effect,
 )
-from dev10x.validators.base import ValidatorBase
-from dev10x.validators.sensitivity_exceptions import load_sensitivity_exceptions
+from dev10x.core.validators.base import ValidatorBase
+from dev10x.core.validators.sensitivity_exceptions import load_sensitivity_exceptions
 
 _ASK_MSG_TEMPLATE = """\
 ⚠️  Sensitive target detected — command requires review before execution.
@@ -61,7 +62,7 @@ reversibility axes, the sensitivity axis elevates the effective effect
 to ``ask`` (deny-overrides).
 
 Review the command carefully.  If it is intentional and safe, approve it
-explicitly.  See `.claude/rules/hook-patterns.md` — DX014 / sensitivity
+explicitly.  See `.claude/rules/hook-validator-profiles.md` — DX014 / sensitivity
 axis — for the full resolution rules.
 """
 
@@ -148,8 +149,11 @@ class SensitivityTargetValidator(ValidatorBase):
             command=inp.command,
             exceptions=self._resolved_exceptions(),
         )
-        if effect is ExceptionEffect.ALLOW:
-            return HookAllow()
+        if effect is ExceptionEffect.ALLOW and is_simple_command(command=inp.command):
+            # A blessed exception skips the prompt (GH-1795), and its
+            # shape/target regex matched the whole string, so it vouches
+            # only for one simple command. A chain falls through to ask.
+            return HookAllow(decides=True)
         message = _ASK_MSG_TEMPLATE.format(
             count=len(matches),
             matches_detail=_format_matches(matches=matches),

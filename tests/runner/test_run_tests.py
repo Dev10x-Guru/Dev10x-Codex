@@ -1,28 +1,14 @@
 from __future__ import annotations
 
-import subprocess
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from dev10x.domain.common.result import ErrorResult, SuccessResult
-from dev10x.domain.transport_budget import MAX_TOOL_CALL_SECONDS
 
-from dev10x import runner
-
-
-def _completed(
-    *,
-    returncode: int = 0,
-    stdout: str = "",
-    stderr: str = "",
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(
-        args=[],
-        returncode=returncode,
-        stdout=stdout,
-        stderr=stderr,
-    )
-
+from dev10x.coding import runner
+from dev10x.core.domain.common.result import ErrorResult, SuccessResult
+from dev10x.core.domain.transport_budget import MAX_TOOL_CALL_SECONDS
+from dev10x.core.subprocess_utils import TimedOutProcess, use_cwd
+from tests.fakers.process import completed as _completed
 
 PASS_STDOUT = (
     "============================= test session starts =============================\n"
@@ -74,7 +60,7 @@ class TestSummaryParsing:
     """GH-1285: the counts must describe the run, or say they don't."""
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_outcome_outside_the_known_set_does_not_zero_the_counts(
         self,
         mock_run: AsyncMock,
@@ -91,7 +77,7 @@ class TestSummaryParsing:
         assert payload["failed"] == 0
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_deselected_and_warnings_do_not_zero_the_counts(
         self,
         mock_run: AsyncMock,
@@ -105,7 +91,7 @@ class TestSummaryParsing:
         assert result.value["summary_parsed"] is True
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_quiet_mode_summary_is_parsed(
         self,
         mock_run: AsyncMock,
@@ -121,7 +107,7 @@ class TestSummaryParsing:
         assert payload["skipped"] == 13
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_absent_summary_is_distinguishable_from_an_empty_run(
         self,
         mock_run: AsyncMock,
@@ -136,7 +122,7 @@ class TestSummaryParsing:
         assert payload["passed"] == 0
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_xpassed_is_not_counted_as_passed(
         self,
         mock_run: AsyncMock,
@@ -152,7 +138,7 @@ class TestSummaryParsing:
 
 class TestRunTests:
     @pytest.mark.asyncio
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_invokes_uv_run_pytest_with_coverage_by_default(
         self,
         mock_run: AsyncMock,
@@ -174,7 +160,7 @@ class TestRunTests:
         assert "--color=no" in called_args
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_default_timeout_is_the_transport_ceiling(
         self,
         mock_run: AsyncMock,
@@ -188,7 +174,7 @@ class TestRunTests:
         assert mock_run.call_args.kwargs["timeout"] == MAX_TOOL_CALL_SECONDS
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_appends_extra_args_after_coverage_flags(
         self,
         mock_run: AsyncMock,
@@ -201,7 +187,7 @@ class TestRunTests:
         assert called_args[-3:] == ["-k", "test_foo", "src/dev10x/runner/"]
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_omits_coverage_flags_when_disabled(
         self,
         mock_run: AsyncMock,
@@ -215,7 +201,7 @@ class TestRunTests:
         assert "--cov-report=term-missing" not in called_args
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_parses_passing_summary_and_coverage(
         self,
         mock_run: AsyncMock,
@@ -236,7 +222,7 @@ class TestRunTests:
         assert payload["summary_parsed"] is True
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_parses_failed_tests_and_missing_coverage(
         self,
         mock_run: AsyncMock,
@@ -264,7 +250,7 @@ class TestRunTests:
         ]
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_nonzero_returncode_is_not_an_mcp_error(
         self,
         mock_run: AsyncMock,
@@ -276,7 +262,7 @@ class TestRunTests:
         assert isinstance(result, SuccessResult)
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_timeout_returns_error(
         self,
         mock_run: AsyncMock,
@@ -292,7 +278,22 @@ class TestRunTests:
         assert "timed out" in result.error.lower()
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
+    async def test_a_queued_timeout_is_not_reported_as_a_test_timeout(
+        self,
+        mock_run: AsyncMock,
+    ) -> None:
+        """GH-1760: no test ran, so narrowing the run would not help."""
+        mock_run.return_value = TimedOutProcess(args=[], queued=True)
+
+        result = await runner.run_tests(timeout=5)
+
+        assert isinstance(result, ErrorResult)
+        assert result.to_dict()["verdict"] == "queue_timeout"
+        assert "never started" in result.error
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_missing_uv_returns_error(
         self,
         mock_run: AsyncMock,
@@ -374,8 +375,8 @@ class TestMissingDependencyRetry:
     """The safety net for a project whose extras resolution finds nothing."""
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.resolve_test_extras", return_value=[])
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.resolve_test_extras", return_value=[])
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_collection_import_error_retries_with_dev_extra(
         self,
         mock_run: AsyncMock,
@@ -395,8 +396,8 @@ class TestMissingDependencyRetry:
         assert ["--extra", "dev"] == mock_run.await_args.kwargs["args"][2:4]
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.resolve_test_extras", return_value=[])
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.resolve_test_extras", return_value=[])
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_ordinary_failure_is_not_retried(
         self,
         mock_run: AsyncMock,
@@ -411,8 +412,8 @@ class TestMissingDependencyRetry:
         assert mock_run.await_count == 1
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.resolve_test_extras", return_value=[])
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.resolve_test_extras", return_value=[])
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_passing_run_mentioning_the_error_is_not_retried(
         self,
         mock_run: AsyncMock,
@@ -430,8 +431,8 @@ class TestMissingDependencyRetry:
         assert mock_run.await_count == 1
 
     @pytest.mark.asyncio
-    @patch("dev10x.runner.resolve_test_extras", return_value=["dev"])
-    @patch("dev10x.runner.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.runner.resolve_test_extras", return_value=["dev"])
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
     async def test_resolved_extras_skip_the_retry(
         self,
         mock_run: AsyncMock,
@@ -447,3 +448,243 @@ class TestMissingDependencyRetry:
         assert isinstance(result, SuccessResult)
         assert result.value["retried_with_extras"] is False
         assert mock_run.await_count == 1
+
+
+class TestRetrySharesOneDeadline:
+    """GH-1760: the retry spends what the first run left, not a fresh budget."""
+
+    @pytest.fixture
+    def clock(self) -> MagicMock:
+        """First read sets the deadline, the second is taken after the first run."""
+        with patch("dev10x.coding.runner.time") as fake_time:
+            yield fake_time.monotonic
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.runner.resolve_test_extras", return_value=[])
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
+    async def test_the_retry_gets_only_the_remaining_budget(
+        self,
+        mock_run: AsyncMock,
+        _resolve: object,
+        clock: MagicMock,
+    ) -> None:
+        clock.side_effect = [1000.0, 1400.0]
+        mock_run.side_effect = [
+            _completed(returncode=2, stdout=MISSING_DEP_STDOUT),
+            _completed(stdout=PASS_STDOUT),
+        ]
+
+        await runner.run_tests()
+
+        assert mock_run.await_args.kwargs["timeout"] == MAX_TOOL_CALL_SECONDS - 400
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.runner.resolve_test_extras", return_value=[])
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
+    async def test_an_exhausted_budget_skips_the_retry(
+        self,
+        mock_run: AsyncMock,
+        _resolve: object,
+        clock: MagicMock,
+    ) -> None:
+        clock.side_effect = [1000.0, 1000.0 + MAX_TOOL_CALL_SECONDS]
+        mock_run.return_value = _completed(returncode=2, stdout=MISSING_DEP_STDOUT)
+
+        result = await runner.run_tests()
+
+        assert result.value["retried_with_extras"] is False
+        assert mock_run.await_count == 1
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.runner.resolve_test_extras", return_value=[])
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
+    async def test_a_sliver_of_budget_keeps_the_import_error(
+        self,
+        mock_run: AsyncMock,
+        _resolve: object,
+        clock: MagicMock,
+    ) -> None:
+        clock.side_effect = [1000.0, 1000.0 + MAX_TOOL_CALL_SECONDS - 10]
+        mock_run.return_value = _completed(returncode=2, stdout=MISSING_DEP_STDOUT)
+
+        result = await runner.run_tests()
+
+        assert result.value["retried_with_extras"] is False
+        assert result.value["stdout"] == MISSING_DEP_STDOUT
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.runner.resolve_test_extras", return_value=[])
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
+    async def test_a_retry_that_times_out_reports_the_timeout(
+        self,
+        mock_run: AsyncMock,
+        _resolve: object,
+        clock: MagicMock,
+    ) -> None:
+        clock.side_effect = [1000.0, 1010.0]
+        mock_run.side_effect = [
+            _completed(returncode=2, stdout=MISSING_DEP_STDOUT),
+            _completed(returncode=-1, stderr="Process timed out"),
+        ]
+
+        result = await runner.run_tests()
+
+        assert isinstance(result, ErrorResult)
+        assert result.to_dict()["verdict"] == "timeout"
+
+
+POETRY_PYPROJECT = '[tool.poetry]\nname = "demo"\nversion = "0"\n'
+
+UV_EXTRA_ERROR = (
+    "warning: No `requires-python` value found in the workspace.\n"
+    "error: Extra `dev` is not defined in any project's `optional-dependencies` table\n"
+)
+
+
+@pytest.fixture()
+def poetry_project(tmp_path) -> object:
+    (tmp_path / "pyproject.toml").write_text(POETRY_PYPROJECT, encoding="utf-8")
+    return tmp_path
+
+
+@pytest.fixture()
+def poetry_venv_python(poetry_project) -> object:
+    python = poetry_project / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("", encoding="utf-8")
+    return python
+
+
+class TestProjectWithoutAProjectTable:
+    """GH-1730: a poetry-style pyproject is not a project uv can run."""
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
+    async def test_without_a_venv_returns_an_actionable_error(
+        self,
+        mock_run: AsyncMock,
+        poetry_project,
+    ) -> None:
+        with use_cwd(str(poetry_project)):
+            result = await runner.run_tests()
+
+        assert isinstance(result, ErrorResult)
+        assert "[project]" in result.error
+        assert result.details["verdict"] == "no_project_table"
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
+    async def test_without_a_venv_runs_nothing(
+        self,
+        mock_run: AsyncMock,
+        poetry_project,
+    ) -> None:
+        with use_cwd(str(poetry_project)):
+            await runner.run_tests()
+
+        mock_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
+    async def test_an_existing_venv_runs_pytest_directly(
+        self,
+        mock_run: AsyncMock,
+        poetry_venv_python,
+        poetry_project,
+    ) -> None:
+        mock_run.return_value = _completed(stdout=PASS_STDOUT)
+
+        with use_cwd(str(poetry_project)):
+            result = await runner.run_tests()
+
+        assert mock_run.await_args.kwargs["args"][:3] == [str(poetry_venv_python), "-m", "pytest"]
+        assert result.value["launcher"] == "venv"
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
+    async def test_the_venv_run_is_never_retried_with_an_extra(
+        self,
+        mock_run: AsyncMock,
+        poetry_venv_python,
+        poetry_project,
+    ) -> None:
+        mock_run.return_value = _completed(returncode=2, stdout=MISSING_DEP_STDOUT)
+
+        with use_cwd(str(poetry_project)):
+            result = await runner.run_tests()
+
+        assert result.value["retried_with_extras"] is False
+        assert mock_run.await_count == 1
+
+
+class TestVirtualUvProjectsStillRunThroughUv:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "content",
+        [
+            '[tool.uv.workspace]\nmembers = ["packages/*"]\n',
+            '[dependency-groups]\ndev = ["pytest>=8,<9"]\n',
+        ],
+        ids=["workspace-root", "dependency-groups-only"],
+    )
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
+    async def test_runs_through_uv(self, mock_run: AsyncMock, tmp_path, content: str) -> None:
+        (tmp_path / "pyproject.toml").write_text(content, encoding="utf-8")
+        mock_run.return_value = _completed(stdout=PASS_STDOUT)
+
+        with use_cwd(str(tmp_path)):
+            result = await runner.run_tests()
+
+        assert result.value["launcher"] == "uv"
+        assert mock_run.await_args.kwargs["args"][:2] == ["uv", "run"]
+
+
+class TestRetryNeedsADeclaredExtra:
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
+    async def test_no_optional_dependencies_table_skips_the_retry(
+        self,
+        mock_run: AsyncMock,
+        tmp_path,
+    ) -> None:
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\nversion = "0"\n', encoding="utf-8"
+        )
+        mock_run.return_value = _completed(returncode=2, stdout=MISSING_DEP_STDOUT)
+
+        with use_cwd(str(tmp_path)):
+            result = await runner.run_tests()
+
+        assert result.value["retried_with_extras"] is False
+        assert mock_run.await_count == 1
+
+
+class TestUvErrorIsSurfaced:
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
+    async def test_uvs_error_line_is_reported(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _completed(returncode=2, stderr=UV_EXTRA_ERROR)
+
+        result = await runner.run_tests()
+
+        assert result.value["uv_error"] == (
+            "error: Extra `dev` is not defined in any project's `optional-dependencies` table"
+        )
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.runner.async_run", new_callable=AsyncMock)
+    async def test_a_clean_run_reports_no_uv_error(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _completed(stdout=PASS_STDOUT)
+
+        result = await runner.run_tests()
+
+        assert result.value["uv_error"] is None
+        assert result.value["launcher"] == "uv"
+
+
+class TestReadPyproject:
+    def test_missing_file_reads_as_none(self, tmp_path) -> None:
+        assert runner.read_pyproject(cwd=str(tmp_path)) is None
+
+    def test_a_poetry_file_parses_without_a_project_table(self, poetry_project) -> None:
+        assert "project" not in runner.read_pyproject(cwd=str(poetry_project))

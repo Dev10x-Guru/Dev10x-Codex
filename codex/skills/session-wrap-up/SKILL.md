@@ -2,12 +2,12 @@
 name: session-wrap-up
 description: 'Capture and route unfinished work at session end — so nothing is lost when the session closes. TRIGGER when: session ending, user says "wrap up" / "pause" / "done for today", or too many open loops pile up. DO NOT TRIGGER when: mid-session active work with manageable task list, or starting new work (use Dev10x:work-on).'
 metadata:
-  upstream: skills/session-wrap-up/SKILL.md
+  upstream: plugins/tasks/skills/session-wrap-up/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/session-wrap-up/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/tasks/skills/session-wrap-up/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/session-wrap-up/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/tasks/skills/session-wrap-up/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:session-wrap-up — Session End Orchestrator
@@ -278,10 +278,8 @@ continue."
 > regardless of allow rules (ADR-0018 RC-A) — so the exception was
 > paying the exact cost the ADR exists to remove. The index now lives
 > outside every repo and only the `task_index_*` MCP tools write it.
-> The retired path is read until removal in `0.112.0` per the
-> deprecation register (GH-1009,
-> [ADR-0028](../../../docs/adr/0028-deprecations-carry-a-removal-version.md)),
-> then deleted by `Dev10x:plugin-doctor`.
+> The retired path is no longer read; `Dev10x:plugin-doctor` deletes
+> it.
 
 ## Phase 4: Summary
 

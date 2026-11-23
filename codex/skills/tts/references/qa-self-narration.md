@@ -15,7 +15,7 @@ pass through `Dev10x:tts`'s own orchestration — the licence gate has to be
 resolved here or it never fires on this path. Run the check first:
 
 ```bash
-<plugin-root>/skills/tts/scripts/synthesize.py check
+<plugin-root>/plugins/qa/skills/tts/scripts/synthesize.py check
 ```
 
 When `warning` is non-null, apply the gate documented in
@@ -128,11 +128,11 @@ narration.write_manifest()      # <RUN_DIR>/narration/narration.json
 After Phase 4.3 has produced the `.mp4`:
 
 ```bash
-<plugin-root>/skills/tts/scripts/synthesize.py \
+<plugin-root>/plugins/qa/skills/tts/scripts/synthesize.py \
   track --segments-file <RUN_DIR>/narration/narration.json \
         --out <RUN_DIR>/narration/track.wav
 
-<plugin-root>/skills/qa-self/scripts/convert-evidence.sh \
+<plugin-root>/plugins/qa/skills/qa-self/scripts/convert-evidence.sh \
   narrate <RUN_DIR>/video/qa-<ticket>.mp4 <RUN_DIR>/narration/track.wav
 ```
 

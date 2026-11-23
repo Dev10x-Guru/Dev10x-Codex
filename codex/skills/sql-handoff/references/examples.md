@@ -27,7 +27,7 @@ UPDATE shop SET is_active = false WHERE id = 4182;
 **Agent (via `Dev10x:db-psql`):**
 
 ```bash
-<plugin-root>/skills/db-psql/scripts/db.sh bs "SELECT id, is_active FROM shop WHERE id = 4182"
+<plugin-root>/plugins/db/skills/db-psql/scripts/db.sh bs "SELECT id, is_active FROM shop WHERE id = 4182"
 ```
 
 The read-back shows `is_active = f`, so the agent continues.
@@ -38,7 +38,7 @@ The user asked to "close the duplicate Acme account". Two rows match
 on name, so the agent runs a confirming SELECT before writing:
 
 ```bash
-<plugin-root>/skills/db-psql/scripts/db.sh bs "SELECT id, name, created_at, is_active FROM account WHERE name = 'Acme Tires' ORDER BY created_at"
+<plugin-root>/plugins/db/skills/db-psql/scripts/db.sh bs "SELECT id, name, created_at, is_active FROM account WHERE name = 'Acme Tires' ORDER BY created_at"
 ```
 
 The result shows ids 311 (older, active orders) and 902 (created
@@ -71,7 +71,7 @@ and the PreToolUse hook rejected it. The agent does not retry with
 DELETE would remove:
 
 ```bash
-<plugin-root>/skills/db-psql/scripts/db.sh bs "SELECT count(*) FROM cart_item WHERE cart_id = 77"
+<plugin-root>/plugins/db/skills/db-psql/scripts/db.sh bs "SELECT count(*) FROM cart_item WHERE cart_id = 77"
 ```
 
 The count is 3, so the handoff states it:

@@ -2,12 +2,12 @@
 name: verify-acc-dod
 description: 'Verify that definition-of-done / acceptance criteria are met before closing a task list. Loads executable checks from plugin defaults, applies project overrides (add/remove/replace), runs each check automatically, and prompts the user only for manual items. TRIGGER when: task list is complete and work needs shippability verification before handover. DO NOT TRIGGER when: mid-implementation, or task list has incomplete items.'
 metadata:
-  upstream: skills/verify-acc-dod/SKILL.md
+  upstream: plugins/coding/skills/verify-acc-dod/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/verify-acc-dod/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/verify-acc-dod/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/verify-acc-dod/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/verify-acc-dod/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Verify Acceptance Criteria / Definition of Done
@@ -87,7 +87,7 @@ Load criteria from two sources and merge them:
 
 Read executable checks from:
 ```
-<plugin-root>/skills/verify-acc-dod/references/defaults.yaml
+<plugin-root>/plugins/coding/skills/verify-acc-dod/references/defaults.yaml
 ```
 
 Extract `defaults[work_type].checks` — an array of check objects.
@@ -103,9 +103,9 @@ for the full procedure:
   into the list, deduped by `name`. Union, never replacement; never
   downgrade a `work_type` that already carries PR checks.
 - **Step 2 — repo overrides.** Read
-  `~/.config/Dev10x/dod-acceptance-criteria.yaml` (with a one-release
-  read-compat fallback to the retired memory path, announced when it
-  fires). Never *write* to the legacy path.
+  `~/.config/Dev10x/dod-acceptance-criteria.yaml` — the only location
+  read since 0.112.0 (GH-1771). Never read or write the retired
+  `~/.claude/memory/Dev10x/` copy.
 - **Step 3 — delta merge.** Apply the repo's deltas in the order
   remove → replace → add, so a just-added check cannot be removed and
   a removed one cannot be replaced.
@@ -149,7 +149,7 @@ prefs. For each check with a `modes:` field, if any active mode has
 **deprecated** in favour of `supervisor_review` — its `skip` clauses
 are still honored for back-compat when a playbook or legacy
 `active_modes` names it, but nothing writes it anymore. See
-[`references/active-modes.md`](../../../references/active-modes.md).
+[`references/active-modes.md`](../../references/active-modes.md).
 
 ### Resolution order (summary)
 
@@ -281,7 +281,7 @@ check would auto-route to "Go back" forever (you cannot merge without
 review). Instead it selects the recommended option below.
 
 The three-way recommendation is encoded once in
-`dev10x.domain.session_rules.completion_gate_recommendation()` — this
+`dev10x.core.domain.session_rules.completion_gate_recommendation()` — this
 skill's prose and `work-on`'s Plan Completion Gate defer to it rather
 than re-deriving the matrix:
 
@@ -371,8 +371,7 @@ Create the file if absent. Add the override under the current
 repo's key using add/remove/replace semantics.
 
 **Writes always target `~/.config/Dev10x/`** — never the legacy
-memory path, even when Step 2's read-compat fallback supplied the
-criteria this run. Writing back to the retired location is the
+memory path. Writing back to the retired location is the
 re-creation loop GH-925 E1 described: `dev10x config migrate` folds
 the legacy file forward, and the next skill run recreates it.
 

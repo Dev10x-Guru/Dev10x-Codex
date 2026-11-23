@@ -17,10 +17,15 @@ import subprocess
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from dev10x.domain.common.result import ErrorResult, SuccessResult, err, ok
-from dev10x.skills.merge.fixes_scope import reconcile_link_closure
 
-from dev10x import github as gh
+from dev10x.coding import github as gh
+from dev10x.coding.skills.merge.fixes_scope import reconcile_link_closure
+from dev10x.core.domain.common.result import ErrorResult, SuccessResult, err, ok
+from dev10x.core.domain.pr_body import (
+    MISSING_REFERENCE_HINT,
+    MULTILINE_REFERENCE_HINT,
+    SEVERAL_REFERENCES_HINT,
+)
 
 _JOB_STORY = (
     "**When** a PR is opened, **the maintainer wants** the trailer to be "
@@ -40,8 +45,8 @@ def _created() -> subprocess.CompletedProcess[str]:
 @pytest.mark.usefixtures("stub_feature_branch")
 class TestCreatePrFixesTrailerReadback:
     @pytest.mark.asyncio
-    @patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock)
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_a_body_without_a_trailer_is_refused(
         self, mock_run: AsyncMock, mock_pr_get: AsyncMock
     ) -> None:
@@ -53,8 +58,8 @@ class TestCreatePrFixesTrailerReadback:
         assert isinstance(result, ErrorResult)
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock)
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_the_refusal_names_the_pr_it_already_opened(
         self, mock_run: AsyncMock, mock_pr_get: AsyncMock
     ) -> None:
@@ -70,8 +75,8 @@ class TestCreatePrFixesTrailerReadback:
         assert "https://github.com/owner/repo/pull/42" in result.error
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock)
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_the_refusal_points_at_the_repair(
         self, mock_run: AsyncMock, mock_pr_get: AsyncMock
     ) -> None:
@@ -84,8 +89,8 @@ class TestCreatePrFixesTrailerReadback:
         assert "update_pr" in result.error
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock)
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_a_landed_trailer_is_reported_verified(
         self, mock_run: AsyncMock, mock_pr_get: AsyncMock
     ) -> None:
@@ -98,8 +103,8 @@ class TestCreatePrFixesTrailerReadback:
         assert result.value["fixes_trailer_verified"] is True
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock)
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_an_explicit_repo_reaches_the_read_back(
         self, mock_run: AsyncMock, mock_pr_get: AsyncMock
     ) -> None:
@@ -119,8 +124,8 @@ class TestCreatePrFixesTrailerReadback:
         mock_pr_get.assert_awaited_once_with(number=42, repo="owner/repo")
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock)
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_the_check_reads_github_not_the_text_we_sent(
         self, mock_run: AsyncMock, mock_pr_get: AsyncMock
     ) -> None:
@@ -143,8 +148,8 @@ class TestCreatePrFixesTrailerReadback:
         mock_pr_get.assert_awaited_once_with(number=42, repo=None)
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pulls.pr_get", new_callable=AsyncMock)
-    @patch("dev10x.github._gateway.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
     async def test_an_unreadable_readback_warns_instead_of_failing(
         self, mock_run: AsyncMock, mock_pr_get: AsyncMock
     ) -> None:
@@ -158,6 +163,130 @@ class TestCreatePrFixesTrailerReadback:
         assert isinstance(result, SuccessResult)
         assert result.value["fixes_trailer_verified"] is False
         assert "connection reset" in result.value["warning"]
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
+    async def test_a_landed_bare_none_trailer_is_named_as_malformed(
+        self, mock_run: AsyncMock, mock_pr_get: AsyncMock
+    ) -> None:
+        mock_run.return_value = _created()
+        mock_pr_get.return_value = ok({"body": "Story\n\nFixes: none"})
+
+        result = await gh.create_pr(title="t", job_story=_JOB_STORY, issue_id="GH-1")
+
+        assert isinstance(result, ErrorResult)
+        assert "malformed" in result.error
+
+
+@pytest.mark.usefixtures("stub_feature_branch")
+class TestCreatePrRefusesUnclosableNoneTrailer:
+    """GH-1873: refuse before the PR exists, not when close-issues fails."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"body": f"{_JOB_STORY}\n\nFixes: none"},
+            {"body": f"{_JOB_STORY}\n\nFixes: none — <reason>"},
+            {"job_story": _JOB_STORY, "fixes_url": "none"},
+            {"job_story": _JOB_STORY, "fixes_url": "none — —"},
+            {"job_story": f"{_JOB_STORY}\n\nFixes: none", "fixes_url": "LIN-42"},
+            {"job_story": _JOB_STORY, "fixes_url": "#١٢٣"},
+            {"job_story": f"{_JOB_STORY}\n\n```\nunclosed", "fixes_url": "#12"},
+            {"job_story": f"{_JOB_STORY}\n\n<!-- unclosed", "fixes_url": "#12"},
+        ],
+        ids=[
+            "body-bare",
+            "body-placeholder",
+            "fixes-url-bare",
+            "fixes-url-punctuation",
+            "job-story-bare",
+            "fixes-url-non-ascii-number",
+            "job-story-open-fence-hides-the-trailer",
+            "job-story-open-comment-hides-the-trailer",
+        ],
+    )
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
+    async def test_no_pr_is_opened(self, mock_run: AsyncMock, kwargs: dict[str, str]) -> None:
+        result = await gh.create_pr(title="t", issue_id="GH-1", **kwargs)
+
+        assert isinstance(result, ErrorResult)
+        assert result.error.startswith("create_pr: Fixes: trailer is malformed")
+        mock_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kwargs", "expected"),
+        [
+            (
+                {"fixes_url": ","},
+                f"create_pr: Fixes: trailer is missing — {MISSING_REFERENCE_HINT}",
+            ),
+            (
+                {"issue_id": "GH-1\nnone"},
+                f"create_pr: Fixes: trailer is malformed — {MULTILINE_REFERENCE_HINT}",
+            ),
+            (
+                {"fixes_url": "#12, #13 (duplicate)"},
+                f"create_pr: Fixes: trailer is malformed — {SEVERAL_REFERENCES_HINT}",
+            ),
+        ],
+        ids=["missing", "multiline", "several-references-on-one-line"],
+    )
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
+    async def test_a_built_trailer_is_refused_with_its_hint(
+        self, mock_run: AsyncMock, kwargs: dict[str, str], expected: str
+    ) -> None:
+        # GH-1936
+        arguments = {"issue_id": "GH-1", **kwargs}
+
+        result = await gh.create_pr(title="t", job_story=_JOB_STORY, **arguments)
+
+        assert isinstance(result, ErrorResult)
+        assert result.error == expected
+        mock_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [
+            f"{_JOB_STORY}",
+            f"{_JOB_STORY}\n\n<!-- Fixes: #12 -->",
+            f"{_JOB_STORY}\n\n```\nFixes: #12\n```",
+            f"{_JOB_STORY}\n\nRefs: #12",
+        ],
+        ids=["no-trailer", "commented-trailer", "fenced-trailer", "refs-only"],
+    )
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
+    async def test_a_body_without_a_visible_trailer_opens_no_pr(
+        self, mock_run: AsyncMock, body: str
+    ) -> None:
+        # GH-1935
+        result = await gh.create_pr(title="t", issue_id="GH-1", body=body)
+
+        assert isinstance(result, ErrorResult)
+        assert result.error == "create_pr: body carries no Fixes: trailer"
+        mock_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.github.pulls.pr_get", new_callable=AsyncMock)
+    @patch("dev10x.core.github._gateway.async_run_script", new_callable=AsyncMock)
+    async def test_a_reasoned_none_trailer_is_opened(
+        self, mock_run: AsyncMock, mock_pr_get: AsyncMock
+    ) -> None:
+        mock_run.return_value = _created()
+        mock_pr_get.return_value = ok({"body": "Story\n\nFixes: none — part of #909"})
+
+        result = await gh.create_pr(
+            title="t",
+            job_story=_JOB_STORY,
+            issue_id="GH-1",
+            fixes_url="none — part of #909",
+        )
+
+        assert isinstance(result, SuccessResult)
+        assert result.value["fixes_trailer_verified"] is True
 
 
 class TestPostMergeLinkClosure:

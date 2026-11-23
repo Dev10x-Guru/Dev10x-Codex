@@ -1,0 +1,317 @@
+{
+  "skill_name": "dev10x-qa:review-pack",
+  "eval_dimensions": [
+    {
+      "id": "gate-enforcement",
+      "name": "Decision Gates Use AskUserQuestion",
+      "description": "The unconfigured-host and pre-send gates fire as AskUserQuestion tool calls, never plain text"
+    },
+    {
+      "id": "pack-structure",
+      "name": "Five Sections In Order",
+      "description": "The pack carries what changed, every surface, a 60-second test recipe, what is verified, and the judgment calls"
+    },
+    {
+      "id": "hosting",
+      "name": "Reviewer Access Without Public Hosting",
+      "description": "Images live beside the pack in a private evidence repo, referenced by relative path, with one pack link in the PR body"
+    },
+    {
+      "id": "delegation",
+      "name": "Delegation Over Restatement",
+      "description": "Capture, narration and upload go to qa-self, tts and yt-upload rather than hand-rolled code"
+    },
+    {
+      "id": "video-fallback",
+      "name": "Stated External Fallback",
+      "description": "A video piece is dropped only for an external failure, after one retry, with the reason stated in the description and the caption"
+    }
+  ],
+  "evals": [
+    {
+      "id": "no-evidence-repo-asks",
+      "name": "Unconfigured evidence repo triggers the hosting gate",
+      "description": "No review-pack.yaml exists and the pack has screenshots",
+      "input": "/dev10x-qa:review-pack build the review pack for this PR",
+      "assertions": [
+        {
+          "dimension": "gate-enforcement",
+          "check": "tool_called",
+          "value": "AskUserQuestion",
+          "signal": "The hosting gate fires before any screenshot is committed anywhere"
+        },
+        {
+          "dimension": "hosting",
+          "check": "output_not_contains",
+          "value": "gist.github.com",
+          "signal": "No gist is offered as a fallback host"
+        }
+      ]
+    },
+    {
+      "id": "unchecked-gate-asks",
+      "name": "An unchecked pre-send item blocks the review request",
+      "description": "E2E was not executed on this branch",
+      "input": "/dev10x-qa:review-pack the PR is ready, send it for review",
+      "assertions": [
+        {
+          "dimension": "gate-enforcement",
+          "check": "tool_called",
+          "value": "AskUserQuestion",
+          "signal": "The pre-send gate fires before dev10x-coding:request-review is invoked"
+        },
+        {
+          "dimension": "gate-enforcement",
+          "check": "behavioral",
+          "value": "gate-before-request-review",
+          "signal": "No review request is made while a box is unchecked and unanswered"
+        }
+      ]
+    },
+    {
+      "id": "pack-only-gate-resolves",
+      "name": "A pack-only run resolves the pre-send gate instead of always asking",
+      "description": "The work-on self-QA step calls review-pack with --no-request-review in an afk session; the self-review box is unchecked because a fixup moved HEAD after the clean round (GH-1878)",
+      "input": "Skill(dev10x-qa:review-pack, args=\"--no-request-review 1234\") in an afk session; footage is staging-only",
+      "assertions": [
+        {
+          "dimension": "gate-enforcement",
+          "check": "tool_called",
+          "tool": "mcp__plugin_dev10x_cli__resolve_gate",
+          "assertion": "gate2_resolves_pack_only",
+          "signal": "resolve_gate(gate=\"artifact_preview\") is called at the pre-send gate instead of an unconditional AskUserQuestion"
+        },
+        {
+          "dimension": "gate-enforcement",
+          "check": "behavioral",
+          "assertion": "gate2_auto_advance_states_gap",
+          "signal": "On auto-advance or skip, Send with the gap stated is taken: the unchecked boxes are written into section 4 and printed, with the record line on auto-advance; no AskUserQuestion fires"
+        },
+        {
+          "dimension": "gate-enforcement",
+          "check": "behavioral",
+          "assertion": "gate2_no_review_request",
+          "signal": "dev10x-coding:request-review is never invoked; the run stops after the gate and returns the pack link"
+        }
+      ]
+    },
+    {
+      "id": "pack-only-ask-pin-asks",
+      "name": "A project pin of artifact_preview: ask turns the pack-only gate into a question",
+      "description": "The repo's friction.yaml pins artifact_preview to ask; a pack-only run finds the self-review box unchecked (GH-1878)",
+      "input": "Skill(dev10x-qa:review-pack, args=\"--no-request-review 1234\") with artifact_preview pinned to ask; footage is staging-only",
+      "assertions": [
+        {
+          "dimension": "gate-enforcement",
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "gate2_ask_effect_uses_tool",
+          "signal": "resolve_gate returns ask, and AskUserQuestion is called rather than a plain-text question"
+        },
+        {
+          "dimension": "gate-enforcement",
+          "check": "tool_parameters",
+          "tool": "AskUserQuestion",
+          "assertion": "gate2_correct_options",
+          "signal": "Options are Send with the gap stated (Recommended) / Fix the gap first / Hold, in that order, with the marker only on the first; the question says handing gaps on is this mode's default"
+        },
+        {
+          "dimension": "gate-enforcement",
+          "check": "behavioral",
+          "assertion": "gate2_send_answer_states_gap",
+          "signal": "Answering Send writes each unchecked box into section 4 and prints the unchecked list, the same as the auto-advance path"
+        }
+      ]
+    },
+    {
+      "id": "pack-only-resolver-error-asks",
+      "name": "A resolver error turns the pack-only gate into a question that claims no default",
+      "description": "A pack-only run finds the self-review box unchecked and resolve_gate returns an error key (GH-1899)",
+      "input": "Skill(dev10x-qa:review-pack, args=\"--no-request-review 1234\") where resolve_gate(gate=\"artifact_preview\") returns {\"error\": ...}; footage is staging-only",
+      "assertions": [
+        {
+          "dimension": "gate-enforcement",
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "gate2_error_uses_tool",
+          "signal": "AskUserQuestion is called rather than taking Send silently"
+        },
+        {
+          "dimension": "gate-enforcement",
+          "check": "tool_parameters",
+          "tool": "AskUserQuestion",
+          "assertion": "gate2_error_states_default_unresolved",
+          "signal": "Options are Send with the gap stated (Recommended) / Fix the gap first / Hold; the question says the resolver failed so this mode's default could not be resolved, and gives the pack-only hand-on as the only reason Send leads"
+        }
+      ]
+    },
+    {
+      "id": "pack-only-unknown-frame-source-asks",
+      "name": "A frame whose source cannot be named asks even on a pack-only run",
+      "description": "A pack-only run in an afk session cannot say where one screenshot came from, so the staging box stays unchecked (GH-1878)",
+      "input": "Skill(dev10x-qa:review-pack, args=\"--no-request-review 1234\") in an afk session; one screenshot has no recorded source",
+      "assertions": [
+        {
+          "dimension": "gate-enforcement",
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "gate2_unknown_source_uses_tool",
+          "signal": "AskUserQuestion is called at the pre-send gate, without consulting resolve_gate for it"
+        }
+      ]
+    },
+    {
+      "id": "pack-only-non-staging-asks",
+      "name": "Possible non-staging footage asks even on a pack-only run",
+      "description": "A pack-only run in an afk session whose screenshots may show production data, so the staging box is unchecked (GH-1878)",
+      "input": "Skill(dev10x-qa:review-pack, args=\"--no-request-review 1234\") in an afk session; one screenshot came from a production URL",
+      "assertions": [
+        {
+          "dimension": "gate-enforcement",
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "assertion": "gate2_staging_box_uses_tool",
+          "signal": "AskUserQuestion is called at the pre-send gate"
+        },
+        {
+          "dimension": "gate-enforcement",
+          "check": "behavioral",
+          "assertion": "gate2_staging_skips_resolver",
+          "signal": "resolve_gate is not called for this gate: an unchecked staging/seed-data box goes straight to AskUserQuestion"
+        },
+        {
+          "dimension": "gate-enforcement",
+          "check": "tool_parameters",
+          "tool": "AskUserQuestion",
+          "assertion": "gate2_staging_correct_options",
+          "signal": "Options are Fix the gap first (Recommended) / Hold, in that order; Send with the gap stated is not offered"
+        },
+        {
+          "dimension": "gate-enforcement",
+          "check": "behavioral",
+          "assertion": "gate2_no_auto_send",
+          "signal": "The pack is never handed back as sent-with-gap without an answer"
+        }
+      ]
+    },
+    {
+      "id": "stale-video-refused",
+      "name": "A video older than the last UI commit is refused with a re-record message",
+      "description": "A review fix restyled a button after the pack's video was recorded (GH-1828)",
+      "input": "/dev10x-qa:review-pack the review fixes are in, send the pack again",
+      "assertions": [
+        {
+          "dimension": "gate-enforcement",
+          "check": "tool_called",
+          "tool": "Bash",
+          "assertion": "freshness_check_runs",
+          "signal": "scripts/video-freshness.py is run with --base and the configured ui_globs before review is requested"
+        },
+        {
+          "dimension": "gate-enforcement",
+          "check": "output_contains",
+          "value": "Re-record",
+          "signal": "The refusal names the stale video and the UI commit that outdated it"
+        },
+        {
+          "dimension": "gate-enforcement",
+          "check": "behavioral",
+          "assertion": "stale_video_not_sent",
+          "signal": "The pack is not sent with the stale video unless an override reason is stated and written into section 4"
+        }
+      ]
+    },
+    {
+      "id": "pack-only-stale-video-not-handed-on",
+      "name": "A pack-only run refuses a stale video instead of handing it on",
+      "description": "An afk work-on continuation calls review-pack with --no-request-review and video-freshness.py exits 1 (GH-1828)",
+      "input": "Skill(dev10x-qa:review-pack, args=\"--no-request-review 1234\") in an afk session; the newest video predates the last UI commit",
+      "assertions": [
+        {
+          "dimension": "gate-enforcement",
+          "check": "behavioral",
+          "assertion": "pack_only_stale_returns_without_link",
+          "signal": "The freshness message is printed and the run returns without the pack link; resolve_gate does not auto-advance a stale video into section 4"
+        }
+      ]
+    },
+    {
+      "id": "pack-has-five-sections",
+      "name": "The pack follows the template",
+      "description": "A UI change with configured evidence repo",
+      "input": "/dev10x-qa:review-pack build the pack for the settings page PR",
+      "assertions": [
+        {
+          "dimension": "pack-structure",
+          "check": "output_contains",
+          "value": "Test it yourself in 60 seconds",
+          "signal": "The test recipe section is present"
+        },
+        {
+          "dimension": "pack-structure",
+          "check": "output_contains",
+          "value": "Where I need your judgment",
+          "signal": "The judgment-calls section is present"
+        },
+        {
+          "dimension": "hosting",
+          "check": "output_contains",
+          "value": "](../evidence/",
+          "signal": "Images are referenced by relative path beside the pack"
+        }
+      ]
+    },
+    {
+      "id": "video-delegates",
+      "name": "A time-based change gets a delegated, narrated video",
+      "description": "The change is a redirect after save",
+      "input": "/dev10x-qa:review-pack build the pack for the redirect-after-save PR",
+      "assertions": [
+        {
+          "dimension": "delegation",
+          "check": "output_contains",
+          "value": "dev10x-qa:yt-upload",
+          "signal": "The video is published through yt-upload"
+        },
+        {
+          "dimension": "delegation",
+          "check": "output_not_contains",
+          "value": "gog auth tokens export",
+          "signal": "No upload mechanics are hand-rolled"
+        }
+      ]
+    },
+    {
+      "id": "tts-quota-fallback",
+      "name": "Narration dropped for quota is stated",
+      "description": "dev10x-qa:tts fails twice with a quota error",
+      "input": "/dev10x-qa:review-pack record the walkthrough video",
+      "assertions": [
+        {
+          "dimension": "video-fallback",
+          "check": "output_contains",
+          "value": "No narration",
+          "signal": "The pack caption names the missing narration and the reason"
+        },
+        {
+          "dimension": "video-fallback",
+          "check": "behavioral",
+          "value": "single-retry",
+          "signal": "The failing piece is retried once, not looped and not skipped silently"
+        }
+      ]
+    }
+  ],
+  "trigger_evals": {
+    "should_trigger": [
+      "Make this PR easy to review",
+      "Build a review pack before requesting human review",
+      "The PR is about to leave draft and needs screenshots for the reviewer"
+    ],
+    "should_not_trigger": [
+      "Execute QA test cases on staging (use dev10x-qa:qa-self)",
+      "Publish a QA verdict to the ticket (use dev10x-qa:qa-publish)",
+      "Assign reviewers and ping chat (use dev10x-coding:request-review)"
+    ]
+  }
+}

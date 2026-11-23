@@ -2,12 +2,12 @@
 name: scope
 description: 'Base scoping skill for technical research and architecture design. Provides reusable scoping workflow for investigating codebases, designing solutions, and documenting decisions. TRIGGER when: performing technical research or architecture design without a specific tracker integration. DO NOT TRIGGER when: scoping a Linear ticket (use Dev10x:ticket-scope), documenting an ADR (use Dev10x:adr), or scoping a project (use Dev10x:project-scope).'
 metadata:
-  upstream: skills/scope/SKILL.md
+  upstream: plugins/scoping/skills/scope/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/scope/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/scoping/skills/scope/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/scope/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/scoping/skills/scope/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:scope — Base Technical Scoping

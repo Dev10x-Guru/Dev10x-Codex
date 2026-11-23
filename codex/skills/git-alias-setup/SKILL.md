@@ -2,12 +2,12 @@
 name: git-alias-setup
 description: 'Set up git aliases that reduce permission friction by wrapping $(git merge-base ...) subshells into stable command prefixes. TRIGGER when: SessionStart reports missing aliases, or user hits permission friction from subshell-based git commands. DO NOT TRIGGER when: aliases already configured (check git config).'
 metadata:
-  upstream: skills/git-alias-setup/SKILL.md
+  upstream: plugins/coding/skills/git-alias-setup/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/git-alias-setup/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/git-alias-setup/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/git-alias-setup/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/git-alias-setup/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 **Announce:** "Using Dev10x:git-alias-setup to configure branch-comparison aliases."
@@ -35,7 +35,7 @@ Mark completed when done: `TaskUpdate(taskId, status="completed")`
 Run the setup script:
 
 ```bash
-<plugin-root>/skills/git-alias-setup/scripts/git-alias-setup.sh
+<plugin-root>/plugins/coding/skills/git-alias-setup/scripts/git-alias-setup.sh
 ```
 
 ## Aliases Configured

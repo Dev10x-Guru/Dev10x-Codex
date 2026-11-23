@@ -24,14 +24,14 @@ Sidecar naming convention:
 * ``locked_json_update`` **replaces** the target's suffix with
   ``.lock`` — e.g. ``settings.local.json`` → ``settings.local.lock``.
   This is preserved deliberately for backward compatibility with the
-  existing :mod:`dev10x.skills.permission` call sites and the test
+  existing :mod:`dev10x.core.skills.permission` call sites and the test
   in ``tests/skills/upgrade-cleanup/test_file_lock.py``; switching
   it now would orphan on-disk sidecars across the upgrade boundary.
 
 The two functions must not be used against the same target path
 because their sidecars resolve to different files. New code MUST use
 ``file_lock`` (append-``.lock`` convention); ``locked_json_update``
-is frozen for its existing :mod:`dev10x.skills.permission` call sites.
+is frozen for its existing :mod:`dev10x.core.skills.permission` call sites.
 See ADR-0011 for the rationale.
 """
 
@@ -40,6 +40,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import stat
 import tempfile
 import time
 from collections.abc import Generator
@@ -136,10 +137,16 @@ def file_lock(path: Path, *, timeout: float = LOCK_TIMEOUT_SECONDS) -> Generator
 
 
 def atomic_write_bytes(path: Path, content: bytes) -> None:
-    """Write ``content`` to ``path`` via ``mkstemp`` + ``os.rename``."""
+    """Write ``content`` to ``path`` via ``mkstemp`` + ``os.rename``.
+
+    An existing file keeps its permission bits; a new one gets ``mkstemp``'s
+    owner-only mode.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
+        if path.exists():
+            os.fchmod(fd, stat.S_IMODE(path.stat().st_mode))
         os.write(fd, content)
         os.fsync(fd)
         os.close(fd)

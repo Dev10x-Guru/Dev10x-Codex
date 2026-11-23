@@ -6,9 +6,10 @@ paste them into Bash with arguments appended, e.g.::
 
     mcp__plugin_dev10x_cli__check_top_level_comments pr_number=357
 
-This validator detects that anti-pattern — the command's first executable
-token IS an MCP identifier — and hard-blocks it with a steering message
-pointing back to the tool-call protocol (see .claude/rules/mcp-tools.md).
+This validator detects that anti-pattern — a segment's first executable
+token IS an MCP identifier, including after ``;`` or ``&&`` — and
+hard-blocks it with a steering message pointing back to the tool-call
+protocol (see .claude/rules/mcp-tools.md).
 
 It deliberately does NOT flag commands that merely contain ``mcp__`` in an
 argument or substring (e.g. ``grep mcp__ tests/``); only the command name
@@ -17,15 +18,17 @@ position matters.
 
 from __future__ import annotations
 
-import shlex
 from dataclasses import dataclass
 from typing import ClassVar
 
-from dev10x.domain import HookInput, HookResult
-from dev10x.domain.common.bash_tokens import ENV_VAR_RE
-from dev10x.domain.common.mcp_tool_name import McpToolName
-from dev10x.domain.profile_tier import ProfileTier
-from dev10x.validators.base import ValidatorBase
+from dev10x.core.domain import HookInput, HookResult
+from dev10x.core.domain.common.bash_tokens import (
+    UntokenizableCommandError,
+    segment_programs,
+)
+from dev10x.core.domain.common.mcp_tool_name import McpToolName
+from dev10x.core.domain.profile_tier import ProfileTier
+from dev10x.core.validators.base import ValidatorBase
 
 MCP_PREFIX_MSG = """\
 ⛔  MCP tool name used as a shell command — blocked.
@@ -42,13 +45,6 @@ belong only in `allowed-tools:` declarations and Claude tool-call
 invocations, never in bash blocks or shell scripts."""
 
 
-def _strip_env_prefix(parts: list[str]) -> list[str]:
-    i = 0
-    while i < len(parts) and ENV_VAR_RE.match(parts[i]):
-        i += 1
-    return parts[i:]
-
-
 @dataclass
 class McpPrefixValidator(ValidatorBase):
     name: ClassVar[str] = "mcp-prefix"
@@ -60,16 +56,13 @@ class McpPrefixValidator(ValidatorBase):
 
     def validate(self, inp: HookInput) -> HookResult | None:
         try:
-            parts = shlex.split(inp.command)
-        except ValueError:
+            programs = segment_programs(command=inp.command)
+        except UntokenizableCommandError:
+            # A friction rule: an unparseable command has no invocation
+            # to anchor on, so abstain as before.
             return None
 
-        parts = _strip_env_prefix(parts)
-
-        if not parts:
-            return None
-
-        if not McpToolName.is_command_token(parts[0]):
-            return None
-
-        return HookResult(message=MCP_PREFIX_MSG.format(tool=parts[0]))
+        for _, parts in programs:
+            if McpToolName.is_command_token(parts[0]):
+                return HookResult(message=MCP_PREFIX_MSG.format(tool=parts[0]))
+        return None

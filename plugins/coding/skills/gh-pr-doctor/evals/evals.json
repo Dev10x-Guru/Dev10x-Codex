@@ -1,0 +1,98 @@
+{
+  "skill_name": "dev10x-coding:gh-pr-doctor",
+  "eval_dimensions": [
+    {
+      "id": "task-tracking",
+      "name": "Orchestration Task Tracking",
+      "description": "Creates the four documented TaskCreate calls at startup (scan, classify, create issues, post audit trail) per references/task-orchestration.md."
+    },
+    {
+      "id": "announce",
+      "name": "Announce Line",
+      "description": "Opens with the documented announce line identifying the skill before scanning begins."
+    },
+    {
+      "id": "step2-grouping-gate",
+      "name": "Step 2 Grouping Decision Gate",
+      "description": "After classifying and grouping unresolved threads by theme, the skill blocks on AskUserQuestion with the three documented options rather than assuming 'create issues' by default."
+    }
+  ],
+  "evals": [
+    {
+      "id": "task-tracking-startup",
+      "name": "Startup creates all four orchestration tasks",
+      "description": "Step 0 must create one TaskCreate per phase (scan, classify, create issues, post audit trail) before scanning begins.",
+      "input": "/dev10x-coding:gh-pr-doctor --repo owner/repo",
+      "assertions": [
+        {
+          "dimension": "task-tracking",
+          "check": "tool_called",
+          "tool": "TaskCreate",
+          "signal": "task_tracking_startup — TaskCreate is called at startup for each of the four orchestration phases"
+        }
+      ]
+    },
+    {
+      "id": "announce-line-present",
+      "name": "Skill opens with the announce line",
+      "description": "The documented announce line must appear before Step 1 scanning starts, so the user can tell which skill produced the findings.",
+      "input": "/dev10x-coding:gh-pr-doctor",
+      "assertions": [
+        {
+          "dimension": "announce",
+          "check": "output_contains",
+          "value": "Using dev10x-coding:gh-pr-doctor to",
+          "signal": "announce_line_present — Output contains 'Using dev10x-coding:gh-pr-doctor to audit merged PRs for unresolved review threads.'"
+        }
+      ]
+    },
+    {
+      "id": "grouping-gate-fires-with-three-options",
+      "name": "Step 2 grouping gate fires with the documented options",
+      "description": "After presenting grouped findings, the skill must call AskUserQuestion with Create issues / Edit grouping / Dry run rather than proceeding straight to issue creation.",
+      "input": "/dev10x-coding:gh-pr-doctor finds 3 unresolved-thread groups (security, error handling, testing) across 5 merged PRs",
+      "assertions": [
+        {
+          "dimension": "step2-grouping-gate",
+          "check": "tool_called",
+          "tool": "AskUserQuestion",
+          "signal": "gate1_uses_tool — AskUserQuestion is called at the Step 2 grouping decision point, after findings are presented"
+        },
+        {
+          "dimension": "step2-grouping-gate",
+          "check": "tool_parameters",
+          "tool": "AskUserQuestion",
+          "signal": "gate1_options_correct — Options match SKILL.md: 'Create issues (Recommended)', 'Edit grouping', 'Dry run'"
+        },
+        {
+          "dimension": "step2-grouping-gate",
+          "check": "plain_text",
+          "signal": "gate1_no_plain_text — no inline 'Should I create these issues?' substitutes for the widget"
+        }
+      ]
+    },
+    {
+      "id": "dry-run-skips-issue-creation",
+      "name": "Dry run option produces no gh issue create calls",
+      "description": "When the user selects 'Dry run' at the Step 2 gate, Step 3 (Create Follow-Up Issues) and Step 4 (Post Audit Trail) must not execute — only the findings summary is shown.",
+      "input": "/dev10x-coding:gh-pr-doctor --dry-run, user selects 'Dry run' at the gate",
+      "assertions": [
+        {
+          "dimension": "step2-grouping-gate",
+          "check": "behavioral",
+          "signal": "no_issue_create_on_dry_run — 'gh issue create' is never invoked after a Dry run selection"
+        }
+      ]
+    }
+  ],
+  "trigger_evals": {
+    "should_trigger": [
+      "Reviewing merged PRs for accumulated tech debt",
+      "Post-merge as part of a maintenance workflow, checking for unresolved review threads"
+    ],
+    "should_not_trigger": [
+      "Reviewing active draft PRs",
+      "Real-time automated PR review during an open PR (use dev10x-coding:gh-pr-review)"
+    ]
+  }
+}

@@ -148,7 +148,7 @@ Dev10x 0.105.0; `N` restarts at 1 when a new upstream release is
 merged.
 The same version appears in `.codex-plugin/plugin.json`.
 To stay on one release instead of following `main`, add the
-marketplace with `--ref v0.110.0+codex.1`; move to a newer release by
+marketplace with `--ref v0.116.0+codex.1`; move to a newer release by
 removing the marketplace and adding it again with the new tag.
 
 Check the MCP servers are registered:
@@ -193,6 +193,12 @@ codex execpolicy check --rules ~/.codex/rules/dev10x.rules git status
 
 The baseline never allows `rm`, `dd` or `sudo`.
 The guardrail hooks still run on every allowed command.
+
+The hooks can block a command or ask about it, but they cannot approve
+one past a Codex prompt.
+When a rule says a command needs approval, Codex asks even if a
+Dev10x hook allows it, so pre-approve a command in a rules file, not
+through the hooks.
 
 Scripts inside the Dev10x skills are not in the baseline.
 They live under the versioned plugin cache path, which a Codex prefix

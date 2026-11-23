@@ -194,7 +194,7 @@ class TestAnnotationsReachTheWire:
 
     @pytest.mark.asyncio
     async def test_db_server_query_is_read_only_on_the_wire(self) -> None:
-        from dev10x.mcp.server_db import server
+        from dev10x.db.mcp.server_db import server
 
         listed = {tool.name: tool for tool in await server.list_tools()}
 

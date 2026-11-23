@@ -78,7 +78,7 @@ replaced by two `exec` lines; every other commit stays a `pick`.
      `C`'s tree — files `C` deleted are removed too — and commits it
      with `C`'s original message and authorship.
 
-5. Run `<plugin-root>/skills/git/scripts/git-rebase-groom.sh <seq-path> <base>`.
+5. Run `<plugin-root>/plugins/coding/skills/git/scripts/git-rebase-groom.sh <seq-path> <base>`.
 6. Verify each rename commit is pure:
    `git show --name-status -M --format= <rename-sha>` must list only
    `R100` entries (`--stat` prints paths and counts, not status letters).

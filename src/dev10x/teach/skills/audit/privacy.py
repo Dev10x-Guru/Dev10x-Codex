@@ -36,6 +36,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from dev10x.core.name_boundary import NAME_START
 from dev10x.core.paths import skill_script
 
 # ─────────────────────────────────────────────────────────────────────
@@ -65,7 +66,7 @@ _IMPORT_RE = re.compile(
 # ``token`` and is reported back for context.
 SERVICE_PATTERNS: dict[str, list[tuple[str, re.Pattern[str]]]] = {
     "GitHub": [
-        ("cli", re.compile(r"(?<![\w-])gh\s+(api|pr|issue|repo|run|release|workflow|auth)")),
+        ("cli", re.compile(rf"{NAME_START}gh\s+(api|pr|issue|repo|run|release|workflow|auth)")),
         (
             "cli",
             re.compile(
@@ -92,8 +93,8 @@ SERVICE_PATTERNS: dict[str, list[tuple[str, re.Pattern[str]]]] = {
         ("mcp", re.compile(r"\bmcp__(?:[a-z_]+_)?[Ss]entry[a-z_]*__")),
     ],
     "AWS Secrets Manager": [
-        ("cli", re.compile(r"(?<![\w-])aws-vault\b")),
-        ("cli", re.compile(r"(?<![\w-])aws\s+secretsmanager\b")),
+        ("cli", re.compile(rf"{NAME_START}aws-vault\b")),
+        ("cli", re.compile(rf"{NAME_START}aws\s+secretsmanager\b")),
     ],
     "Anthropic API": [
         ("hostname", re.compile(r"\banthropic\.com\b")),
@@ -102,13 +103,13 @@ SERVICE_PATTERNS: dict[str, list[tuple[str, re.Pattern[str]]]] = {
     ],
     "PyPI": [
         ("hostname", re.compile(r"\bpypi\.org\b")),
-        ("cli", re.compile(r"(?<![\w-])twine\s+upload\b")),
+        ("cli", re.compile(rf"{NAME_START}twine\s+upload\b")),
     ],
     "Kubernetes API": [
-        ("cli", re.compile(r"(?<![\w-])kubectl\b")),
+        ("cli", re.compile(rf"{NAME_START}kubectl\b")),
     ],
     "Postgres": [
-        ("cli", re.compile(r"(?<![\w-])psql\b")),
+        ("cli", re.compile(rf"{NAME_START}psql\b")),
     ],
 }
 
@@ -143,18 +144,18 @@ _NET_IMPORT_EXEMPT_PATHS: tuple[str, ...] = (
     # Skill scripts are documented in PRIVACY_POLICY.md as user-invoked
     # outbound integrations. They are exempt from the no-outbound rule
     # because the policy explicitly covers them.
-    skill_script(skill="qa-self", rel="upload-screenshots.py"),
+    skill_script(skill="qa-self", rel="upload-screenshots.py", plugin="qa"),
     # YouTube uploader: publishes a walkthrough recording the operator
     # explicitly approved, as unlisted, using a token borrowed from the
     # local gog CLI. gog cannot carry a media body, so the resumable
     # videos.insert is done here with `requests`. Covered by the YouTube
     # Data API row in PRIVACY_POLICY.md (GH-1119).
-    skill_script(skill="yt-upload", rel="upload-video.py"),
+    skill_script(skill="yt-upload", rel="upload-video.py", plugin="qa"),
     # `dev10x github-app setup` wizard module: explicitly verifies App
     # credentials against api.github.com before writing config. Covered
     # by the GitHub row in PRIVACY_POLICY.md.
     "src/dev10x/core/github/app_api.py",
-    # Google Chat transport: the `dev10x:gchat` bot mints a token and
+    # Google Chat transport: the `dev10x-comm:gchat` bot mints a token and
     # posts user-approved review-request messages to a configured Chat
     # space. User-invoked outbound integration covered by the Google
     # Chat row in PRIVACY_POLICY.md.
@@ -165,17 +166,27 @@ _NET_IMPORT_EXEMPT_PATHS: tuple[str, ...] = (
     # package is missing. No new destination, no new data — covered by
     # the Slack row in PRIVACY_POLICY.md.
     "src/dev10x/comm/skills/notifications/slack_notify.py",
+    # Chat bus Pub/Sub source: the local `dev10x-chatbus` daemon pulls
+    # Chat reaction events from the user's own Pub/Sub subscription and
+    # keeps the Workspace Events subscription alive. Covered by the
+    # Google Chat bus row in PRIVACY_POLICY.md (GH-1840).
+    "src/dev10x/comm/chatbus/sources/google_http.py",
     # PyPI version sweep: `dev10x deps sweep` reads pypi.org/pypi/
     # <name>/json for each pinned distribution when the user (or the
     # scheduled workflow) runs it. Anonymous, read-only, sends only
     # distribution names from this repo's own dependency declarations.
     # Covered by the PyPI JSON API row in PRIVACY_POLICY.md (GH-937).
     "src/dev10x/dependency_sweep.py",
-    # Supervisor decision hook: POSTs a session's open questions to the
-    # local `dev10x supervisor serve` daemon. The host is fixed to
+    # Overwatch decision hook: POSTs a session's open questions to the
+    # local `dev10x overwatch serve` daemon. The host is fixed to
     # 127.0.0.1, so nothing leaves the machine. Covered by the
     # AskUserQuestion-hook bullet in PRIVACY_POLICY.md (GH-1692).
-    "src/dev10x/comm/hooks/supervisor_decision.py",
+    "src/dev10x/comm/hooks/overwatch_decision.py",
+    # wait_for MCP tool: `kind="http"` sends a plain GET to the one URL
+    # its caller passes — typically a local health check — and reads only
+    # the status code. Caller-invoked, no fixed destination, no data sent.
+    # Covered by the wait_for bullet in PRIVACY_POLICY.md (GH-1833).
+    "src/dev10x/coding/monitor/wait_for.py",
 )
 
 # Files exempt from service detection. The scanner defines the
@@ -192,7 +203,7 @@ _DETECTION_EXEMPT_PATHS: tuple[str, ...] = (
     # from these modules.
     "src/dev10x/core/validators/",
     "src/dev10x/teach/skills/audit/",
-    "skills/skill-audit/",
+    "plugins/teach/skills/skill-audit/",
     # The diag-friction skill (formerly skill-reinforcement) exists
     # to redirect agents away from raw CLI commands; naming those
     # commands is its job.

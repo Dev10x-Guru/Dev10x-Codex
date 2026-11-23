@@ -2,12 +2,12 @@
 name: park-discover
 description: 'Gather deferred items across all sources — so nothing is missed when starting a session or picking up where you left off. TRIGGER when: starting a session, picking up prior work, or checking for deferred items. DO NOT TRIGGER when: mid-session active work with no need to check deferred items.'
 metadata:
-  upstream: skills/park-discover/SKILL.md
+  upstream: plugins/tasks/skills/park-discover/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/park-discover/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/tasks/skills/park-discover/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/park-discover/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/tasks/skills/park-discover/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:park-discover — Gather Deferred Items
@@ -46,8 +46,8 @@ worktree of a repo. Every writer in the park/session family appends a
 structured entry into its `tasks:` list with a `source:` field that
 names the writer:
 
-| `source:` value     | Written by                          |
-|---------------------|-------------------------------------|
+| `source:` value     | Written by                                |
+|---------------------|-------------------------------------------|
 | `manual`            | `Dev10x:park` (target: TODO)        |
 | `code-todo`         | `Dev10x:park-todo` (inline mode)    |
 | `slack-reminder`    | `Dev10x:park-remind`                |
@@ -69,13 +69,13 @@ mcp__cli__task_index_get()
 
 If the response has `exists: false` and no `tasks`, note "No task
 index — no local deferrals indexed" and skip to the external-sources
-step. Do NOT fall back to reading a file path by hand: the tool
-already probes the retired `.claude/Dev10x/session.yaml` location
-(until removal in `0.112.0` per the deprecation register, GH-1009,
-ADR-0028) and reports it as `legacy_read: true` with `legacy_path`.
-When `legacy_read` is true, add one line to the report — "carried from
-the retired `<legacy_path>`; the next park write folds it forward" —
-so a supervisor can see why the items still live in the old place.
+step. Do NOT fall back to reading a file path by hand.
+The retired `.claude/Dev10x/session.yaml` is no longer read: its fallback was removed in 0.112.0 (GH-1771).
+When the response carries `legacy_ignored`, that retired file still
+exists and may hold items parked before the move. Report it first,
+naming the path: "A retired task index at <path> is not read — its
+parked items are not in this report; re-park any that still matter
+with `task_index_append`" (GH-1785). Never read or delete it yourself.
 
 Extract three sections from the response:
 

@@ -9,7 +9,7 @@ working directory.
 **D2 seam.** Capability modules import this module and call through its
 attributes — ``_gateway.async_run(...)``, never a bare ``async_run`` bound
 by ``from ... import``. That keeps exactly one patch target per
-dependency (``dev10x.github._gateway.<name>``), so a test that patches it
+dependency (``dev10x.core.github._gateway.<name>``), so a test that patches it
 intercepts every caller. ``async_run`` / ``async_run_script`` /
 ``AppConfig`` / ``get_bot_token`` are re-imported here for that reason.
 """
@@ -22,13 +22,17 @@ import logging
 import os
 import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from dev10x.core.domain.common.repository_ref import RepositoryRef
+from dev10x.core.domain.common.result import Result, SuccessResult, err, ok
+from dev10x.core.domain.git_context import GitContext
+from dev10x.core.domain.milestone_prefixes import REGISTRY_RELPATH, parse_registered_prefixes
+from dev10x.core.domain.retry import RetryPolicy, is_retryable, retry_after_seconds
 from dev10x.core.github.app_auth import AppConfig, get_bot_token
-from dev10x.domain.common.repository_ref import RepositoryRef
-from dev10x.domain.common.result import Result, err, ok
-from dev10x.domain.retry import RetryPolicy, is_retryable, retry_after_seconds
-from dev10x.subprocess_utils import async_run, async_run_script
+from dev10x.core.subprocess_utils import async_run, async_run_script
 
 log = logging.getLogger(__name__)
 
@@ -148,6 +152,165 @@ async def _gh_api(
     )
 
 
+#: GitHub's REST page-size cap, and how many pages a listing follows
+#: before it is reported as truncated rather than silently cut short.
+PAGE_SIZE = 100
+MAX_LISTING_PAGES = 10
+
+
+@dataclass(frozen=True)
+class Listing:
+    """Every item a paged REST listing returned, and whether pages ran out."""
+
+    items: tuple[dict[str, Any], ...]
+    truncated: bool
+
+
+def _page_items(*, raw: str, key: str | None, label: str) -> Result[list[dict[str, Any]]]:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return err(f"could not parse {label} as JSON")
+    if key is None:
+        items = payload
+    else:
+        items = payload.get(key) if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return err(f"unexpected {label} shape from GitHub")
+    return ok([item for item in items if isinstance(item, dict)])
+
+
+async def _gh_api_paginated(
+    endpoint: str,
+    *,
+    label: str,
+    key: str | None = None,
+    repo: str | None = None,
+    max_pages: int = MAX_LISTING_PAGES,
+) -> Result[Listing]:
+    """Follow a REST listing page by page (GH-1852).
+
+    ``ci_rerun`` and ``pr_wait`` each paged by hand, with their own
+    ceiling and their own truncation policy. The ceiling is reported, not
+    enforced as an error: a caller for whom a cut listing hides the very
+    item it needs (the newest review) decides that for itself.
+
+    ``key`` names the array inside an object payload (``check_suites``);
+    without it the payload itself must be the array. ``label`` names the
+    listing in error messages.
+    """
+    separator = "&" if "?" in endpoint else "?"
+    first = f"{endpoint}{separator}per_page={PAGE_SIZE}"
+    items: list[dict[str, Any]] = []
+    for page in range(1, max_pages + 1):
+        paged = first if page == 1 else f"{first}&page={page}"
+        result = await _gh_api_raw(paged, repo=repo)
+        if result.returncode != 0:
+            return err(result.stderr.strip() or f"could not list {label}")
+        page_items = _page_items(raw=result.stdout, key=key, label=label)
+        if not isinstance(page_items, SuccessResult):
+            return page_items
+        items.extend(page_items.value)
+        if len(page_items.value) < PAGE_SIZE:
+            return ok(Listing(items=tuple(items), truncated=False))
+    return ok(Listing(items=tuple(items), truncated=True))
+
+
+async def _graphql(query: str, *, tolerate_not_found: bool = False) -> Result[dict[str, Any]]:
+    """Run a GraphQL query and return its ``data`` object (GH-1857).
+
+    Every caller repeated the same three checks — exit code, JSON, the
+    ``errors`` array — and they had drifted: one ignored ``errors``
+    entirely, so a query GitHub rejected read as an empty result.
+
+    ``tolerate_not_found`` keeps the ``data`` a response carries alongside
+    NOT_FOUND ``errors``: aliased ``node(id:)`` lookups come back with a
+    null node and a NOT_FOUND error per unknown ID, and the caller
+    reports those per ID. Any other error type — FORBIDDEN, rate limits,
+    timeouts — also nulls a node, so it still fails the call rather than
+    reading as "not found". A query GitHub rejected outright carries no
+    ``data`` and is an error too (GH-1885).
+    """
+    response = await _graphql_response(query)
+    if not isinstance(response, SuccessResult):
+        return response
+    data = response.value.data
+    tolerated = tolerate_not_found and data is not None
+    failing = [
+        entry for entry in response.value.errors if not (tolerated and _is_not_found(entry=entry))
+    ]
+    if failing:
+        return err(f"GitHub GraphQL error: {graphql_error_message(entry=failing[0])}")
+    return ok(data or {})
+
+
+@dataclass(frozen=True)
+class GraphQLResponse:
+    """A parsed GraphQL reply: ``data`` (None when absent) and every error."""
+
+    data: dict[str, Any] | None
+    errors: tuple[Any, ...]
+
+
+async def _graphql_response(query: str) -> Result[GraphQLResponse]:
+    """Run a GraphQL query and keep ``data`` and ``errors`` side by side (GH-1913).
+
+    A batched mutation can succeed for some aliases and fail for others;
+    the reply then carries both. ``_graphql`` turns any error into a
+    failure, so a caller that must report a partial write reads this
+    instead. Transport, JSON and shape failures are still errors here.
+    """
+    result = await _gh_api_raw("graphql", fields={"query": query})
+    if result.returncode != 0:
+        return err(result.stderr.strip() or "GitHub GraphQL call failed")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return err(f"Invalid JSON from GitHub API: {result.stdout[:200]}")
+    if not isinstance(payload, dict):
+        return err(f"Unexpected GitHub API payload (not an object): {result.stdout[:200]}")
+    data = payload.get("data")
+    errors = payload.get("errors") or []
+    entries = errors if isinstance(errors, list) else [errors]
+    return ok(
+        GraphQLResponse(
+            data=data if isinstance(data, dict) else None,
+            errors=tuple(entries),
+        )
+    )
+
+
+def graphql_error_message(*, entry: Any) -> Any:
+    return entry.get("message", entry) if isinstance(entry, dict) else entry
+
+
+def _is_not_found(*, entry: Any) -> bool:
+    return isinstance(entry, dict) and entry.get("type") == "NOT_FOUND"
+
+
+async def _graphql_pull_request(
+    query: str,
+    *,
+    ref: RepositoryRef,
+    pr_number: int,
+) -> Result[dict[str, Any]]:
+    """The ``repository.pullRequest`` node a query selected, or why not.
+
+    An unknown PR comes back as ``pullRequest: null``; reading that as an
+    empty node turned "no such PR" into "no unresolved threads" (GH-1857),
+    so every ``repository.pullRequest`` query takes this guard. A
+    ``node(id:)`` lookup that reaches a PR through a comment guards its
+    own null ``pullRequest`` (``reviews._pr_comment_resolve``).
+    """
+    data = await _graphql(query)
+    if not isinstance(data, SuccessResult):
+        return data
+    node = (data.value.get("repository") or {}).get("pullRequest")
+    if not isinstance(node, dict):
+        return err(f"PR #{pr_number} not found in {ref}")
+    return ok(node)
+
+
 async def _bot_env(*, repo: str) -> dict[str, str] | None:
     try:
         ref = RepositoryRef.parse(repo)
@@ -165,6 +328,26 @@ async def _bot_env(*, repo: str) -> dict[str, str] | None:
             )
         return None
     return {**os.environ, "GH_TOKEN": token, "GITHUB_TOKEN": token}
+
+
+def _milestone_prefix_registry() -> frozenset[str] | None:
+    """Registered milestone prefixes for the current checkout, or None.
+
+    None means the checkout keeps no registry, so the GH-1690 guard does
+    not apply — `milestone_create` serves every repo, not only this one.
+    """
+    toplevel = GitContext().toplevel
+    if toplevel is None:
+        return None
+    registry = Path(toplevel) / REGISTRY_RELPATH
+    if not registry.is_file():
+        return None
+    try:
+        text = registry.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        log.warning("milestone prefix registry %s is unreadable: %s", registry, exc)
+        return None
+    return parse_registered_prefixes(text=text)
 
 
 async def _resolve_repo(

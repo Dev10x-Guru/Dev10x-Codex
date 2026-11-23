@@ -1,0 +1,151 @@
+---
+name: dev10x-coding:ci-review
+description: >
+  Use when a change to a Claude CI review prompt, args file, reviewer
+  agent or CLI pin needs checking before it merges — so you read what
+  the CI code review and PR hygiene check would post on a real PR,
+  with nothing reaching GitHub unless you choose, after reading the
+  report, to share it as one marked replica comment.
+  TRIGGER when: "what would the CI review say", replaying the Claude CI
+  review locally, verifying a review prompt or model change on a PR.
+  DO NOT TRIGGER when: self-reviewing a branch with no PR (use
+  dev10x-coding:review), or reviewing someone's PR and posting (use
+  dev10x-coding:gh-pr-review).
+user-invocable: true
+invocation-name: dev10x-coding:ci-review
+allowed-tools:
+  - AskUserQuestion
+  - Bash(uvx dev10x ci-review:*)
+  - mcp__plugin_dev10x_cli__pr_detect
+---
+
+# dev10x-coding:ci-review
+
+**Announce:** "Using dev10x-coding:ci-review to replay the Claude CI review
+locally on PR #<N>."
+
+## Orchestration
+
+This skill follows `references/task-orchestration.md` patterns.
+
+**REQUIRED: Create a task at invocation.** Execute at startup:
+
+1. `TaskCreate(subject="Replay CI review on PR #<N>", activeForm="Replaying CI review")`
+
+Mark completed when done: `TaskUpdate(taskId, status="completed")`
+
+## Overview
+
+`dev10x ci-review` reads `.github/workflows/claude-code-review.yml` and
+`claude-pr-hygiene.yml` and does what they do:
+
+- checks out `refs/pull/<N>/merge`;
+- stages the base-owned prompt, args and rules;
+- replays the action's `restoreConfigFromBase`;
+- prefetches the PR context;
+- runs the pinned CLI with an empty config;
+- replays the post-steps.
+
+Every GitHub write the run attempts goes to an outbox instead of
+posting. The skill wraps the command. It posts to GitHub only through
+`--post-run-dir`, after the user has read the report and answered the
+Step 6 gate, as one comment from the user headed
+`Local CI replica` and marked `<!-- dev10x-local-ci-review -->`, so CI's
+round numbering and its hygiene comment lookup never see it.
+
+The command also warns (it does not refuse) when no changed file
+matches the workflow's `on.pull_request.paths` filter: CI would never
+have run that review on this PR.
+
+It cannot reproduce the bot identity, check runs, the
+`pull_request` trigger, the CI token's scope or model nondeterminism.
+Two runs on the same PR can differ.
+
+## Workflow
+
+### Step 1: Resolve the PR
+
+Take the PR number or URL from the arguments. With none, call
+`mcp__plugin_dev10x_cli__pr_detect` for the current branch's PR. A
+branch with no PR has no CI review to replay; point to
+`dev10x-coding:review` and stop.
+
+### Step 2: Render (free)
+
+```bash
+uvx dev10x ci-review --pr <N> --workflow all --render-only
+```
+
+Show the guard verdicts, the pinned CLI version and the rendered
+prompt's location. A failed guard (draft, fork, not open) means CI
+would skip this PR. Report which guard failed and stop. Pass
+`--rules head` only when the user wants the PR's own prompts and
+rules instead of the base branch's.
+
+### Step 3: Confirm the paid run
+
+A model run costs money: real API spend with `ANTHROPIC_API_KEY` set,
+and subscription usage (notional cost) otherwise. Never start one
+without an answer, in any session mode.
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text). This
+blocks execution until the user responds. Options:
+
+- Run both reviews (Recommended): code review, then hygiene
+- Run the code review only
+- Run the hygiene check only
+- Stop at the render
+
+### Step 4: Run
+
+```bash
+uvx dev10x ci-review --pr <N> --workflow <all|code-review|hygiene>
+```
+
+Pass the same `--rules` value as Step 2. Never pass `--post` from this
+skill: it shares the replica before anyone has read it (GH-1762) —
+Step 6 posts the finished run instead. When the user named a CI run
+to check against, add `--compare-ci <run-id>` (code review only): the
+report gains a table of each finding's `path:line` with the local and
+CI severity, and both verdicts.
+
+### Step 5: Present
+
+Relay the command's report:
+
+- any `⚠️` paths-filter warning, first;
+- the inline comments as `path:line` with each one's first line;
+- the would-be `gh` writes (review summary, draft conversion, hygiene
+  comment);
+- the comparison table, when `--compare-ci` was passed;
+- the usage table, labeled notional when it ran on a subscription;
+- the run directory, which holds `outbox.jsonl` and `execution.json`.
+
+Say plainly that the review's own writes were not posted.
+
+### Step 6: Confirm sharing the replica
+
+Ask only now, after Step 5 put the report in front of the user: the
+decision to share a replica belongs after reading it, and posting a
+finished run directory costs no second model run (GH-1762). The post
+is a comment on the PR under the user's name, which others read.
+Never post without an answer, in any session mode.
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text). This
+blocks execution until the user responds. Options:
+
+- Keep it local (Recommended): nothing reaches the PR
+- Post the replica to PR #<N>: one `Local CI replica` comment per
+  workflow that ran
+
+On "Post", run once per run directory Step 5 relayed:
+
+```bash
+uvx dev10x ci-review --pr <N> --post-run-dir <run dir>
+```
+
+The command rebuilds the replica from the directory's `report.md` and
+`outbox.jsonl`, keeps the `Local CI replica` header and the
+`<!-- dev10x-local-ci-review -->` marker, and refuses a directory with
+no `report.md` or one recorded for another PR. Relay each `posted:`
+URL and say that the replica comment, and only it, reached the PR.

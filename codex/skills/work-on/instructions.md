@@ -21,7 +21,7 @@ new tasks mid-session. Skipping it removes that capability.
 (GH-149).** Until the supervisor explicitly closes the session
 (`Dev10x:session-wrap-up` or session restart), the task list MUST
 contain at least one open task. The terminal task is always
-`Verify acceptance criteria` — it is the last task in every play
+`Verify acceptance criteria` — the last *gate* in every play —
 and it MUST NOT be marked `completed` or `deleted` until the
 supervisor confirms the work is shippable (PR linked, CI green,
 no unresolved review comments, AC satisfied). When new
@@ -29,6 +29,21 @@ instructions arrive mid-session, the new TODOs land **before**
 the Verify-AC task — they do not replace it. An empty task list
 at the moment of a new prompt creates competition for attention
 and is a Phase 4 violation.
+
+**Reflection after Verify AC (GH-1822).** Every default play
+ends with `Reflect lessons into the knowledge vault` (the
+`session-reflection` fragment → `Dev10x:reflect`), listed right
+after Verify AC. It is **non-blocking**: run it once
+`Dev10x:verify-acc-dod` has reported, complete or skip it within
+the same turn, and leave Verify AC open. It never replaces or
+closes the terminal gate — it only files what the session
+learned. With no vault configured it prints one line and is done.
+
+**Exception — `investigation`.** That play has no Verify AC step;
+its reflection follows "Decide" and is the last task. Because a
+lone open task cannot be closed (task guard, GH-149),
+`Dev10x:reflect` creates `Verify acceptance criteria` before it
+completes, so the session still ends on the terminal gate.
 
 **REQUIRED: Create phase tasks before ANY work.** At session
 start, create exactly 4 top-level tasks — one per phase:
@@ -551,17 +566,19 @@ these agents run with `run_in_background=true`, their final text is
 never delivered on its own — the trailing status line rides inside a
 `SendMessage(to="main", …)` payload. An `idle_notification` with no
 content means the agent finished WITHOUT delivering; escalate per the
-ladder in `references/orchestration/subagent-status-protocol.md`
-(§ Delivery channel): one nudge → file fallback → `TaskStop`. The
+ladder in `references/orchestration/subagent-status-operations.md`
+(§ Escalation ladder for a silent agent): one nudge → file fallback →
+`TaskStop`. The
 canonical instruction text is `BACKGROUND_DELIVERY_TEMPLATE` in
-`dev10x.skills.orchestration.subagent_protocol`.
+`dev10x.coding.skills.orchestration.subagent_protocol`.
 
 **Recipient addressing (GH-848 F1).** `to="main"` is the default, but
 some harness configs reject it with "Send to a named agent instead".
 If the orchestrator runs under a name, state that name in the dispatch
 prompt so the agent addresses it directly; on rejection the agent must
 retry with the actual orchestrator name/ID, not the literal `"main"`.
-See § Addressing the orchestrator in the protocol reference.
+See § Addressing the orchestrator in
+`references/orchestration/subagent-status-operations.md`.
 
 **Parse the trailing status line** per
 `references/orchestration/subagent-status-protocol.md` (GH-69):
@@ -690,10 +707,10 @@ that can be overridden per project.
 1. `.claude/Dev10x/playbooks/work-on.yaml` — project-local override
 2. `~/.config/Dev10x/playbooks/work-on.yaml` — global with repo
    matching (get repo via `git remote get-url origin`, walk
-   `projects[].match` globs, use first hit's `overrides`/`fragments`);
+   `projects[].match_repo` globs, use first hit's `overrides`/`fragments`);
    fall back to `~/.claude/memory/Dev10x/playbooks/work-on.yaml` for
    backwards compatibility when the XDG path is absent.
-3. `<plugin-root>/skills/work-on/references/playbook.d/coding.yaml`
+3. `<plugin-root>/plugins/coding/skills/work-on/references/playbook.d/coding.yaml`
    — the plugin default plays (GH-1555)
 
 **Playbook schema:** See the `Dev10x:playbook` skill's
@@ -739,7 +756,7 @@ cat ~/.config/Dev10x/playbooks/work-on.yaml
 # ✅ REQUIRED — use Read with absolute paths, one call per tier
 Read(file_path="/abs/path/.claude/Dev10x/playbooks/work-on.yaml")
 Read(file_path="/home/<user>/.config/Dev10x/playbooks/work-on.yaml")
-Read(file_path="<plugin-root>/skills/work-on/references/playbook.d/coding.yaml")
+Read(file_path="<plugin-root>/plugins/coding/skills/work-on/references/playbook.d/coding.yaml")
 ```
 
 The `ls; ls` pattern triggers `PREFIX_POISONED_CHAIN` friction
@@ -755,10 +772,11 @@ resolution algorithm needs.
    b. Try `~/.config/Dev10x/playbooks/work-on.yaml` (global); if
       absent, fall back to `~/.claude/memory/Dev10x/playbooks/work-on.yaml`
       for backwards compatibility — if found (either path), get repo
-      via `git remote get-url origin`, walk `projects[].match` globs;
-      use first matching entry's config.
+      via `git remote get-url origin`, walk `projects[].match_repo`
+      globs (an entry with only the retired `match:` key selects
+      nothing); use first matching entry's config.
       Top-level `fragments` are shared across all matched projects.
-   c. Fall back to `<plugin-root>/skills/work-on/references/playbook.d/coding.yaml`
+   c. Fall back to `<plugin-root>/plugins/coding/skills/work-on/references/playbook.d/coding.yaml`
 3. **VERIFY: Confirm the playbook loaded successfully.** Check that
    the read returned YAML with play steps present (either under
    `defaults.<work_type>.steps`, `overrides[].steps`, or
@@ -782,9 +800,14 @@ resolution algorithm needs.
    user override file's `fragments` map, then in the default
    playbook's `fragments` map (user fragments shadow defaults).
    Replace the reference with the fragment's steps, applying
-   any `condition` override from the reference to each expanded
-   step. Error on missing fragments; detect circular refs
-   (max depth 3).
+   any `condition` from the reference to each expanded
+   step. A fragment may itself reference a fragment (the shipping
+   fragments end with `- fragment: session-reflection`); expand
+   recursively and carry the outer `condition` inward. A step
+   that has its own `condition` keeps it: the two join as
+   `<outer> and <inner>` (e.g. `if-pr-decided and
+   solo-maintainer`), so neither one is dropped. Error on
+   missing fragments; detect circular refs (max depth 3).
 6. **Apply active modes:** Read the resolved `active_modes` — the
    matching `projects[]` entry of `~/.config/Dev10x/friction.yaml`,
    falling back to its `defaults:` block (ADR-0018) — and the project
@@ -831,11 +854,13 @@ feature branch already exists, skip the "Set up workspace" step.
 If running in a worktree with a generic branch, keep it.
 
 These plan steps become subtasks of the Phase 4 top-level task.
-The last subtask is always acceptance criteria verification.
+The last gate is always acceptance criteria verification; the
+non-blocking reflection step (GH-1822) is listed after it and
+leaves it open.
 
 ### Acceptance Criteria Verification
 
-The **last task** in every plan verifies the work is shippable
+The **terminal gate** in every plan verifies the work is shippable
 or ready for handover. This task is the session's terminal
 gate — see the empty-task-list invariant above (GH-149). It
 remains `pending` (or `in_progress` while the supervisor is
@@ -887,7 +912,11 @@ the fragment and produced two adjacent Verify-AC tasks. The
 mechanical-instantiation rule (one TaskCreate per resolved step)
 would faithfully create both.
 
-When fragment expansion yields two adjacent Verify-AC steps,
+Each Verify-AC is followed by its own reflection step carrying the
+same path condition, so the pairs are adjacent rather than the two
+Verify-AC steps themselves; the rule below applies to the pair.
+
+When fragment expansion yields two Verify-AC steps,
 they are NOT co-equal: the fragment's step is the executable DoD
 delegation *and* the terminal gate on the PR path, while the
 play-level step is the terminal gate on the no-PR path. Collapse
@@ -898,11 +927,20 @@ to one by honoring the play-level step's path condition:
   fragment terminates the plan and the play-level duplicate is
   conditioned out; on the no-PR path the fragment is skipped and
   the play-level step is the sole terminal gate.
-- If you observe two adjacent Verify-AC tasks after resolution,
-  drop the one whose path condition is not satisfied — do not
-  create both. This is the one sanctioned exception to strict
+- If you observe two Verify-AC tasks (each with its reflection
+  step) after resolution, drop the pair whose path condition is
+  not satisfied — do not create both. This is the one sanctioned exception to strict
   one-TaskCreate-per-step instantiation (GH-729/GH-928), because
   the two steps describe mutually-exclusive paths.
+- **When the path is not known yet** (`local-only` decides it in
+  Phase 4, at "Decide"), instantiate only the play-level
+  `if-no-pr` pair in Phase 3. If "Decide" picks the PR path, create
+  the shipping-fragment tasks (ending with its own Verify AC and
+  reflection) **before** removing the play-level pair, so a Verify
+  AC is open at every moment; the play-level Verify AC is then
+  `deleted` as superseded, not completed. This is the only case in
+  which a pending Verify AC may be deleted — its replacement already
+  exists, so the invariant it protects still holds.
 
 ### Example Plays (Defaults)
 
@@ -910,6 +948,33 @@ These are the built-in default plays. Full YAML definitions
 with pre-templated epic children live in the `Dev10x:playbook`
 skill. Users can customize these via
 `$Dev10x:playbook edit work-on <play>`.
+
+Every play below also ends with `[detailed] Reflect lessons into
+the knowledge vault → Dev10x:reflect`, listed after Verify
+acceptance criteria (after "Decide" in `investigation`). The trees
+omit it for brevity; Phase 3 still creates it as a task (GH-1822).
+
+Plays that ship a user-facing change (`feature`, `bugfix`,
+`local-only` on the PR path, `structured-spec`, `business`) also
+carry `[detailed] Record self-QA video and review pack →
+Dev10x:qa-scope, Dev10x:qa-self, Dev10x:review-pack` after
+the Verify (tests and lint) step and right before the review
+request — in `business`, before the review responses, since that
+play requests no review (GH-1827). The trees omit it too. It
+skips with one printed line when qa-scope finds no user-facing
+change or no environment can run the PR; it keeps the publish
+gates of the skills it delegates to. A project drops it with the
+`qa-off` mode or records without publishing with `qa-record-only`.
+
+`pr-continuation` carries the counterpart, `[detailed] Re-record
+self-QA video if the UI changed → Dev10x:review-pack,
+Dev10x:qa-self`, after Update PR description and right before
+Request re-review (GH-1848). It runs review-pack's freshness check
+(`video-freshness.py`, GH-1828) and re-records only when the pack's
+video predates the newest UI commit; otherwise it prints "Self-QA
+evidence still current". The check compares author dates, so the
+groom before it does not make the video look stale. The same two
+modes apply.
 
 **Feature from ticket** (subtasks of Phase 4):
 ```
@@ -1101,7 +1166,7 @@ The structured-spec play differs from `feature` in two ways:
 2. **Two drift-detection gates bracket Implement** — the
    spec-update gate (4.4) catches behaviour changes mid-flight;
    the spec-sync gate (4.9) catches structural drift before
-   merge. Both use `dev10x.spec.drift_detector` so they agree.
+   merge. Both use `dev10x.core.spec.drift_detector` so they agree.
 
 **Plan the commit sequence (4.5, GH-904 F1).** Same contract as
 the `feature` play: an explicit ordered per-commit plan (gitmoji,
@@ -1137,7 +1202,7 @@ Use `├─` for every node except the last at a given depth, `└─`
 for the last node, and `│` to carry the parent's vertical run
 across a nested block. Flat two-level output (e.g., the Session
 mode summary below) keeps its bullet-indent form — see
-[`references/display-conventions.md`](../../../references/display-conventions.md)
+[`references/display-conventions.md`](../../references/display-conventions.md)
 for the full hybrid convention.
 
 **Implicit approval bypass:** Skip `AskUserQuestion` ONLY when
@@ -1202,7 +1267,7 @@ before merge in a solo repo and before the team review request in a
 team repo (ADR-0022 D-3); `none` removes the supervisor's own park
 only — AI self-review and CI still run (ADR-0022 D-4). For each
 overlay, inline the documented behavior bullets from
-[`references/active-modes.md`](../../../references/active-modes.md);
+[`references/active-modes.md`](../../references/active-modes.md);
 an undocumented name emits a single warning bullet ("overlay not
 documented — verify with `Dev10x:playbook`") rather than failing.
 
@@ -1297,7 +1362,7 @@ orchestrated the plan. Include both `monitor_ci` and
 `monitor_pr` keys with the same value so callers can use
 either name without losing the routing.
 
-This ensures the PreCompact hook can inject the routing table
+This ensures the post-compaction SessionStart hook can inject the routing table
 and work type into the recovery context. Without this, the
 agent loses skill-to-action mappings after compaction (GH-477).
 Prior code-block formatting was treated as advisory — the
@@ -1680,6 +1745,10 @@ Session `da0d9c73` invoked the skill without this flag,
 causing it to skip the mandatory attended-mode gate and the
 findings file write. The playbook `prompt:` says to use
 `--unattended` — this is not advisory, it is required.
+Pass `--loop` with it (`args="--unattended --loop"`, GH-1831) so
+each round of fixes is re-reviewed by fresh reviewers until a round
+finds no defects; the loop stops at 4 rounds and hands the decision
+back instead of churning.
 
 **Auto-advance on draft PR creation:** Create the draft PR and
 immediately proceed to **Monitor CI** — this is mandatory, not
@@ -1773,7 +1842,7 @@ are unmet.
 gate recommendation is computed from the verify-acc-dod result, never
 overridden by gate framing. While **any** blocking DoD check is
 failing/pending —
-`dev10x.domain.session_rules.completion_gate_recommendation()` returns
+`dev10x.core.domain.session_rules.completion_gate_recommendation()` returns
 `GO_BACK` — you MUST NOT label, present, or auto-select "Work complete"
 as Recommended. "The requested fix is done" is not "the PR is
 merge-ready": a still-red check (e.g. open review threads) makes
@@ -1794,9 +1863,9 @@ the scope decision explicit so the DoD reflects it:
    Whether the supervisor reads PRs here is a **durable project fact**,
    not a session flag: it lives as `supervisor_review: required|none` in
    the matching `projects[]` entry of the global
-   `~/.config/Dev10x/friction.yaml` (ADR-0022 D-2; the deprecated
-   `human_review: true|false` spelling is still read until removal in
-   `0.112.0` per the deprecation register, GH-1161, ADR-0028).
+   `~/.config/Dev10x/friction.yaml` (ADR-0022 D-2).
+   The retired `human_review: true|false` key is no longer read
+   (GH-1771); run `dev10x config migrate-schema` to convert it.
    Resolve the current value via
    `mcp__cli__supervisor_review_status()` (default
    `required`) — never by reading the durable file directly — and branch:
@@ -1811,13 +1880,13 @@ the scope decision explicit so the DoD reflects it:
      auto-advance decision): "Open review threads remain and this
      project is configured for human review. How should the DoD treat
      them?" with options "Resolve threads now (Recommended)", "Change
-     the project posture — set `human_review: false` in
+     the project posture — set `supervisor_review: none` in
      `~/.config/Dev10x/friction.yaml`", and "Hand over with the check
      red — record the open threads in Verify-AC".
 3. Re-run the verify-acc-dod gate. When the checks are out of scope
-   (`human_review: false`), a green run resolves honestly to **Work
+   (`supervisor_review: none`), a green run resolves honestly to **Work
    complete** / **Monitor for review** per the table below —
-   `verify-acc-dod` reports them as "skipped (human_review: false)",
+   `verify-acc-dod` reports them as "skipped (supervisor_review: none)",
    *removed from scope* rather than silently passed.
 
 If the project is configured for human review and the supervisor has not
@@ -1837,7 +1906,7 @@ in review on this project?* The `review-deferred` mode string is still
 **merged** state — "shippable / handed off to review" is NOT
 terminal. Resolve the PR merge state (via
 `mcp__cli__pr_detect` / `verify_pr_state`) and apply
-`dev10x.domain.session_rules.completion_gate_recommendation()`:
+`dev10x.core.domain.session_rules.completion_gate_recommendation()`:
 
 - **Merged / no PR**, checks green → recommend **"Work complete"**.
 - **Open, awaiting review** (CI green, comments addressed) →
@@ -1977,7 +2046,7 @@ Common skill delegations:
 | Draft Job Story | `Dev10x:jtbd` skill (attended mode) |
 | Update ticket status | Linear MCP (see references/team-info.md) |
 | Fetch PR context | `gh pr view` + `gh pr diff` |
-| Code review | `Dev10x:review` (`--unattended`) + `Dev10x:review-fix` skills |
+| Code review | `Dev10x:review` (`--unattended --loop`) + `Dev10x:review-fix` skills |
 | Commit changes | `Dev10x:git-commit` skill |
 | Create draft PR | `Dev10x:gh-pr-create` skill (`--unattended`) |
 | Monitor CI | `Dev10x:gh-pr-monitor` skill |

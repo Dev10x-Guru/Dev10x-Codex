@@ -1,0 +1,4 @@
+interface:
+  display_name: "Voice Channel"
+policy:
+  allow_implicit_invocation: false

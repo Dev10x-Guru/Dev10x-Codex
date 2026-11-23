@@ -1,7 +1,9 @@
 """Validator: redirect raw CLI commands to their skill/tool equivalents.
 
 Loads validation rules from command-skill-map.yaml at module level.
-Only processes rules where matcher=Bash and hook_block=true.
+Blocking Bash rules (hook_block=true) deny. Advisory Bash rules that opt
+in with live_hint=true produce a non-blocking HookHint steer instead
+(GH-1725); every other advisory rule is ignored here.
 
 Supports three friction levels:
 
@@ -23,19 +25,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
-from dev10x.domain import HookInput, HookResult
-from dev10x.domain.common.bash_tokens import split_tokens
-from dev10x.domain.common.branch_name import PROTECTED_BRANCHES
-from dev10x.domain.documents.config_document import Config
-from dev10x.domain.profile_tier import ProfileTier
-from dev10x.domain.rules.validation_rule import Compensation, MatchingRule
-from dev10x.harness import is_codex
-from dev10x.validators.base import ValidatorBase
-from dev10x.validators.codex_messages import format_codex_skill_block
+from dev10x.core.domain import HookHint, HookInput, HookResult
+from dev10x.core.domain.common.bash_tokens import split_tokens
+from dev10x.core.domain.common.branch_name import PROTECTED_BRANCHES
+from dev10x.core.domain.documents.config_document import Config
+from dev10x.core.domain.profile_tier import ProfileTier
+from dev10x.core.domain.rules.validation_rule import Compensation, MatchingRule
+from dev10x.core.harness import is_codex
+from dev10x.core.validators.base import ValidatorBase
+from dev10x.core.validators.codex_messages import format_codex_skill_block
 
 if TYPE_CHECKING:
-    from dev10x.domain import HookRetry
-    from dev10x.domain.rules.rule_engine import RuleEngine
+    from dev10x.core.domain import HookRetry
+    from dev10x.core.domain.rules.rule_engine import RuleEngine
 
 
 # ── GH-963: safe direct push detection ──────────────────────────
@@ -43,7 +45,7 @@ if TYPE_CHECKING:
 # An unattended agent with no human channel and no MCP server can
 # get permanently stuck: `push_safe` is unreachable, the wrapper
 # script is blocked with "use the MCP tool", and raw `git push` is
-# blocked with "use Skill(dev10x:git)" — each block names the other
+# blocked with "use Skill(dev10x-coding:git)" — each block names the other
 # as the remedy. This narrows the `git-push` deny (Option 1 from the
 # issue) so the ordinary, safe case — a non-force push that names an
 # explicit, non-protected branch — never needs MCP or the skill at
@@ -253,6 +255,24 @@ def _first_enforced_rule(*, engine: RuleEngine, inp: HookInput) -> MatchingRule 
     )
 
 
+def _live_hint(*, engine: RuleEngine, inp: HookInput) -> HookHint | None:
+    """A non-blocking steer from an advisory rule that opted in (GH-1725).
+
+    Only reached when no blocking rule matched, so a hint never softens a
+    deny. It carries the rule's own compensation text — the same words
+    ``permission_triage`` shows after the prompt, delivered before it.
+    """
+    rule = engine.matching_hint_rule(command=inp.command)
+    if rule is None:
+        return None
+    advice = " ".join(
+        " ".join((comp.description or "").split()) for comp in rule.compensations
+    ).strip()
+    if not advice:
+        return None
+    return HookHint(message=f"💡 Dev10x steer ({rule.name}): {advice}")
+
+
 def _format_correction_msg(
     *,
     label: str,
@@ -349,11 +369,14 @@ MCP_UNAVAILABLE_HINT = (
     "  gh api repos/<owner>/<repo>/pulls/<n>\n"
     "  gh api repos/<owner>/<repo>/issues/<n>\n"
     "  gh api graphql -f query='...'   # e.g. reviewThreads state\n"
-    "Only state-CHANGING operations must wait for the wrapper — a "
-    "write is what these guardrails exist to gate. An unattended "
-    "agent told only to stop, with no named alternative, either "
-    "stalls on a prompt nobody will answer or reaches for the skip "
-    "flag; neither is the intended behaviour."
+    "State-CHANGING operations wait for the wrapper — a write is "
+    "what these guardrails exist to gate. Attended: reconnect via "
+    "`/mcp`. Unattended: record the blocker (status file, PR or "
+    "issue comment) and stop. A `cli-friction: allow raw-gh-*-write` "
+    "marker is for scripted DoD checks only, never an outage "
+    "fallback. An unattended agent told only to stop, with no named "
+    "alternative, either stalls on a prompt nobody will answer or "
+    "reaches for the skip flag; neither is the intended behaviour."
 )
 
 
@@ -362,8 +385,8 @@ _ENGINE: RuleEngine | None = None
 
 
 def _load_config(yaml_path: Path = _YAML_PATH) -> tuple[Config, RuleEngine]:
-    from dev10x.config.loader import load_config
-    from dev10x.domain.rules.rule_engine import RuleEngine
+    from dev10x.core.config.loader import load_config
+    from dev10x.core.domain.rules.rule_engine import RuleEngine
 
     full = load_config(yaml_path=yaml_path)
     engine = RuleEngine.from_config(config=full)
@@ -398,6 +421,8 @@ def _get_config_and_engine() -> tuple[Config, RuleEngine]:
 # the routed-CLI map in .claude/rules/mcp-tools.md has claimed all along
 # were steered to pr_get / pr_ready — GH-1211 reasoned from that claim.
 # "--git-dir" and "--work-tree" gate git-dir-worktree-pinning (GH-1496).
+# "gog" gates the gog-global-flags-first live hint (GH-1725): a hint rule
+# is dropped by this fast path exactly as a blocking rule would be.
 # test_literal_pattern_contains_a_quick_token pins the invariant so a new
 # blocking rule cannot ship inert.
 # The fast-path filter is intentionally broad — evaluate_command() still
@@ -422,6 +447,7 @@ _QUICK_TOKENS = frozenset(
         "pr ready",
         "--git-dir",
         "--work-tree",
+        "gog",
     ]
 )
 
@@ -625,17 +651,17 @@ class SkillRedirectValidator(ValidatorBase):
         cmd_lower = inp.command.lower()
         return any(token in cmd_lower for token in _QUICK_TOKENS)
 
-    def validate(self, inp: HookInput) -> HookResult | None:
+    def validate(self, inp: HookInput) -> HookResult | HookHint | None:
         if BOOLEAN_SKIP_RE.match(inp.command):
             return HookResult(message=UNRATIONALIZED_SKIP_MSG)
         config, engine = _get_config_and_engine()
         rule = _first_enforced_rule(engine=engine, inp=inp)
         if rule is None:
-            return None
+            return _live_hint(engine=engine, inp=inp)
         comp = rule.compensations[0] if rule.compensations else None
         if not comp:
             return None
-        if comp.skill == "dev10x:git-commit" and _WRONG_TEMP_PATH_RE.search(inp.command):
+        if comp.skill == "dev10x-coding:git-commit" and _WRONG_TEMP_PATH_RE.search(inp.command):
             return HookResult(message=_COMMIT_HEAL_MSG)
         label = _rule_label(rule=rule)
         if comp.type == "use-alternative":
@@ -654,7 +680,7 @@ class SkillRedirectValidator(ValidatorBase):
         return HookResult(message=msg)
 
     def correct(self, inp: HookInput) -> HookRetry | None:
-        from dev10x.domain import HookRetry as _HookRetry
+        from dev10x.core.domain import HookRetry as _HookRetry
 
         _, engine = _get_config_and_engine()
         rule = _first_enforced_rule(engine=engine, inp=inp)

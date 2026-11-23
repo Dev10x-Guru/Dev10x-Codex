@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from dev10x.ci_review.process import run_checked
+from dev10x.core.domain.common.repository_ref import RepositoryRef
 from dev10x.core.domain.common.result import ErrorResult, Result, err, ok
 
 log = logging.getLogger(__name__)
@@ -59,9 +60,12 @@ def cache_root() -> Path:
     return Path(base) / "dev10x" / "ci-review"
 
 
-def run_dir_for(*, repo: str, pr: int, workflow: str, now: datetime) -> Path:
+def run_dir_for(*, repo: str, pr: int, workflow: str, now: datetime) -> Result[Path]:
+    ref = RepositoryRef.try_parse(repo)
+    if ref is None:
+        return err(f"--repo {repo!r} is not an owner/name pair")
     stamp = now.strftime("%Y%m%dT%H%M%SZ")
-    return cache_root() / repo.replace("/", "-") / f"pr-{pr}" / f"{stamp}-{workflow}"
+    return ok(cache_root() / f"{ref.owner}-{ref.name}" / f"pr-{pr}" / f"{stamp}-{workflow}")
 
 
 def fetch_refs(*, repo_root: Path, base: str, pr: int) -> Result[Refs]:
@@ -88,6 +92,16 @@ def fetch_refs(*, repo_root: Path, base: str, pr: int) -> Result[Refs]:
 
 def read_blob(*, repo_root: Path, sha: str, path: str) -> Result[str]:
     return _git(repo_root=repo_root, args=["git", "show", f"{sha}:{path}"])
+
+
+def changed_files(*, repo_root: Path, merge_sha: str) -> Result[list[str]]:
+    listed = _git(
+        repo_root=repo_root,
+        args=["git", "diff", "--name-only", f"{merge_sha}^1", merge_sha],
+    )
+    if isinstance(listed, ErrorResult):
+        return listed
+    return ok([line for line in listed.value.splitlines() if line])
 
 
 def require_base_scripts(*, repo_root: Path, base: str, base_sha: str) -> Result[None]:

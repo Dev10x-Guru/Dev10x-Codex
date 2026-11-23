@@ -2,12 +2,12 @@
 name: linear
 description: 'Linear issue tracker operations via MCP tools. Get, create, update issues and list comments. Documentation-only skill — no scripts. TRIGGER when: performing CRUD operations on Linear issues, comments, or statuses. DO NOT TRIGGER when: using GitHub Issues or JIRA (use Dev10x:jira), or creating tickets across trackers (use Dev10x:ticket-create).'
 metadata:
-  upstream: skills/linear/SKILL.md
+  upstream: plugins/scoping/skills/linear/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/linear/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/scoping/skills/linear/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/linear/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/scoping/skills/linear/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 > **In Codex:** Needs a Linear MCP server configured in Codex; its tool names replace the mcp__claude_ai_Linear__* names used here.
 

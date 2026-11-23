@@ -61,6 +61,17 @@ orchestrated by `dev10x:onboarding` (bootstrap mode) and
 **Announce:** "Using plugin-maintenance to keep Dev10x permission
 settings and config files in shape."
 
+> **[OVERRIDE DETECTED]** — ~1090 lines against the 200-line SKILL.md
+> budget (GH-1705). The numbered steps write settings files, and each
+> carries its own backup, consent gate and mode tag (`[bootstrap]` /
+> *full only*) that the § Orchestration task lists must match — GH-1127
+> was that table drifting out of step. Keeping steps and task lists in
+> one file is what lets a reviewer check them against each other.
+> **Split plan:** move the two Preflight sections and § First-Time
+> Setup to `references/preflight.md`, then move each § Workflow step's
+> body to `references/steps/<n>.md`, leaving the step heading, its
+> mode tag and its gate inline.
+
 ## Modes
 
 | Mode | Steps | When to use |
@@ -367,6 +378,8 @@ lives outside its main checkout (a herdr root such as
 opt-in because each entry widens the Read/Edit scope of every session.
 `merge-worktree` re-anchors rules pinned inside any worktree, whatever
 its layout, to the main checkout.
+A registered root also stops read-only Bash commands (`rg`, `cat`) from
+prompting on sibling-worktree paths (GH-1710, Claude Code 2.1.316).
 
 ## Workflow
 
@@ -377,7 +390,13 @@ In `bootstrap` mode, run only the steps marked **[bootstrap]**.
 ### 1. Update version paths *(full only)*
 
 Bump versioned plugin paths in every settings file to the current
-plugin version.
+plugin version. The same run moves a rule for a skill that now ships
+in a satellite plugin (`extracted:` in `plugins.yaml`) from core's
+directory to the satellite's, so an extraction does not strand its
+script grants (GH-1793). The dry run reports these as
+`Would move N rule(s) to satellite plugin directories`: they relocate
+existing grants, they do not remove them, and a `deny` or `ask` rule
+keeps its original next to the relocated copy.
 
 1. Dry run (REQUIRED — always show the user the planned changes
    before applying):
@@ -397,6 +416,12 @@ uvx dev10x permission update-paths --dry-run --summary
 ```bash
 uvx dev10x permission update-paths
 ```
+
+A dotfiles repo that tracks `~/.claude/settings.json` makes this step
+print `SKIP (git-tracked)` for it, and its version-pinned rules go stale
+on every upgrade (GH-1868). `--global` lifts the guard for that one
+file, as it does for `ensure-base`; project files that git tracks stay
+skipped. See [Tracked user settings](#tracked-user-settings-gh-1868).
 
 ### 2. Migrate config files **[bootstrap]**
 
@@ -603,6 +628,13 @@ look protected while enforcing nothing. Additive only: an existing
 value (even an invalid one) is left untouched, since overwriting it
 is a human decision, not a maintenance-pass default.
 
+A user who runs every session in auto mode opts out of
+`disableAutoMode` with `safety_keys: [disableBypassPermissionsMode]`
+in `~/.config/Dev10x/safety-keys.yaml` (GH-1856). This step,
+`ensure-base` and worktree seeding then skip that key, and the first
+two print a `Not enforced (opted out ...)` line; the catalog rules are
+still seeded.
+
 1. Dry run:
 
 ```bash
@@ -616,7 +648,7 @@ uvx dev10x permission ensure-safety-keys
 ```
 
 Verify with `uvx dev10x permission doctor safety-keys` — it exits
-non-zero on any settings file where either key is absent or holds
+non-zero on any settings file where an enforced key is absent or holds
 anything other than `"disable"`. This is a restriction, not a grant,
 so it is a different judgement from the allow-rule catalog's
 shrink-only backlog (see
@@ -634,10 +666,33 @@ wildcard patterns that work across future sessions.
 uvx dev10x permission generalize --dry-run
 ```
 
-2. Apply:
+2. Gate (GH-1868). Each `old → new` line widens a one-off grant into a
+   `:*` wildcard, so the dry run is a proposal, not a formality.
+   Rules with an env-assignment prefix
+   (`env PLANTUML_SECURITY_PROFILE=UNSECURE …`) or a name that says
+   they handle secrets or credentials (`secrets.sh`, `aws.sh`,
+   `*token*`, `*vault*`) are never widened; the dry run lists them as
+   `HELD`. Read the remaining lines for scripts that act on their own
+   arguments in a way a wildcard should not pre-approve — a script that
+   edits settings, deletes, or deploys.
+   When the dry run proposes any rewrite, **REQUIRED: Call
+   `AskUserQuestion`** (do NOT use plain text). Options:
+   - Apply all
+   - Apply, excluding some — ask which rules to keep exact, then pass
+     one `--exclude '<substring or glob>'` per rule
+   - Skip this step
+
+   Compute the `(Recommended)` option from the dry-run output and list
+   it first: "Apply all" when every proposed line only drops a session
+   id, ticket id, PR number or temp-file hash; "Apply, excluding some"
+   when the odd ones out can be named; "Skip this step" otherwise.
+   Unattended runs apply only in the first case and skip otherwise.
+
+3. Apply:
 
 ```bash
 uvx dev10x permission generalize
+uvx dev10x permission generalize --exclude 'flux-capacitor-toggle.py'
 ```
 
 **What gets generalized:**
@@ -784,6 +839,22 @@ all worktrees and merges them back.
 uvx dev10x permission merge-worktree --dry-run
 ```
 
+   When the dry run lists rules under "held back" for a reason other
+   than "declined by the supervisor", **REQUIRED: Call
+   `AskUserQuestion`** (do NOT use plain text) once, naming each such
+   rule and its reason (GH-1800). Options:
+   - Decline them — re-run the apply below with one
+     `--exclude '<rule>'` per rule, so later runs stop listing them
+   - Leave undecided — apply without `--exclude`; they stay held
+     and are listed again next run
+   - Grant one deliberately — hand it to `dev10x:permission-grant`,
+     which triages it before anything is written
+
+   Mark the recommendation from state, never by default: when a held
+   rule is already in the main checkout's allow list, the supervisor
+   put it there, so "Leave undecided" leads; otherwise "Decline them"
+   leads. Rules held only because they were declined need no question.
+
 2. Apply:
 
 ```bash
@@ -792,6 +863,12 @@ uvx dev10x permission merge-worktree
 
 Session-specific noise is filtered out automatically; only
 stable, reusable permissions are merged.
+Blanket rules (a whole shell, interpreter or egress tool, a write over
+`~/.claude`), rules a plugin hook denies, and declined rules are listed
+under "held back" and never merged (GH-1790).
+To keep a rule out for good, pass `--exclude '<rule>'`; it is recorded
+in `~/.config/Dev10x/declined-permissions.yaml`, so removing it from
+the main checkout by hand no longer gets undone by the next run.
 
 3. Keep Dev10x's own session state out of `git status` (GH-1275):
 
@@ -854,6 +931,12 @@ HIGH finding unattended:
 ```
 Skill(skill="dev10x:permission-audit-apply", args="--severity-max=HIGH")
 ```
+
+**Auto mode (GH-1868).** The auto mode classifier can deny the
+auditor's reads of user-level settings and the apply skill's edits to
+them. A denial is not a failure of the pass: record the change as
+handed over to the supervisor and continue. The rules for that case
+are in `skills/upgrade-cleanup/references/auto-mode.md`.
 
 ### 11. Clean project files *(full only)*
 
@@ -935,6 +1018,28 @@ uvx dev10x permission clean --restore
 
 **Leaked secret detection:** Rules containing plaintext
 credentials are flagged with warnings so users can rotate them.
+
+#### Tracked user settings (GH-1868)
+
+The default `clean` only migrates the user `~/.claude/settings.json`;
+it never prunes it. A file kept in a dotfiles repo therefore piles up
+rules pinned to old plugin versions with nothing to remove them. When
+`catalog-gap` or the dry run of step 1 names that file, offer the
+opt-in pass:
+
+```bash
+uvx dev10x permission update-paths --global --dry-run
+uvx dev10x permission clean --global --dry-run
+```
+
+`clean --global` gives the user file the same default clean as a
+project file: old versions, env noise, shell fragments, double-slash
+typos. It never deduplicates the file against itself, even under
+`--aggressive`. Apply only after the supervisor has seen both dry runs,
+and say the change lands in the dotfiles repo's working tree for them
+to commit. Rules these classes do not cover (an uppercase `Dev10x/`
+Read glob, a direct-script rule a skill now wraps) still need a
+hand edit — the auditor reports them as `manual` findings.
 
 ### 12. Run permission doctor *(full only)* (GH-99)
 
@@ -1069,6 +1174,14 @@ flag list.
 |------|---------|
 | `--version VER` | Target a specific version instead of latest |
 | `--restore` | Restore settings from most recent backups |
+| `--global` | Also rewrite a git-tracked `~/.claude/settings.json` (GH-1868) |
+
+### `clean` and `generalize` extras
+
+| Flag | Purpose |
+|------|---------|
+| `clean --global` | Also prune stale rules from `~/.claude/settings.json` (GH-1868) |
+| `generalize --exclude PAT` | Keep rules matching a substring or glob exact; repeatable (GH-1868) |
 
 > First-time userspace config seeding is a separate subcommand,
 > `uvx dev10x permission init` (formerly the `update-paths --init`

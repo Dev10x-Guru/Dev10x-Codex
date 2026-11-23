@@ -1,5 +1,5 @@
 # playbook.yaml — Investigation workflow plays for Dev10x:investigate
-# Default location: <plugin-root>/skills/investigate/references/playbook.yaml
+# Default location: <plugin-root>/plugins/coding/skills/investigate/references/playbook.yaml
 # User overrides (see references/config-resolution.md):
 #   1. .claude/Dev10x/playbooks/investigate.yaml (project-local)
 #   2. ~/.config/Dev10x/playbooks/investigate.yaml (global + repo match)

@@ -2,12 +2,12 @@
 name: audit-file
 description: 'File skill-audit findings as a GitHub issue at the plugin repo that owns the offending skill. Invoked by skill-audit Phase 7 with the target repo confirmed at its destination gate. TRIGGER when: skill-audit Phase 7 completes and user opts to file upstream. DO NOT TRIGGER when: no audit findings exist, or user wants to review findings before filing.'
 metadata:
-  upstream: skills/audit-file/SKILL.md
+  upstream: plugins/teach/skills/audit-file/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/audit-file/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/teach/skills/audit-file/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/audit-file/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/teach/skills/audit-file/`.
 > **Not supported in Codex yet**: this skill depends on Claude Code features Codex lacks (Dev10x-Codex#17). Use it from Claude Code; Codex runs it only when invoked by name.
 
 # Audit Report — File Findings Upstream

@@ -7,17 +7,17 @@ from pathlib import Path
 
 import pytest
 import yaml
-from dev10x.domain.common.result import ErrorResult, SuccessResult
-from dev10x.domain.dev10x_paths import Dev10xConfigDir
-from dev10x.domain.file_locks import LockTimeoutError
-from dev10x.skills.permission.catalog_write import seed_worktree
-from dev10x.skills.permission.granted_catalog import (
+
+from dev10x.core.domain.common.result import ErrorResult, SuccessResult
+from dev10x.core.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.core.domain.file_locks import LockTimeoutError
+from dev10x.core.skills.permission import catalog_load, enumerate_mcp, rule_list_file
+from dev10x.core.skills.permission.catalog_write import seed_worktree
+from dev10x.core.skills.permission.granted_catalog import (
     load_granted_rules,
     remember_granted_rule,
     with_granted_rules,
 )
-
-from dev10x.skills.permission import catalog_load, enumerate_mcp, granted_catalog
 
 RULE = "Bash(npm ci:*)"
 
@@ -71,7 +71,7 @@ class TestRememberGrantedRule:
         def _locked(_path: Path) -> None:
             raise LockTimeoutError("held")
 
-        monkeypatch.setattr(granted_catalog, "locked_yaml_update", _locked)
+        monkeypatch.setattr(rule_list_file, "locked_yaml_update", _locked)
 
         result = remember_granted_rule(rule=RULE)
 

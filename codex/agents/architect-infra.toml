@@ -1,4 +1,4 @@
-# Generated from agents/architect-infra.md by `dev10x skill codex-agents` — edit the upstream agent, not this file.
+# Generated from plugins/scoping/agents/architect-infra.md by `dev10x skill codex-agents` — edit the upstream agent, not this file.
 name = "Dev10x:architect-infra"
 description = "Evaluate infrastructure decisions — deployment strategies, CI/CD pipeline design, Docker patterns, observability, and environment management. Used by adr-evaluate for infrastructure ADRs. Triggers: invoked by adr-evaluate skill for infrastructure ADRs"
 model_reasoning_effort = "medium"

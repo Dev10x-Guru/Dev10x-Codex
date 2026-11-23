@@ -2,12 +2,12 @@
 name: git-promote
 description: 'Convert existing git commits into issue tracker tickets with proper branch management and commit message formatting. Automates creating the ticket, branching, cherry-picking, and updating the commit message. TRIGGER when: a commit needs to be retroactively tracked with a ticket, typically for tech debt fixes, bug fixes, or improvements committed without a ticket reference. DO NOT TRIGGER when: commit already has a ticket reference, or creating a new ticket before committing (use Dev10x:ticket-create).'
 metadata:
-  upstream: skills/git-promote/SKILL.md
+  upstream: plugins/coding/skills/git-promote/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/git-promote/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/git-promote/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/git-promote/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/git-promote/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Commit to Ticket

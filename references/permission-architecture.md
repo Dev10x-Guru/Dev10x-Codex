@@ -39,6 +39,17 @@ docs](https://code.claude.com/docs/en/permissions.md). The
 § "Why deny rules cannot fix the footgun" section below depends
 on this ordering; keep the two consistent.
 
+**An allow rule does not lift the working-directory check (GH-1710).**
+Re-tested on Claude Code 2.1.316: with `Bash(rg:*)` allowed, `rg` on a
+path outside every working directory still prompted, offering to allow
+reading that directory. So `additionalDirectories` relieves read-only
+Bash friction too, not only the Read/Write/Edit tools — which is why
+`permission_grant` triage answers `outside-workdir` rather than
+granting, for the read verbs it checks (`_READ_VERBS` in `grant.py`:
+`rg`, `cat`, `grep`, `ls` and the like). The result is a manual
+observation, not pinned by a test. It removes a prompt; it is not a
+protection boundary.
+
 **Not to be confused with `resolve_effect()`** — the Dev10x
 resolver in `src/dev10x/domain/common/policy_resolution.py`
 models a *different* axis: precedence **between config tiers**
@@ -67,11 +78,11 @@ redirects to skill equivalents with educational messages:
 
 | Allow rule | Hook blocks | Redirects to | Guardrails |
 |-----------|-------------|-------------|------------|
-| `Bash(gh pr create:*)` | `gh pr create` | `dev10x:gh-pr-create` | Job Story, ticket linking |
-| `Bash(git push:*)` | `git push` | `dev10x:git` | Protected branches, force-push safety |
-| `Bash(git rebase -i:*)` | `git rebase -i` | `dev10x:git-groom` | Atomic commits, conventions |
-| `Bash(git commit -m:*)` | `git commit -m` | `dev10x:git-commit` | Gitmoji, JTBD title, 72-char |
-| `Bash(gh pr checks:*)` | `gh pr checks --watch` | `dev10x:gh-pr-monitor` | Failure detection, fixups |
+| `Bash(gh pr create:*)` | `gh pr create` | `dev10x-coding:gh-pr-create` | Job Story, ticket linking |
+| `Bash(git push:*)` | `git push` | `dev10x-coding:git` | Protected branches, force-push safety |
+| `Bash(git rebase -i:*)` | `git rebase -i` | `dev10x-coding:git-groom` | Atomic commits, conventions |
+| `Bash(git commit -m:*)` | `git commit -m` | `dev10x-coding:git-commit` | Gitmoji, JTBD title, 72-char |
+| `Bash(gh pr checks:*)` | `gh pr checks --watch` | `dev10x-coding:gh-pr-monitor` | Failure detection, fixups |
 
 These allow rules are classified as `HOOK_ENABLED` in permission
 audits. Removing them degrades UX — the user sees a generic

@@ -10,9 +10,9 @@
 default_language_version:
   python: python3.12
 
-# GH-1692: the supervisor page bundle is build output; the SPA workflow
+# GH-1692: the Overwatch page bundle is build output; the SPA workflow
 # checks it byte-for-byte against a fresh `pnpm build`.
-exclude: ^src/dev10x/comm/supervisor/static/
+exclude: ^src/dev10x/comm/overwatch/static/
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -71,7 +71,7 @@ repos:
         pass_filenames: false
         always_run: true
 
-      # GH-1414: a PEP 723 script cannot import dev10x.subprocess_utils,
+      # GH-1414: a PEP 723 script cannot import dev10x.core.subprocess_utils,
       # so it must bound its own subprocess calls — otherwise a stalled
       # `gh` or a keyring daemon with no TTY hangs an unattended run
       # until morning.

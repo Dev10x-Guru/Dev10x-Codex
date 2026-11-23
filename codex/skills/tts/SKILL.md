@@ -2,12 +2,12 @@
 name: tts
 description: 'Synthesize narration audio from text with a local voice — Kokoro for English, Piper for Polish and everything else — and lay rendered lines onto a timeline as a single voice-over track for muxing over a screen recording. TRIGGER when: narration or voice-over audio is needed for a walkthrough recording, or a Dev10x:qa-self capture should be narrated. DO NOT TRIGGER when: capturing the recording itself (use Dev10x:qa-self), or converting/verifying evidence files (use qa-self''s own scripts).'
 metadata:
-  upstream: skills/tts/SKILL.md
+  upstream: plugins/qa/skills/tts/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/tts/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/qa/skills/tts/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/tts/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/qa/skills/tts/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:tts — narration, routed by language
@@ -76,12 +76,12 @@ command to fix whichever is missing. `ffmpeg` is required only for `track`.
 | `track` | Lay rendered segments at their offsets onto one voice-over WAV |
 
 ```bash
-<plugin-root>/skills/tts/scripts/synthesize.py check --lang pl
+<plugin-root>/plugins/qa/skills/tts/scripts/synthesize.py check --lang pl
 
 echo '{"segments":[{"id":"tc1","text":"One click assigns them."}]}' \
-  | <plugin-root>/skills/tts/scripts/synthesize.py batch --out-dir vo
+  | <plugin-root>/plugins/qa/skills/tts/scripts/synthesize.py batch --out-dir vo
 
-<plugin-root>/skills/tts/scripts/synthesize.py \
+<plugin-root>/plugins/qa/skills/tts/scripts/synthesize.py \
   track --segments-file vo/narration.json --out vo/track.wav
 ```
 
@@ -127,7 +127,7 @@ Options:
 On either *Switch* / *Keep*, persist the answer so it is asked once:
 
 ```bash
-<plugin-root>/skills/tts/scripts/synthesize.py \
+<plugin-root>/plugins/qa/skills/tts/scripts/synthesize.py \
   pin --voice af_heart --accept-licence
 ```
 

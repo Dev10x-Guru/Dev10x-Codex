@@ -22,13 +22,13 @@ import logging
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol
 
-from dev10x.domain.common.plugin_loader import PluginLoader
-from dev10x.domain.common.rule_id import RuleId
-from dev10x.domain.profile_tier import ProfileTier
+from dev10x.core.domain.common.plugin_loader import PluginLoader
+from dev10x.core.domain.common.rule_id import RuleId
+from dev10x.core.domain.profile_tier import ProfileTier
 
 if TYPE_CHECKING:
-    from dev10x.domain import HookAllow, HookAsk, HookInput, HookResult, HookRetry
-    from dev10x.validators.base import Validator
+    from dev10x.core.domain import HookInput, HookResult, HookRetry
+    from dev10x.core.validators.base import ValidateResult, Validator
 
 log = logging.getLogger(__name__)
 
@@ -174,7 +174,7 @@ class ValidatorRegistry:
 
     @staticmethod
     def _instantiate(spec: ValidatorSpec) -> Validator:
-        from dev10x.validators.base import Validator as V
+        from dev10x.core.validators.base import Validator as V
 
         # Strict Plugin load (#844): a spec naming a missing class or a
         # non-Validator raises at load time; _assert_metadata_matches then
@@ -196,7 +196,7 @@ def _assert_metadata_matches(*, instance: Validator, spec: ValidatorSpec) -> Non
     Raised explicitly rather than asserted (GH-1419). `-O` /
     `PYTHONOPTIMIZE` strips `assert` statements, and what these three
     checks guard is the enforcement tier a rule registers at
-    (`.claude/rules/hook-patterns.md` § Profile Tiers) — a mismatch
+    (`.claude/rules/hook-validator-profiles.md` § Profile Tiers) — a mismatch
     stripped at runtime lets a rule silently register at the wrong tier.
     Nothing in this repo runs optimized today, so the exposure is
     theoretical; the cost of closing it is one line per site.
@@ -252,14 +252,14 @@ class ValidatorChain:
 
     registry: ValidatorRegistry
 
-    def run(self, inp: HookInput) -> list[HookResult | HookAllow | HookAsk]:
+    def run(self, inp: HookInput) -> list[ValidateResult]:
         """Invoke ``validate()`` on every applicable validator.
 
         Returns the list of non-None results in registration order;
         callers emit each in turn. When a safety-critical validator
         raises, a fail-closed block is appended in its place (GH-494).
         """
-        results: list[HookResult | HookAllow | HookAsk] = []
+        results: list[ValidateResult] = []
         for validator in self.registry.active():
             try:
                 if not validator.should_run(inp=inp):
@@ -277,7 +277,7 @@ class ValidatorChain:
 
     def correct(self, inp: HookInput) -> HookRetry | None:
         """Invoke ``correct()`` on capable validators; first hit wins."""
-        from dev10x.validators.base import Corrector
+        from dev10x.core.validators.base import Corrector
 
         for validator in self.registry.active():
             if not isinstance(validator, Corrector):
@@ -296,24 +296,24 @@ class ValidatorChain:
 
 def _stamp_rule_id(
     *,
-    result: HookResult | HookAllow | HookAsk,
+    result: ValidateResult,
     validator: Validator,
-) -> HookResult | HookAllow | HookAsk:
+) -> ValidateResult:
     """Attribute a decision to the validator that produced it (GH-1095).
 
     Only the chain knows which validator spoke, so it stamps ``rule_id``
     here. A validator that already set one keeps it — the stamp never
-    overwrites a deliberate value. ``HookAllow`` carries no ``rule_id``
-    field and passes through untouched; attribution matters for the
-    decisions that cost the user something (deny, ask).
+    overwrites a deliberate value. ``HookAllow`` is stamped too since an
+    allow can skip the prompt (GH-1795): an auto-approval nobody can
+    attribute is one nobody can audit.
 
     The domain types are imported inside the function — the same
     deferred-import pattern :func:`_safety_fail_closed` uses — so the
     module keeps its ``TYPE_CHECKING``-only import boundary.
     """
-    from dev10x.domain import HookAsk, HookResult
+    from dev10x.core.domain import HookAllow, HookAsk, HookHint, HookResult
 
-    if not isinstance(result, HookResult | HookAsk):
+    if not isinstance(result, HookResult | HookAsk | HookHint | HookAllow):
         return result
     if result.rule_id:
         return result
@@ -350,7 +350,7 @@ def _safety_fail_closed(*, validator: Validator) -> HookResult | None:
     """
     if getattr(validator, "profile", None) is not ProfileTier.MINIMAL:
         return None
-    from dev10x.domain import HookResult
+    from dev10x.core.domain import HookResult
 
     rule_id = getattr(validator, "rule_id", "?")
     name = getattr(validator, "name", "?")

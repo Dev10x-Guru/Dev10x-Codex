@@ -1,4 +1,4 @@
-"""Unit tests for dev10x.github.pattern_validation (GH-348).
+"""Unit tests for dev10x.coding.github.pattern_validation (GH-348).
 
 Contract class: mock
   Token matching and FP estimation are pure functions tested without
@@ -9,24 +9,14 @@ Contract class: mock
 from __future__ import annotations
 
 import json
-import subprocess
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from dev10x.domain.common.result import ErrorResult, SuccessResult, err, ok
 
-pv = pytest.importorskip("dev10x.github.pattern_validation", reason="dev10x not installed")
+from dev10x.core.domain.common.result import ErrorResult, SuccessResult, err, ok
+from tests.fakers.process import completed as _completed
 
-
-def _completed(
-    *,
-    returncode: int = 0,
-    stdout: str = "",
-    stderr: str = "",
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(
-        args=[], returncode=returncode, stdout=stdout, stderr=stderr
-    )
+pv = pytest.importorskip("dev10x.coding.github.pattern_validation", reason="dev10x not installed")
 
 
 def _pattern(*, signature: str = "rename pm payment_method", frequency: int = 7) -> dict:
@@ -149,8 +139,8 @@ class TestValidatePatterns:
 
 class TestValidateCandidatePatterns:
     @pytest.mark.asyncio
-    @patch("dev10x.github.pattern_validation._recent_diffs", new_callable=AsyncMock)
-    @patch("dev10x.github.review_patterns.cluster_review_comments", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pattern_validation._recent_diffs", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.review_patterns.cluster_review_comments", new_callable=AsyncMock)
     async def test_happy_path_validates_and_summarizes(
         self, mock_cluster: AsyncMock, mock_diffs: AsyncMock
     ) -> None:
@@ -171,7 +161,7 @@ class TestValidateCandidatePatterns:
         mock_diffs.assert_awaited_once_with(repo="o/r", limit=20)
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.review_patterns.cluster_review_comments", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.review_patterns.cluster_review_comments", new_callable=AsyncMock)
     async def test_propagates_mining_error(self, mock_cluster: AsyncMock) -> None:
         mock_cluster.return_value = err("no repository specified")
 
@@ -183,8 +173,8 @@ class TestValidateCandidatePatterns:
 
 class TestRecentDiffs:
     @pytest.mark.asyncio
-    @patch("dev10x.github.pattern_validation._pr_diff", new_callable=AsyncMock)
-    @patch("dev10x.github.pattern_validation._merged_pr_numbers", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pattern_validation._pr_diff", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pattern_validation._merged_pr_numbers", new_callable=AsyncMock)
     async def test_collects_non_empty_diffs(
         self, mock_numbers: AsyncMock, mock_diff: AsyncMock
     ) -> None:
@@ -196,7 +186,7 @@ class TestRecentDiffs:
         assert diffs == ["+ added one"]
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pattern_validation._merged_pr_numbers", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pattern_validation._merged_pr_numbers", new_callable=AsyncMock)
     async def test_returns_empty_on_number_lookup_error(self, mock_numbers: AsyncMock) -> None:
         mock_numbers.return_value = err("gh pr list failed")
 
@@ -205,7 +195,7 @@ class TestRecentDiffs:
 
 class TestMergedPrNumbers:
     @pytest.mark.asyncio
-    @patch("dev10x.github.pattern_validation.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pattern_validation.async_run", new_callable=AsyncMock)
     async def test_parses_numbers(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _completed(stdout=json.dumps([{"number": 7}, {"number": 9}]))
         result = await pv._merged_pr_numbers(repo="o/r", limit=50)
@@ -213,7 +203,7 @@ class TestMergedPrNumbers:
         assert result.value == [7, 9]
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pattern_validation.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pattern_validation.async_run", new_callable=AsyncMock)
     async def test_error_on_nonzero_returncode(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _completed(returncode=1, stderr="boom")
         result = await pv._merged_pr_numbers(repo="o/r", limit=50)
@@ -221,7 +211,7 @@ class TestMergedPrNumbers:
         assert result.error == "boom"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pattern_validation.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pattern_validation.async_run", new_callable=AsyncMock)
     async def test_error_on_unparseable_json(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _completed(stdout="not json")
         result = await pv._merged_pr_numbers(repo="o/r", limit=50)
@@ -230,13 +220,13 @@ class TestMergedPrNumbers:
 
 class TestPrDiff:
     @pytest.mark.asyncio
-    @patch("dev10x.github.pattern_validation.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pattern_validation.async_run", new_callable=AsyncMock)
     async def test_returns_diff_text(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _completed(stdout="+ added line")
         assert await pv._pr_diff(repo="o/r", pr_number=3) == "+ added line"
 
     @pytest.mark.asyncio
-    @patch("dev10x.github.pattern_validation.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.github.pattern_validation.async_run", new_callable=AsyncMock)
     async def test_returns_none_on_failure(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _completed(returncode=1, stderr="404")
         assert await pv._pr_diff(repo="o/r", pr_number=3) is None

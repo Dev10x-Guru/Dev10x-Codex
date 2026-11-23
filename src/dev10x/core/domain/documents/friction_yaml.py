@@ -3,7 +3,7 @@
 One file per machine, keyed by project dir-path globs, cross-repo by
 design (ADR-0018). Unlike the per-repo ``config.yaml`` and the
 per-worktree ``session.yaml`` (see
-:mod:`dev10x.domain.documents.session_yaml`), this document outlives
+:mod:`dev10x.core.domain.documents.session_yaml`), this document outlives
 every checkout it names — which is why it carries garbage-collection
 semantics (:func:`reap_dead_projects`) and the repo-identity helpers
 that key its ``projects[]`` entries (:func:`repo_stem`,
@@ -24,10 +24,11 @@ from typing import Any
 
 import yaml
 
-from dev10x.domain.dev10x_paths import Dev10xConfigDir
-from dev10x.domain.documents.yaml_mapping import load_yaml_mapping
-from dev10x.domain.file_locks import atomic_write_text, file_lock
-from dev10x.domain.gate_policy import SUPERVISOR_REVIEW_REQUIRED
+from dev10x.core.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.core.domain.documents.yaml_mapping import load_yaml_mapping
+from dev10x.core.domain.file_locks import atomic_write_text, file_lock
+from dev10x.core.domain.gate_policy import SUPERVISOR_REVIEW_REQUIRED
+from dev10x.core.domain.linked_worktree import main_checkout
 
 # Durable preference keys (ADR-0018). The global ``friction.yaml`` and the
 # legacy per-repo ``config.yaml`` both carry a subset of these; readers
@@ -40,10 +41,12 @@ _DURABLE_KEYS = (
     "gate_preset",
     "gate_overlays",
     "gate_overrides",
+    # Retired (GH-1771): no gate reads it. Kept so `dev10x config
+    # migrate-schema` still sees it and converts it to `supervisor_review`,
+    # like `friction_level` above.
     "human_review",
     # ADR-0022 D-2: does the supervisor read this PR before the next step is
-    # allowed? `required` | `none`. Supersedes `human_review`, which is kept
-    # above as a deprecated alias (removal: dev10x.domain.deprecations).
+    # allowed? `required` | `none`.
     "supervisor_review",
     "protected_branches",
     # Which issue tracker this project uses, so `ensure-base` seeds that
@@ -63,6 +66,13 @@ _DURABLE_KEYS = (
     # format it authors (e.g. `.ipynb`) once, for every session and
     # worktree, instead of every caller exporting an env var.
     "dx017",
+    # DX019 (GH-1830): `required` walls merge_pr / pr_ready / request_review
+    # behind a clean-review stamp at the PR head; absent or `none` leaves them
+    # alone.
+    "review_stamp",
+    # DX020 (GH-1835): `dx020.mode` (advisory | deny) and
+    # `dx020.skill_keywords.{add,remove}` tune the Agent-brief check.
+    "dx020",
 )
 
 # Public alias for cross-module callers (e.g. the GH-812 R4 migration) that
@@ -105,7 +115,7 @@ def match_globs(toplevel: str, patterns: Any) -> bool:
     keep the globs forgiving, mirroring ``projects.yaml`` matching.
 
     This is the canonical PATH-scheme glob matcher (GH-1450) —
-    :func:`dev10x.domain.project_match.matches` calls it directly for
+    :func:`dev10x.core.domain.project_match.matches` calls it directly for
     ``MatchScheme.PATH`` rather than maintaining a second, hand-mirrored
     implementation. A config-drift scan exists specifically to catch a
     human unable to see policy drift by reading one file; the drift
@@ -326,6 +336,19 @@ class FrictionYamlDocument:
         return FrictionYamlDocument._MIGRATION_HEADER + body
 
 
+def load_checkout_prefs(*, checkout: Path) -> dict[str, Any]:
+    """The prefs governing ``checkout``: its own entry first, its main checkout second.
+
+    Entries are keyed by the repo stem, which a linked worktree's own
+    directory name rarely matches (GH-978), so the main checkout is the
+    fallback probe. File reads only — no git subprocess — which keeps it
+    cheap enough for a PreToolUse hook.
+    """
+    main = main_checkout(checkout)
+    fallbacks = (str(main),) if main is not None else ()
+    return FrictionYamlDocument(toplevel=str(checkout)).effective(fallback_toplevels=fallbacks)
+
+
 class PinScope(StrEnum):
     """Scope of a durable pin — a preset, a tracker, an IDE, ... (GH-855, GH-1452).
 
@@ -434,10 +457,10 @@ def _carried_durable_prefs(*, doc: dict[str, Any], probes: list[str]) -> dict[st
     e.g. a worktree-path-scoped ``*/agent-<id>`` from ``set-friction`` — makes
     that entry the only one the resolver ever sees for the worktree. Written as
     a bare preset it silently DROPS whatever the repo's own entry carried, and
-    ``human_review`` is the key that hurts: ``_coerce_human_review`` fails
-    toward ``True``, so a repo deliberately configured ``human_review: false``
-    starts demanding human review inside the worktree with no signal that a
-    setting was lost.
+    ``supervisor_review`` is the key that hurts: an unset value reads as
+    ``required``, so a repo deliberately configured ``supervisor_review: none``
+    starts demanding supervisor review inside the worktree with no signal that
+    a setting was lost.
 
     ``probes`` is ordered most-specific-first, so an entry already covering the
     exact checkout wins over the repo-root entry it would otherwise inherit.
@@ -512,7 +535,7 @@ def upsert_project_prefs(
     ``inherit_from`` (most-specific path first, defaulting to ``supersedes``)
     names the checkouts whose currently-effective entry this write inherits
     non-gate durable keys from, so a narrower entry cannot silently drop the
-    ``human_review`` / ``protected_branches`` / overlay-guard settings the
+    ``supervisor_review`` / ``protected_branches`` / overlay-guard settings the
     entry it shadows carried (GH-1068 F3). A worktree caller passes the repo
     root here as well, since no existing entry matches the worktree path.
     """

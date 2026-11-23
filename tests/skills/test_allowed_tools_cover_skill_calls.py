@@ -26,8 +26,9 @@ from pathlib import Path
 
 import pytest
 
+from dev10x.core.paths import skill_files
+
 _REPO_ROOT = Path(__file__).parents[2]
-_SKILLS_DIR = _REPO_ROOT / "skills"
 
 #: A delegation in a body: Skill("X"), Skill(skill="X"), or Skill(X).
 _CALL_RE = re.compile(r"""Skill\(\s*(?:skill\s*=\s*)?["']?([A-Za-z0-9:_-]+)["']?""")
@@ -47,7 +48,7 @@ _COUNTEREXAMPLE_RE = re.compile(
 def _skill_documents() -> list[tuple[Path, list[Path]]]:
     """Each SKILL.md paired with every body its front matter governs."""
     documents = []
-    for skill_md in sorted(_SKILLS_DIR.glob("*/SKILL.md")):
+    for skill_md in skill_files(repo_root=_REPO_ROOT):
         bodies = [skill_md]
         instructions = skill_md.parent / "instructions.md"
         if instructions.exists():
@@ -73,23 +74,36 @@ def _declared(*, skill_md: Path) -> set[str]:
     }
 
 
-def _plugin_skill_names() -> set[str]:
-    return {path.parent.name for path in _SKILLS_DIR.glob("*/SKILL.md")}
+_INVOCATION_NAME_RE = re.compile(r"^invocation-name:\s*(\S+)\s*$", re.MULTILINE)
 
 
-def _canonical(*, target: str, plugin_skills: set[str]) -> str:
+def _own_name(*, skill_md: Path) -> str:
+    """The skill's own invocation name, satellite prefix included (GH-1569)."""
+    matter = _front_matter(text=skill_md.read_text(encoding="utf-8"))
+    match = _INVOCATION_NAME_RE.search(matter)
+    return match.group(1) if match else f"dev10x:{skill_md.parent.name}"
+
+
+def _plugin_skill_names() -> dict[str, str]:
+    return {
+        path.parent.name: _own_name(skill_md=path) for path in skill_files(repo_root=_REPO_ROOT)
+    }
+
+
+def _canonical(*, target: str, plugin_skills: dict[str, str]) -> str:
     """Resolve a bare name the way a reader would.
 
     Prose and ASCII diagrams write ``Skill(qa-scope)`` where the
-    invocation is really ``dev10x:qa-scope``. Taking those literally
-    would have this guard demand a declaration for a skill that does
-    not exist — worse than no guard, because the fix it asks for is
-    wrong. A bare name matching a directory under ``skills/`` is this
-    plugin's; anything else (``test``, a user skill) is left alone.
+    invocation is really ``dev10x-coding:qa-scope``. Taking those
+    literally would have this guard demand a declaration for a skill
+    that does not exist — worse than no guard, because the fix it asks
+    for is wrong. A bare name matching a shipped skill directory takes
+    that skill's invocation name, satellite prefix included (GH-1572);
+    anything else (``test``, a user skill) is left alone.
     """
     if ":" in target:
         return target
-    return f"dev10x:{target}" if target in plugin_skills else target
+    return plugin_skills.get(target, target)
 
 
 def _invoked(*, bodies: list[Path], own_name: str) -> set[str]:
@@ -116,7 +130,7 @@ def _undeclared(*, skill_md: Path, bodies: list[Path]) -> set[str]:
         # A wildcard grant covers whatever it covers; this guard is
         # about silence, not about narrowing an explicit choice.
         return set()
-    own_name = f"dev10x:{skill_md.parent.name}"
+    own_name = _own_name(skill_md=skill_md)
     plugin_skills = _plugin_skill_names()
     canonical_declarations = {
         _canonical(target=name, plugin_skills=plugin_skills) for name in declared
@@ -149,7 +163,7 @@ def test_the_guard_sees_the_delegation_surface() -> None:
     prevent for MCP tools (GH-1215).
     """
     total = sum(
-        len(_invoked(bodies=bodies, own_name=f"dev10x:{skill_md.parent.name}"))
+        len(_invoked(bodies=bodies, own_name=_own_name(skill_md=skill_md)))
         for skill_md, bodies in _skill_documents()
     )
 

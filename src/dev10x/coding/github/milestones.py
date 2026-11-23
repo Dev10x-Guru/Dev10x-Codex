@@ -1,16 +1,19 @@
 """Milestone capability (ADR-0027).
 
 Dependencies are reached through ``_gateway.<name>`` (ADR-0027 D2), so a
-test patches ``dev10x.github._gateway.<name>`` and intercepts every caller.
+test patches ``dev10x.core.github._gateway.<name>`` and intercepts every caller.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
+from dev10x.core.domain.common.repository_ref import RepositoryRef
+from dev10x.core.domain.common.result import ErrorResult, Result, err, ok
+from dev10x.core.domain.milestone_prefixes import unregistered_prefix_error
 from dev10x.core.github import _gateway
-from dev10x.domain.common.result import ErrorResult, Result, err, ok
 
 
 async def _resolve_milestone_number(
@@ -42,6 +45,24 @@ async def _resolve_milestone_number(
         f"No milestone titled {milestone!r} in {repo_ref}. "
         "Pass the milestone number, or create it with milestone_create."
     )
+
+
+async def _unregistered_prefix(
+    *,
+    title: str,
+    repo: str | None,
+    repo_ref: RepositoryRef,
+) -> str | None:
+    registered = await asyncio.to_thread(_gateway._milestone_prefix_registry)
+    if registered is None:
+        return None
+    if repo is not None:
+        # The registry describes the checkout's repo; another repo's
+        # milestones answer to that repo's own registry, not this one.
+        checkout = await _gateway._resolve_repo(None)
+        if isinstance(checkout, ErrorResult) or checkout.value != repo_ref:
+            return None
+    return unregistered_prefix_error(title=title, registered=registered)
 
 
 async def milestone_close(
@@ -86,11 +107,18 @@ async def milestone_create(
 
     Returns:
         On success: ``{"number": int, "title": str, "url": str}``.
+        Refused before the create call when the target is the checkout's
+        own repo, the checkout keeps a prefix registry, and the title's
+        ``<INIT>`` prefix is not in it (GH-1690).
     """
     repo_result = await _gateway._resolve_repo(repo)
     if isinstance(repo_result, ErrorResult):
         return err(repo_result.error)
     repo_ref = repo_result.value
+
+    problem = await _unregistered_prefix(title=title, repo=repo, repo_ref=repo_ref)
+    if problem is not None:
+        return err(problem)
 
     fields: dict[str, str | int | list[str]] = {"title": title}
     if description is not None:

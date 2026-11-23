@@ -2,12 +2,12 @@
 name: git-fixup
 description: 'Create a fixup! commit for a PR review comment or standalone improvement. Enforces one fixup per comment thread when linked to a review. TRIGGER when: creating a fixup! commit for a review finding or standalone improvement. DO NOT TRIGGER when: creating a regular commit (use Dev10x:git-commit), or implementing PR fixes with push and reply (use Dev10x:gh-pr-fixup).'
 metadata:
-  upstream: skills/git-fixup/SKILL.md
+  upstream: plugins/coding/skills/git-fixup/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/git-fixup/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/git-fixup/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/git-fixup/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/git-fixup/`.
 
 # Create Fixup Commit
 
@@ -125,14 +125,21 @@ applies, producing modify/delete or content conflicts. `git rerere`
 then memoizes the bad resolution and silently re-applies it on the
 next attempt (GH-299).
 
-Run the resolver script:
+**Primary (MCP tool):** Call `mcp__cli__find_fixup_target`
+with `cwd=<absolute worktree path>`.
+Pass `base` only to override the auto-detected base branch.
+The tool is read-only and never prompts for approval.
+
+**Fallback (script):** Only when the MCP server is unavailable:
 
 ```bash
-<plugin-root>/skills/git-fixup/scripts/find-fixup-target.py
+<plugin-root>/plugins/coding/skills/git-fixup/scripts/find-fixup-target.py
 ```
 
-It reads `git diff --cached`, blames every hunk's pre-image line
-range against branch commits (`<base>..HEAD`), and prints JSON.
+Both read `git diff --cached`, blame every hunk's pre-image line
+range against branch commits (`<base>..HEAD`), and return JSON.
+A resolver failure arrives as an `error` key from the tool and as
+`status: "error"` from the script.
 Branch the SKILL on the `status` field:
 
 | `status` | Meaning | Action |

@@ -1,19 +1,20 @@
 """Tests for the ensure-base feature of update_paths module."""
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 import yaml
-from dev10x.domain.common.accepted_findings import DEFAULT_ACCEPTED_FINDINGS, find_acceptance
-from dev10x.domain.common.tracker_choice import Tracker
-from dev10x.skills.permission.catalog_paths import load_catalog_document
-from dev10x.skills.permission.update_paths import (
+
+from dev10x.core.domain.common.accepted_findings import DEFAULT_ACCEPTED_FINDINGS, find_acceptance
+from dev10x.core.domain.common.tracker_choice import Tracker
+from dev10x.core.skills.permission import update_paths
+from dev10x.core.skills.permission.catalog_paths import load_catalog_document
+from dev10x.core.skills.permission.update_paths import (
     _is_nonfunctional_mcp_wildcard,
     _load_global_allow_rules,
 )
-
-from dev10x.skills.permission import update_paths
 
 
 class TestIsNonfunctionalMcpWildcard:
@@ -47,7 +48,7 @@ class TestLoadGlobalAllowRules:
         settings = tmp_path / ".claude" / "settings.json"
         settings.parent.mkdir(parents=True)
         monkeypatch.setattr(
-            "dev10x.skills.permission.catalog_write.Path.home",
+            "dev10x.core.skills.permission.catalog_write.Path.home",
             lambda: tmp_path,
         )
         return settings
@@ -90,7 +91,7 @@ class TestLoadGlobalAllowRules:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(
-            "dev10x.skills.permission.catalog_write.Path.home",
+            "dev10x.core.skills.permission.catalog_write.Path.home",
             lambda: tmp_path,
         )
 
@@ -186,7 +187,7 @@ class TestEnsureBaseExpandsStaleWildcards:
             "dev10x_db": ["mcp__plugin_dev10x_db__query"],
         }
         monkeypatch.setattr(
-            "dev10x.skills.permission.enumerate_mcp.discover_mcp_tools",
+            "dev10x.core.skills.permission.enumerate_mcp.discover_mcp_tools",
             lambda: catalog,
         )
         return catalog
@@ -515,7 +516,7 @@ class TestEnsureBaseDenies:
     @pytest.fixture
     def home_settings(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.setattr(
-            "dev10x.skills.permission.catalog_write.Path.home",
+            "dev10x.core.skills.permission.catalog_write.Path.home",
             lambda: tmp_path / "home",
         )
         (tmp_path / "home" / ".claude").mkdir(parents=True)
@@ -627,7 +628,7 @@ class TestEnsureBaseDenies:
         merges non-destructively AND gains its resolved /home/<user>/ twin
         (GH-47) — additive over the pre-PAP flat-shim output."""
         monkeypatch.setattr(
-            "dev10x.skills.permission.catalog_write.Path.home",
+            "dev10x.core.skills.permission.catalog_write.Path.home",
             lambda: tmp_path / "home",
         )
         (tmp_path / "home" / ".claude").mkdir(parents=True)
@@ -668,7 +669,7 @@ class TestEnsureBaseSeedsOneTracker:
     @pytest.fixture()
     def settings(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.setattr(
-            "dev10x.skills.permission.catalog_write.Path.home",
+            "dev10x.core.skills.permission.catalog_write.Path.home",
             lambda: tmp_path / "home",
         )
         (tmp_path / "home" / ".claude").mkdir(parents=True)
@@ -678,11 +679,11 @@ class TestEnsureBaseSeedsOneTracker:
 
     def _run(self, settings: Path, monkeypatch: pytest.MonkeyPatch, tracker: str) -> dict:
         monkeypatch.setattr(
-            "dev10x.skills.permission.tracker_resolve.resolve_tracker",
+            "dev10x.core.skills.permission.tracker_resolve.resolve_tracker",
             lambda *, toplevel: Tracker(tracker),
         )
         monkeypatch.setattr(
-            "dev10x.skills.permission.tracker_resolve.tracker_source",
+            "dev10x.core.skills.permission.tracker_resolve.tracker_source",
             lambda *, toplevel: "project",
         )
         return update_paths.ensure_base(
@@ -1004,7 +1005,7 @@ class TestEnsureBaseSeedsSafetyKeys:
     @pytest.fixture()
     def settings(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.setattr(
-            "dev10x.skills.permission.catalog_write.Path.home",
+            "dev10x.core.skills.permission.catalog_write.Path.home",
             lambda: tmp_path / "home",
         )
         (tmp_path / "home" / ".claude").mkdir(parents=True)
@@ -1037,7 +1038,7 @@ class TestEnsureBaseSeedsSafetyKeys:
         fully deduped against global, and no denies/asks are configured —
         the exact shape that used to return before touching any file."""
         monkeypatch.setattr(
-            "dev10x.skills.permission.catalog_write._load_global_allow_rules",
+            "dev10x.core.skills.permission.catalog_write._load_global_allow_rules",
             lambda: ({"Bash(git status:*)"}, []),
         )
 
@@ -1059,7 +1060,7 @@ class TestEnsureBaseSeedsSafetyKeys:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(
-            "dev10x.skills.permission.catalog_write.Path.home",
+            "dev10x.core.skills.permission.catalog_write.Path.home",
             lambda: tmp_path / "home",
         )
         (tmp_path / "home" / ".claude").mkdir(parents=True)
@@ -1088,3 +1089,56 @@ class TestEnsureBaseSeedsSafetyKeys:
         )
 
         assert settings.read_text() == original
+
+
+class TestEnsureBaseHonoursDisableAutoModeOptOut:
+    """GH-1856: opting out of disableAutoMode must not cost the catalog
+    rules or the missing worktree settings files ensure_base creates."""
+
+    @pytest.fixture()
+    def settings(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        write_safety_key_policy: Callable[[str], Path],
+    ) -> Path:
+        monkeypatch.setattr(
+            "dev10x.core.skills.permission.catalog_write.Path.home",
+            lambda: tmp_path / "home",
+        )
+        (tmp_path / "home" / ".claude").mkdir(parents=True)
+        write_safety_key_policy("safety_keys: [disableBypassPermissionsMode]\n")
+        path = tmp_path / "settings.local.json"
+        path.write_text(json.dumps({"permissions": {"allow": [], "deny": []}}))
+        return path
+
+    @pytest.fixture()
+    def result(self, settings: Path, tmp_path: Path) -> dict:
+        return update_paths.ensure_base(
+            config={"base_permissions": ["Bash(git status:*)"], "base_denies": []},
+            settings_files=[settings],
+            dry_run=False,
+            create_missing=[tmp_path / "worktree" / ".claude" / "settings.local.json"],
+        )
+
+    def test_seeds_the_catalog_without_disable_auto_mode(
+        self, result: dict, settings: Path
+    ) -> None:
+        data = json.loads(settings.read_text())
+
+        assert data["permissions"]["allow"] == ["Bash(git status:*)"]
+        assert data["disableBypassPermissionsMode"] == "disable"
+        assert "disableAutoMode" not in data
+
+    def test_creates_missing_worktree_settings_without_disable_auto_mode(
+        self, result: dict, tmp_path: Path
+    ) -> None:
+        created = tmp_path / "worktree" / ".claude" / "settings.local.json"
+        data = json.loads(created.read_text())
+
+        assert data["permissions"]["allow"] == ["Bash(git status:*)"]
+        assert data["disableBypassPermissionsMode"] == "disable"
+        assert "disableAutoMode" not in data
+
+    def test_reports_the_opt_out(self, result: dict) -> None:
+        assert any("opted out" in m for m in result["messages"])

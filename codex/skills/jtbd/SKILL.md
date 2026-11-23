@@ -2,12 +2,12 @@
 name: jtbd
 description: 'Pure JTBD story drafting skill. Gathers context from issue tracker tickets, parent tickets, and PR diffs to craft a situation-driven Job Story with explicit actor and beneficiary. Returns the draft string with no side effects. TRIGGER when: drafting a JTBD Job Story for a ticket, PR, or release. DO NOT TRIGGER when: Job Story already exists on the target, or writing commit messages (use Dev10x:git-commit).'
 metadata:
-  upstream: skills/jtbd/SKILL.md
+  upstream: plugins/scoping/skills/jtbd/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/jtbd/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/scoping/skills/jtbd/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/jtbd/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/scoping/skills/jtbd/`.
 
 # Dev10x:jtbd — Pure Job Story Drafting
 

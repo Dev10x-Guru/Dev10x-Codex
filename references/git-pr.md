@@ -88,6 +88,14 @@ The body should be **compact** to avoid cluttering Slack previews.
      (for issue-tracked work)
    - `Fixes: none — self-motivated refactor` (for internal improvements,
      features, or experiments without a tracking issue)
+   - The reason after the dash needs a letter or digit; `create_pr` refuses
+     a bare one or a `<reason>` placeholder.
+   - Only visible lines count: a trailer or reference inside fenced code
+     or an HTML comment closes nothing and satisfies nothing (GH-1896).
+   - Only a reference right after `Fixes`, `Closes` or `Resolves` closes
+     an issue on merge, whether a full URL or `#N` (GH-1927).
+     A `Refs:` link or an issue URL in prose names the issue and leaves
+     it open.
    - Do NOT manually add `---`, blank lines, or separators after `Fixes:`
      (Note: The `create-pr.sh` template automatically adds separators as
      part of standard formatting. Do not remove them.)
@@ -114,26 +122,6 @@ the project or ticket language. When PR text includes BDD or
 Gherkin-derived keywords, use Cucumber's official language reference:
 https://cucumber.io/docs/gherkin/languages/
 
-**WRONG** — Header before JTBD (breaks release notes parsing):
-```markdown
-## Summary
-
-**When** reviewing code, **the admin wants to** have automated checks, **so the team can** catch issues.
-
-[Details...]
-
-Fixes: ...
-```
-
-**CORRECT** — JTBD as absolute first element:
-```markdown
-**When** reviewing code, **the admin wants to** have automated checks, **so the team can** catch issues.
-
-[Details or commit list — optional...]
-
-Fixes: ...
-```
-
 ### Proper Format
 
 ```markdown
@@ -147,7 +135,8 @@ Fixes: https://github.com/Dev10x-Guru/dev10x-claude/issues/7
 ```
 
 *Why?* The JTBD Job Story must be the first paragraph because the
-release notes process parses PR descriptions by position.
+release notes process parses PR descriptions by position. A heading
+such as `## Summary` above it breaks that parsing.
 
 *Bootstrapping exception:* A PR that introduces a new PR body
 requirement may not follow that requirement itself — the rule

@@ -2,12 +2,12 @@
 name: git-commit-split
 description: 'Split monolithic git commits into atomic, cohesive commits following Clean Architecture principles. Uses interactive rebase to separate changes by feature dependency order (utilities → data → DTOs → refactoring → features → API), ensuring each commit is self-contained, passes tests, and maintains proper cohesion. TRIGGER when: a commit contains mixed concerns that should be separate atomic commits. DO NOT TRIGGER when: commits are already atomic, or grooming history without splitting (use Dev10x:git-groom).'
 metadata:
-  upstream: skills/git-commit-split/SKILL.md
+  upstream: plugins/coding/skills/git-commit-split/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/git-commit-split/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/git-commit-split/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/git-commit-split/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/git-commit-split/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Split Commit Skill

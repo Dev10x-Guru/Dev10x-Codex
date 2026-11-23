@@ -18,14 +18,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from dev10x.skills.playbook import load_plugin_default
-from dev10x.subprocess_utils import get_plugin_root
+from dev10x.core.skills.playbook import installed_plugin_roots, load_plugin_default
+from dev10x.core.subprocess_utils import get_plugin_root
 
-RESOLVED_SHA256 = "183d87f863bd3a8a4cf8fb999477c2e2af53b44506729ab91fd13e9229763c59"
+RESOLVED_SHA256 = "6e81311423e0c49012a796d26e1cc731f02573f1b025b3da029f638f85db67ae"
 VERSION_KEY = "version"
 
 DELTA_PLAY = "structured-spec"
@@ -52,14 +53,18 @@ def _steps_by_subject(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 @pytest.fixture(scope="module")
 def resolved() -> dict[str, Any]:
-    document = load_plugin_default(skill_key="work-on", plugin_roots=[get_plugin_root()])
+    document = load_plugin_default(skill_key="work-on", plugin_roots=_plugin_roots())
     assert document is not None
     return document
 
 
+def _plugin_roots() -> list[Path]:
+    return installed_plugin_roots(core_root=get_plugin_root())
+
+
 @pytest.mark.parametrize("skill_key", ["work-on", "playbook"])
 def test_shared_default_keys_resolve_identically(skill_key: str, resolved: dict[str, Any]) -> None:
-    document = load_plugin_default(skill_key=skill_key, plugin_roots=[get_plugin_root()])
+    document = load_plugin_default(skill_key=skill_key, plugin_roots=_plugin_roots())
 
     assert document == resolved
 

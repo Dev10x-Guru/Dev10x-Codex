@@ -47,15 +47,15 @@ from pathlib import Path
 
 import click
 import yaml
-from dev10x.skills.permission.cli_catalog import (
+
+import dev10x.cli as cli_module
+import dev10x.core.skills.permission as permission_pkg
+from dev10x.cli import cli
+from dev10x.core.skills.permission.cli_catalog import (
     catalog_rule_paths,
     enumerate_leaf_commands,
     find_uncovered_commands,
 )
-
-import dev10x.cli as cli_module
-import dev10x.skills.permission as permission_pkg
-from dev10x.cli import cli
 
 _LAZY_GROUP_KEY = re.compile(r'"([\w-]+)":\s*"dev10x\.')
 
@@ -115,6 +115,9 @@ DELIBERATELY_UNCATALOGUED: frozenset[str] = frozenset(
     {
         "uvx dev10x skill rename",  # GH-1558: rewrites skill names repo-wide
         "uvx dev10x permission grant",  # GH-1676: its prompt confirms the grant
+        "uvx dev10x permission remove",  # GH-1925: deletes rules by glob, prompt confirms
+        "uvx dev10x chatbus run",  # GH-1845: the long-running daemon, started by systemd
+        "uvx dev10x chatbus install-unit",  # GH-1845: writes the user's systemd unit
     }
 )
 

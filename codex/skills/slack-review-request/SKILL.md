@@ -2,12 +2,12 @@
 name: slack-review-request
 description: 'Post a Slack review request for a PR using per-project config (channel, mentions). Reads configuration from userspace YAML. TRIGGER when: PR needs a Slack review notification posted to the team channel. DO NOT TRIGGER when: Slack not configured, or using the combined Dev10x:request-review skill (which delegates here automatically).'
 metadata:
-  upstream: skills/slack-review-request/SKILL.md
+  upstream: plugins/coding/skills/slack-review-request/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/slack-review-request/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/slack-review-request/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/slack-review-request/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/slack-review-request/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Slack Review Request

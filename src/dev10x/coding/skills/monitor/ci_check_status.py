@@ -39,9 +39,11 @@ Output (JSON):
                                        # from, so an "empty" verdict says
                                        # whether the zero was corroborated
         "mergeable": "MERGEABLE",      # "MERGEABLE", "CONFLICTING", "UNKNOWN"
+        "merge_state": "BEHIND",       # GitHub mergeStateStatus (GH-1684)
+        "head_sha": "<40-char sha>",   # head the verdict was read for (GH-1684)
         "is_draft": False,             # read alongside mergeable (GH-1604)
-        "verdict_caveat": "...",       # only on a draft with skipped checks —
-                                       # "green" there is not a real verdict
+        "verdict_caveat": "...",       # on a draft with skipped checks, or a
+                                       # green head BEHIND its base (GH-1684)
         "total": 5,
         "pass": 3,
         "fail": 0,
@@ -51,6 +53,12 @@ Output (JSON):
         "skipping_checks": [],         # names of checks bucketed "skipping" —
                                        # a draft PR's review workflows land
                                        # here, not in "pass" (GH-1410 F2)
+        "disabled_checks": [],         # the skipping Claude review checks
+                                       # that were switched off (GH-1764)
+        "review_disabled_reason": "label:skip-claude-review",
+                                       # only when disabled_checks is set:
+                                       # label:… | repo-variable:… |
+                                       # org-variable:CLAUDE_REVIEW_ENABLED=false
         "checks": [
             {"name": "build", "bucket": "pass", "required": True},
             {"name": "lint", "bucket": "fail", "required": False},
@@ -123,7 +131,8 @@ import time
 from dataclasses import dataclass
 from typing import NoReturn
 
-from dev10x.domain.common.repository_ref import RepositoryRef
+from dev10x.core.domain.common.repository_ref import RepositoryRef
+from dev10x.core.domain.polling import Deadline
 
 # Bound every gh subprocess so a wedged CLI cannot hang the poll loop
 # indefinitely (GH-824), matching pr_notify.py / slack_review_request.py.
@@ -174,6 +183,8 @@ class ChecksRead:
 class PrState:
     mergeable: str = "UNKNOWN"
     is_draft: bool = False
+    head_sha: str = ""
+    merge_state: str = "UNKNOWN"
 
 
 def get_pr_state(
@@ -189,21 +200,116 @@ def get_pr_state(
         "--repo",
         repo,
         "--json",
-        "mergeable,isDraft",
+        "mergeable,isDraft,headRefOid,mergeStateStatus",
     ]
     result = subprocess.run(
         cmd, capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS
     )
     if result.returncode != 0:
-        return PrState()
+        return _unread_pr_state(reason=f"gh pr view exited {result.returncode}")
     try:
         payload = json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
-        return PrState()
+        return _unread_pr_state(reason="gh pr view returned non-JSON output")
     return PrState(
         mergeable=payload.get("mergeable") or "UNKNOWN",
         is_draft=bool(payload.get("isDraft", False)),
+        head_sha=payload.get("headRefOid") or "",
+        merge_state=payload.get("mergeStateStatus") or "UNKNOWN",
     )
+
+
+CLAUDE_REVIEW_CHECKS = frozenset({"claude-review", "hygiene-review"})
+SKIP_REVIEW_LABEL = "skip-claude-review"
+REVIEW_SWITCH_VARIABLE = "CLAUDE_REVIEW_ENABLED"
+
+
+def claude_review_switch(*, pr_number: int, repo: str) -> str | None:
+    """Why the Claude reviews are switched off on this PR, or None (GH-1764).
+
+    Mirrors the workflow guard `vars.CLAUDE_REVIEW_ENABLED != 'false' &&
+    !contains(labels, 'skip-claude-review')` (GH-1756). `vars` resolves a
+    repo value before an org value, so the org value is read only when the
+    repo sets none. A read that fails counts as "not switched off": an
+    unreadable source is not evidence, and the check then stays a plain
+    skip.
+    """
+    labels = _gh_lines(
+        args=["pr", "view", str(pr_number), "--repo", repo, "--json", "labels"],
+        jq=".labels[].name",
+    )
+    if labels is not None and SKIP_REVIEW_LABEL in labels:
+        return f"label:{SKIP_REVIEW_LABEL}"
+    repo_value = _gh_lines(
+        args=["api", f"repos/{repo}/actions/variables/{REVIEW_SWITCH_VARIABLE}"],
+        jq=".value",
+    )
+    if repo_value:
+        return _switched_off(scope="repo", value=repo_value[0])
+    org_value = _gh_lines(
+        args=["api", f"repos/{repo}/actions/organization-variables?per_page=100"],
+        jq=f'.variables[] | select(.name == "{REVIEW_SWITCH_VARIABLE}") | .value',
+    )
+    if org_value:
+        return _switched_off(scope="org", value=org_value[0])
+    return None
+
+
+def _switched_off(*, scope: str, value: str) -> str | None:
+    if value.strip() != "false":
+        return None
+    return f"{scope}-variable:{REVIEW_SWITCH_VARIABLE}=false"
+
+
+def _gh_lines(*, args: list[str], jq: str) -> list[str] | None:
+    # Advisory enrichment: a failed read must degrade to "unknown", never
+    # abort the probe — _probe_tolerantly absorbs only SystemExit.
+    try:
+        result = subprocess.run(
+            ["gh", *args, "--jq", jq],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        _note_unreadable_switch(args=args, reason=type(exc).__name__)
+        return None
+    if result.returncode != 0:
+        # An unset repo variable answers `HTTP 404`: "not set", not a failure.
+        if "HTTP 404" not in result.stderr:
+            _note_unreadable_switch(args=args, reason=result.stderr.strip()[:200])
+        return None
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def _note_unreadable_switch(*, args: list[str], reason: str) -> None:
+    print(
+        f"[review-switch] gh {' '.join(args[:2])} unreadable ({reason}); "
+        "treating the Claude review switch as unknown",
+        file=sys.stderr,
+    )
+
+
+def mark_disabled_reviews(*, result: dict, reason: str | None) -> dict:
+    """Name the skipped Claude review checks that were switched off (GH-1764).
+
+    `skipping_checks` keeps every skipped name; `disabled_checks` is the
+    subset a caller must not read as "never fired", and
+    `review_disabled_reason` says which switch did it.
+    """
+    disabled = [name for name in result["skipping_checks"] if name in CLAUDE_REVIEW_CHECKS]
+    if reason is None or not disabled:
+        return {**result, "disabled_checks": []}
+    return {**result, "disabled_checks": disabled, "review_disabled_reason": reason}
+
+
+def _unread_pr_state(*, reason: str) -> PrState:
+    # GH-1684: an empty head_sha must not pass silently for "no head".
+    print(
+        f"[pr-state] {reason}: mergeability, head and merge state unknown",
+        file=sys.stderr,
+    )
+    return PrState()
 
 
 def read_checks(
@@ -589,6 +695,8 @@ def compute_verdict(
     mergeable: str = "UNKNOWN",
     checks_source: str = SOURCE_GH_CLI,
     is_draft: bool = False,
+    head_sha: str = "",
+    merge_state: str = "UNKNOWN",
 ) -> dict:
     verdict, counts = _summarize(checks)
     required_verdict, _ = _summarize([c for c in checks if c.get("required")])
@@ -604,6 +712,15 @@ def compute_verdict(
             f"draft PR: {counts['skipping']} checks skipped — CI has not run them; "
             "mark ready to get a real verdict"
         )
+    # GH-1684: under strict up-to-date merging a green head that is behind
+    # its base cannot merge, and updating the branch starts a new CI run, so
+    # "green" would be read as "merge now" by every caller that skips caveats.
+    elif verdict == "green" and merge_state == "BEHIND":
+        verdict = "pending"
+        caveat["verdict_caveat"] = (
+            "branch is behind its base: checks are green for this head, but the PR "
+            "cannot merge until it is updated, and the update re-runs CI"
+        )
 
     return {
         "verdict": verdict,
@@ -611,6 +728,8 @@ def compute_verdict(
         **caveat,
         "checks_source": checks_source,
         "mergeable": mergeable,
+        "merge_state": merge_state,
+        "head_sha": head_sha,
         "is_draft": is_draft,
         "total": len(checks),
         **counts,
@@ -715,7 +834,13 @@ def probe_once(
     repo: str,
     required_only: bool = False,
 ) -> dict:
-    """Fetch checks and mergeability once and derive the verdict."""
+    """Fetch checks and mergeability once and derive the verdict.
+
+    The PR state is read on both sides of the checks read: a push landing
+    between two separate `gh` calls would otherwise pair one head's checks
+    with another head's SHA (GH-1684).
+    """
+    before = get_pr_state(pr_number=pr_number, repo=repo)
     read = get_annotated_checks(
         pr_number=pr_number,
         repo=repo,
@@ -727,7 +852,23 @@ def probe_once(
         mergeable=state.mergeable,
         checks_source=read.source,
         is_draft=state.is_draft,
+        head_sha=state.head_sha,
+        merge_state=state.merge_state,
     )
+    # The switch costs up to three gh calls, paid only when a Claude
+    # review check actually skipped.
+    skipped_reviews = CLAUDE_REVIEW_CHECKS.intersection(result["skipping_checks"])
+    reason = claude_review_switch(pr_number=pr_number, repo=repo) if skipped_reviews else None
+    result = mark_disabled_reviews(result=result, reason=reason)
+    if before.head_sha and state.head_sha and before.head_sha != state.head_sha:
+        return {
+            **result,
+            "verdict": "pending",
+            "verdict_caveat": (
+                f"head moved from {before.head_sha[:8]} to {state.head_sha[:8]} while "
+                "the checks were read; the checks may belong to the old head"
+            ),
+        }
     if required_only or result["verdict"] != "green":
         return result
     return corroborate_green(result=result, pr_number=pr_number, repo=repo)
@@ -825,7 +966,7 @@ def poll_until_terminal(
 
     The poll budget is kept below the MCP idle-timeout so a `wait=true`
     call returns a verdict rather than being torn down mid-poll (GH-808
-    F2). `dev10x.monitor` no longer trusts its caller for that: it asks
+    F2). `dev10x.coding.monitor` no longer trusts its caller for that: it asks
     `polls_within_budget` how many polls `MAX_TOOL_CALL_SECONDS` affords
     and passes that number here, so `--max-polls` arrives already
     reduced (GH-1288). At the defaults it grants 32, making the in-loop
@@ -866,17 +1007,17 @@ def poll_until_terminal(
     # GH-1518: a tolerated probe can burn a full subprocess timeout that the
     # poll count never budgeted for, so the count alone no longer bounds the
     # wait. Hold the loop to the wall-clock budget the count was sized for.
-    deadline = (
-        time.monotonic()
-        + initial_wait
-        + poll_interval * max(max_polls - 1, 0)
-        + _DEADLINE_GRACE_SECONDS
+    # GH-1852: the same Deadline primitive pr_wait and wait_for run on;
+    # this loop stays synchronous because it runs in its own process.
+    deadline = Deadline.after(
+        seconds=initial_wait + poll_interval * max(max_polls - 1, 0) + _DEADLINE_GRACE_SECONDS,
+        clock=time.monotonic,
     )
     time.sleep(initial_wait)
 
     consecutive_failures = 0
     for attempt in range(1, max_polls + 1):
-        if attempt > 1 and time.monotonic() >= deadline:
+        if attempt > 1 and deadline.expired():
             print(
                 f"[poll {attempt}/{max_polls}] wall-clock budget spent — ending the wait",
                 file=sys.stderr,

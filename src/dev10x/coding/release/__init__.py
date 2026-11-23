@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from dev10x.core.paths import skill_script
-from dev10x.domain.common.result import Result, err, ok
-from dev10x.subprocess_utils import async_run, get_plugin_root
+from dev10x.coding.coding_script import coding_script
+from dev10x.core.domain.common.result import Result, err, ok
+from dev10x.core.subprocess_utils import async_run, get_plugin_root
 
 
 async def collect_prs(
@@ -20,7 +20,7 @@ async def collect_prs(
     to_tag: str | None = None,
     ticket_pattern: str | None = None,
 ) -> Result[dict[str, Any]]:
-    script = get_plugin_root() / skill_script(skill="release-notes", rel="collect-prs.py")
+    script = get_plugin_root() / coding_script(skill="release-notes", rel="collect-prs.py")
     args: list[str] = [str(script), repo_path]
 
     if from_tag:

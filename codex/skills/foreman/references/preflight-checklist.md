@@ -18,7 +18,7 @@ use whichever answers for `watch` in Phase 1 too:
 |---|---|
 | `dev10x` installed as a uv tool | `dev10x foreman probe …` |
 | CWD is a plugin-repo checkout | `uv run dev10x foreman probe …` (GH-947) |
-| Normal plugin-cache install, CWD is the target repo | `uv run --project <plugin-root> dev10x foreman probe …` (GH-961) |
+| Normal plugin-cache install, CWD is the target repo | `uv run --project <plugin-root>/plugins/coding dev10x foreman probe …` (GH-961) |
 
 The third row is the common case for a night run: the plugin lives
 under `~/.claude/plugins/cache/<owner>/<plugin>/<version>` while the
@@ -191,7 +191,7 @@ resolve_gate(gate="merge", context={})
 
 `effect: "auto-advance"` means merges land unattended tonight. Anything
 else means the first `MERGE REQUEST` freezes the run on an
-`AskUserQuestion` no one is awake to answer — and the `human_review`
+`AskUserQuestion` no one is awake to answer — and the `supervisor_review`
 floor produces exactly that on a repo whose policy reads
 `adaptive + [solo-maintainer, afk]` but carries no explicit
 `merge: auto-advance` override (GH-1056).

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from dev10x.validators.sql_safety import SqlSafetyValidator
 
+from dev10x.core.validators.sql_safety import SqlSafetyValidator
 from tests.fakers import BashHookInputFaker
 
 
@@ -35,6 +35,128 @@ class TestShouldRun:
     def test_false_for_unrelated(self, validator: SqlSafetyValidator) -> None:
         inp = _make_input(command="git status")
         assert validator.should_run(inp=inp) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "dropdb app",
+            "timeout 9 createdb x",
+            "pg_restore -l d",
+            'd""ropdb app',
+            "dr\\opdb app",
+            "'drop'db app",
+        ],
+    )
+    def test_should_run_for_postgres_client_binaries(
+        self, validator: SqlSafetyValidator, command: str
+    ) -> None:
+        assert validator.should_run(inp=_make_input(command=command)) is True
+
+
+class TestPostgresWriteBinaries:
+    """GH-1732: the deny is on effect, so the client binaries that write
+    a database are denied like the SQL that would do the same."""
+
+    @pytest.fixture()
+    def validator(self) -> SqlSafetyValidator:
+        return SqlSafetyValidator()
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "dropdb app",
+            "createdb scratch",
+            "dropuser reporter",
+            "createuser -s intruder",
+            "vacuumdb --all",
+            "reindexdb app",
+            "clusterdb app",
+            "/usr/lib/postgresql/16/bin/dropdb app",
+            "PGHOST=db dropdb app",
+            "env PGPASSWORD=x dropdb app",
+            "timeout 30 createdb scratch",
+            "nice -n 5 dropuser reporter",
+            "cd /tmp && dropdb app",
+            "echo go | dropdb app",
+            "docker exec pg dropdb app",
+            "op run -- createdb scratch",
+            "pg_restore -d app dump.bin",
+            "pg_restore --dbname=app dump.bin",
+            "pg_restore --clean -d app dump.bin",
+            "pg_restore -dapp dump.bin",
+            "pg_restore --db=app dump.bin",
+            "pg_restore --dbn app dump.bin",
+            'd""ropdb app',
+            "dr\\opdb app",
+            "'drop'db app",
+            "echo x;dropdb app",
+            "true & dropdb app",
+            "true &dropdb app",
+            "echo x\ndropdb app",
+            "(dropdb app)",
+            "{ dropdb app; }",
+            "echo $(dropdb app)",
+            "echo `createdb app`",
+            "if true; then dropdb app; fi",
+            "dropdb app # it's gone",
+            "FOO=1 createdb 'unterminated",
+            "sudo -u postgres dropdb app",
+            "sudo -u postgres; dropdb app",
+            "echo '>' & dropdb app",
+            "echo 'a'& dropdb app",
+            "kubectl exec mypod -n prod -- dropdb app",
+            "ssh db01 -t dropdb app",
+            "docker run --rm postgres:16 dropdb -h h app",
+            "docker compose exec db dropdb app",
+            "docker --context prod exec c dropdb app",
+            "su postgres -c'dropdb app'",
+            "su -lc 'dropdb app' postgres",
+            "s''sh h 'dropdb app'",
+            "sudo -u postgres dropdb app # don't",
+            "find . -exec echo {} \\; -exec dropdb app {} \\;",
+            "doas -u postgres createdb app",
+            "su postgres -c 'dropdb app'",
+            "echo app | xargs dropdb",
+            "ssh db-host 'dropdb app'",
+            "kubectl exec pg-0 -- dropdb app",
+            "find . -name x -exec dropuser {} ;",
+            "pgbench -i app",
+            "pgbench -c 10 app",
+        ],
+    )
+    def test_denies_database_writing_binaries(
+        self, validator: SqlSafetyValidator, command: str
+    ) -> None:
+        result = validator.validate(inp=_make_input(command=command))
+
+        assert result is not None
+        assert "GH-1732" in result.message
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "pg_dump --schema-only app",
+            "pg_dumpall --globals-only",
+            "pg_restore -l dump.bin",
+            "pg_restore --clean -f out.sql dump.bin",
+            "pg_restore --data-only -f out.sql dump.bin",
+            "pg_restore --d -f out.sql dump.bin",
+            "rg -n dropdb src/",
+            "echo dropdb",
+            "git log --grep=createdb",
+            "pg_isready -h db",
+            "rg 'dropdb' src/ ; echo done",
+            "command -v dropdb",
+            "command -V createdb",
+            "sudo -u postgres pg_dump app",
+            "sudo ls /var/lib && echo dropdb",
+            "kubectl exec pg-0 -- pg_restore -l dump.bin",
+            'echo "it\'s the dropdb docs"',
+            "grep -n createdb 'unterminated",
+        ],
+    )
+    def test_allows_reads_and_mentions(self, validator: SqlSafetyValidator, command: str) -> None:
+        assert validator.validate(inp=_make_input(command=command)) is None
 
 
 class TestBigQueryReadOnly:
@@ -112,13 +234,86 @@ class TestBigQueryReadOnly:
         assert result is not None
         assert "stdin" in result.message
 
-    def test_unparseable_bq_command_is_left_to_other_validators(
+    @pytest.mark.parametrize(
+        "command",
+        ["bq query 'SELECT 1", "x;bq query --replace 'SELECT 1", "sudo bq query 'SELECT"],
+    )
+    def test_unparseable_bq_query_fails_closed(
+        self, validator: SqlSafetyValidator, command: str
+    ) -> None:
+        """GH-1773: skipping an untokenizable unit was the evasion."""
+        result = validator.validate(inp=_make_input(command=command))
+
+        assert result is not None
+        assert "could not be tokenized" in result.message
+
+    def test_unparseable_non_query_bq_is_left_alone(self, validator: SqlSafetyValidator) -> None:
+        assert validator.validate(inp=_make_input(command="bq ls 'ds")) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "x;bq query --destination_table=t 'SELECT 1'",
+            "true & bq query --replace 'SELECT 1'",
+            "true\nbq query --replace 'SELECT 1'",
+            "(bq query --replace 'SELECT 1')",
+            "echo $(bq query --replace 'SELECT 1')",
+            "sudo -u svc bq query --replace 'SELECT 1'",
+            "ssh host bq query --replace \"'SELECT 1'\"",
+            "b''q query --destination_table=t 'SELECT 1'",
+            "b\\q query --replace 'SELECT 1'",
+        ],
+    )
+    def test_blocks_chained_and_runner_wrapped_writes(
+        self, validator: SqlSafetyValidator, command: str
+    ) -> None:
+        """GH-1773/GH-1774: every operator and runner reaches the bq check."""
+        assert validator.validate(inp=_make_input(command=command)) is not None
+
+    def test_allows_a_chained_read(self, validator: SqlSafetyValidator) -> None:
+        command = "cd /tmp;bq query 'SELECT 1' 2>&1 | head"
+
+        assert validator.validate(inp=_make_input(command=command)) is None
+
+    def test_should_not_run_for_a_word_starting_with_bq(
         self, validator: SqlSafetyValidator
     ) -> None:
-        assert validator.validate(inp=_make_input(command="bq query 'SELECT 1")) is None
+        assert validator.should_run(inp=_make_input(command="ls bqfiles")) is False
 
-    def test_should_not_run_for_a_word_containing_bq(self, validator: SqlSafetyValidator) -> None:
-        assert validator.should_run(inp=_make_input(command="ls abq-files")) is False
+    def test_word_ending_in_bq_wakes_the_probe_but_blocks_nothing(
+        self, validator: SqlSafetyValidator
+    ) -> None:
+        """GH-1798: no leading boundary, so `-c'bq …'` is not missed."""
+        inp = _make_input(command="ls abq-files")
+
+        assert validator.should_run(inp=inp) is True
+        assert validator.validate(inp=inp) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "su u -c'bq query --replace \"SELECT 1\"'",
+            "bq query 'SELECT 1' >| out.txt --destination_table=t",
+            "bq query 3> err.log --replace 'SELECT 1'",
+        ],
+    )
+    def test_blocks_writes_past_quoting_and_redirects(
+        self, validator: SqlSafetyValidator, command: str
+    ) -> None:
+        assert validator.validate(inp=_make_input(command=command)) is not None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bq query 'SELECT 1' >| out.txt",
+            "bq query 'SELECT 1' &>> log",
+            "bq query 'SELECT 1' 3>&1",
+        ],
+    )
+    def test_redirect_target_is_not_read_as_sql(
+        self, validator: SqlSafetyValidator, command: str
+    ) -> None:
+        assert validator.validate(inp=_make_input(command=command)) is None
 
 
 class TestDirectConnection:
@@ -148,6 +343,52 @@ class TestDirectPsql:
     def test_blocks_direct_psql(self, validator: SqlSafetyValidator) -> None:
         inp = _make_input(command="psql -h localhost -d mydb")
         result = validator.validate(inp=inp)
+        assert result is not None
+        assert "Direct psql calls" in result.message
+
+
+class TestPsqlAsSearchOperand:
+    """A `psql` search pattern is not a psql call (GH-1790)."""
+
+    @pytest.fixture()
+    def validator(self) -> SqlSafetyValidator:
+        return SqlSafetyValidator()
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "rg -n -i 'psql' projects.yaml baseline-permissions.yaml",
+            "grep -rn psql src/",
+            "echo psql",
+            "timeout 5 rg psql docs/",
+            "rg -n psql src | head -5",
+        ],
+    )
+    def test_search_pattern_is_not_blocked(
+        self, validator: SqlSafetyValidator, command: str
+    ) -> None:
+        assert validator.validate(inp=_make_input(command=command)) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "rg psql src && psql -d mydb",
+            "rg psql src; psql -d mydb",
+            "rg psql src | psql -d mydb",
+            "rg --pre psql pattern src",
+            "grep psql x & psql -d mydb",
+            "sudo -u postgres psql",
+            "cat <( psql -d mydb -c 'DELETE FROM t' )",
+            "grep x <( psql -d mydb )",
+            "echo x > >( psql -d mydb )",
+            "ag --pager psql pattern src",
+        ],
+    )
+    def test_psql_in_command_position_is_still_blocked(
+        self, validator: SqlSafetyValidator, command: str
+    ) -> None:
+        result = validator.validate(inp=_make_input(command=command))
+
         assert result is not None
         assert "Direct psql calls" in result.message
 

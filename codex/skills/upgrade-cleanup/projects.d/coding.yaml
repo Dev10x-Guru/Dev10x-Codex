@@ -29,7 +29,12 @@ command_spellings:
       - dev10x ci-review  # GH-1621
 
 base_permissions:
+  # --- dev10x-coding skills (GH-1572) ---
+  - "Skill(dev10x-coding:*)"
   # --- Dev10x MCP tools: cli server (GH-878) ---
+  # GH-1572: gh-pr-create reads a ticket's comments through this tool
+  # now that core's gh-context scripts sit outside the satellite's root.
+  - "mcp__cli__issue_comments"
   - "mcp__cli__pr_comment_reply"
   - "mcp__cli__pr_review_comment_edit"
   - "mcp__cli__request_review"
@@ -50,14 +55,24 @@ base_permissions:
   - "mcp__cli__setup_aliases"
   - "mcp__cli__check_top_level_comments"
   - "mcp__cli__unresolved_threads"
+  # GH-1832: read-only per-bot head/review status for monitor + merge
+  - "mcp__cli__bot_review_status"
+  # GH-1834: read-only readiness audit of review-requested PRs
+  - "mcp__cli__review_readiness_audit"
+  # pr_wait (GH-1833): read-only bounded PR wait; gh-pr-monitor waits
+  # on `until="bot_at_head"` with it (GH-1832)
+  - "mcp__cli__pr_wait"
   - "mcp__cli__ci_check_status"
+  - "mcp__cli__find_fixup_target"
+  - "mcp__cli__audit_handoff_report"
+  - "mcp__cli__reconcile_fixes_links"
+  - "mcp__cli__review_stamp_write"
+  # Read-only worktree classifier behind Dev10x:git-worktree-prune (GH-1930)
+  - "mcp__cli__worktree_prune_candidates"
   # Test runner (GH-880, #877 E3 gap 1) — the diag-friction steer target
   # for scoped py tests; `run_node_tests` stays in core.
   - "mcp__cli__run_tests"
   - "mcp__cli__collect_prs"
-  # GH-1153: registered read-only, never catalogued until the coverage
-  # test found it.
-  - "mcp__cli__background_preamble"
   # pr_labels defaults to action="list"; its add/remove writes are the
   # sanctioned path for the review:cleared signal (GH-1008) and are
   # idempotent, so skills call them unconditionally rather than probing.
@@ -65,6 +80,10 @@ base_permissions:
   # Plugin-mandated workflow write (GH-1215): the raw milestone PATCH is
   # routed to the wrapper, so leaving it uncatalogued is a dead end.
   - "mcp__cli__milestone_close"
+  # Same GH-1215 reasoning: the raw ready-flip CLI is routed to this
+  # wrapper. Owned by coding since gh-pr-fixup and git-groom re-ready a
+  # PR a push drafted (GH-1731).
+  - "mcp__cli__pr_ready"
 
   # --- gh CLI patterns (GH-98) ---
   - "Bash(gh pr view:*)"

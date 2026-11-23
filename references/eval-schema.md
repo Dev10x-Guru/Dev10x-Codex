@@ -20,7 +20,7 @@ include evaluation criteria. Optional for simpler skills.
 ## Canonical Format for New Skills
 
 All new skills MUST use the **dimension-referenced format** established in
-`skills/memory-maintenance/evals/evals.json` and
+`plugins/teach/skills/memory-maintenance/evals/evals.json` and
 `skills/playbook-maintenance/evals/evals.json`. This format ensures:
 - Consistent assertion/dimension cross-references (`dimension` field → eval_dimensions.id)
 - Explicit signals for test automation and regression detection
@@ -60,7 +60,7 @@ All new skills MUST use the **dimension-referenced format** established in
 ### Working Examples
 
 Copy structure from these reference implementations:
-- `skills/memory-maintenance/evals/evals.json` — ✓ Canonical format
+- `plugins/teach/skills/memory-maintenance/evals/evals.json` — ✓ Canonical format
 - `skills/playbook-maintenance/evals/evals.json` — ✓ Canonical format
 
 ## Legacy Evals Format
@@ -108,6 +108,12 @@ Each eval scenario tests a specific code path:
 | `behavioral` | Verify side effects (not just tool presence) | Task state updated, no auto-progression |
 | `plain_text` | Detect forbidden plain-text questions (negative check) | Catch "Do you want to proceed?" inline |
 | `rubric` | Judge an output against a stated standard when no mechanical check can express it | "Name the ROI bucket this title reads as; fail if none applies" |
+| `output_contains` / `output_not_contains` | Text the agent prints must (not) include `value` (older evals put it in `signal`) | A one-line "Reflection skipped" notice |
+| `task_exists` / `task_absent` | A task whose subject matches `value` is (not) on the list when the run ends | "Verify acceptance criteria" survives |
+| `tool_called_before` | `signals: [earlier, later]` — the first occurrence of `earlier` precedes the first occurrence of `later`; the check that asserts an ordering | `["AskUserQuestion", "Approve"]` — name the events, not bare tool names, when the tool is called more than once |
+
+`task_exists` proves presence, never order: an assertion that reads
+"X happens before Y" needs `tool_called_before` (GH-1826).
 
 ### Batch Checks (GH-1225)
 
@@ -152,7 +158,7 @@ Signals are **machine-detectable patterns** for regression detection:
 
 - ✓ `gate*-uses-tool`: "AskUserQuestion" appears in tool call list
 - ✓ `gate*-correct-options`: Option labels match documented list
-- ✓ `skill*-uses-tool`: "Skill(" appears in tool call list (e.g., "Skill(dev10x:gh-pr-fixup)")
+- ✓ `skill*-uses-tool`: "Skill(" appears in tool call list (e.g., "Skill(dev10x-coding:gh-pr-fixup)")
 - ✓ `skill*-tool-called`: Skill() tool invocation appears, not just mentioned in reasoning
 - ✗ `gate*-no-plain-text`: No inline question text before tool call
 - ✗ `no-auto-*`: Explicit user confirmation before proceeding
@@ -229,7 +235,7 @@ corresponding assertions?"
       "type": "tool_called",
       "tool": "Skill",
       "assertion": "fixup_uses_skill_tool",
-      "signal": "Skill(dev10x:gh-pr-fixup) is called"
+      "signal": "Skill(dev10x-coding:gh-pr-fixup) is called"
     },
     {
       "type": "tool_parameters",

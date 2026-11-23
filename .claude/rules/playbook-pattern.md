@@ -1,3 +1,9 @@
+---
+paths:
+  - "skills/**"
+  - "plugins/*/skills/**"
+---
+
 # Playbook-Powered Skills
 
 Pattern for skills that define multi-mode workflows in YAML playbooks.

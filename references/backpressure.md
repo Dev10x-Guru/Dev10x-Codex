@@ -18,10 +18,10 @@ Mechanism numbers follow the article.
 | # | Mechanism | Dev10x surface |
 |---|-----------|---------------|
 | 1 | Lint & test every iteration | `skills/py-test` (100% coverage), `hooks/scripts/ruff-format.py` (PostToolUse auto-format), CI `ci-gate.yml` (`hook-tests` / `server-tests` / `floors`) |
-| 2 | Manual testing | `skills/playwright`, `skills/qa-self` (staging + screenshot evidence), `skills/qa-scope` |
+| 2 | Manual testing | `plugins/qa/skills/playwright`, `plugins/qa/skills/qa-self` (staging + screenshot evidence), `skills/qa-scope` |
 | 3 | Benchmarking | `.claude/rules/performance.md` baseline, `tests/benchmarks/` — gate exists but CI wiring is a known gap (GH-432) |
 | 4 | Review agents | 8 specs in `.claude/agents/` + plugin-distributed `agents/` (code-reviewer, architect-*, reviewer-*), `claude-code-review.yml`, `skills/gh-pr-review`, `skills/review` + `review-fix` |
-| 5 | Planning reviews | `skills/scope`, `ticket-scope`, `project-scope`, `adr`, `adr-evaluate` (adversarial architect panel); `work-on` Phase 3 plan-approval gate |
+| 5 | Planning reviews | `plugins/scoping/skills/scope`, `ticket-scope`, `project-scope`, `adr`, `adr-evaluate` (adversarial architect panel); `work-on` Phase 3 plan-approval gate |
 | 6 | Visual design review | `qa-self` screenshots — no automated diff against design specs today (future: perceptual-diff gate, project-flag-gated) |
 | 7 | PR monitoring | `skills/gh-pr-monitor` (background CI + comment watcher, auto-fixup), `gh-pr-doctor`, privacy audit CI |
 
@@ -39,9 +39,9 @@ in the plugin.
 | DX001 | safe-subshell | Prevents subshell execution patterns |
 | DX002 | command-substitution | Blocks unsafe `$()` / backtick expansion |
 | DX003 | execution-safety | Guards against dangerous execution patterns |
-| DX004 | sql-safety | Blocks SQL writes outside `transaction.atomic` |
+| DX004 | sql-safety | Blocks database writes: SQL and Postgres write binaries |
 | DX005 | pr-base | Enforces correct PR base branch |
-| DX006 | skill-redirect | Redirects raw CLI to the documented skill |
+| DX006 | skill-redirect | Redirects raw CLI to the documented skill; steers `live_hint` rules without blocking |
 | DX007 | prefix-friction | Catches env-var prefixes on git/gh |
 | DX008 | commit-jtbd | Enforces outcome-focused commit titles |
 | DX009 | redundant-fetch | Warns on redundant git fetch calls |
@@ -56,7 +56,7 @@ Profile tiers: `minimal` (DX001–DX005, safety-critical only),
 `strict` (adds JTBD commit enforcement). Lower tiers always run at
 higher tiers.
 
-See `.claude/rules/hook-patterns.md` for profile tier table and
+See `.claude/rules/hook-validator-profiles.md` for profile tier table and
 validator registration pattern.
 
 ## Meta-Control: Tunable Backpressure
@@ -151,7 +151,7 @@ Meta-control
 
 | Document | Role |
 |----------|------|
-| `.claude/rules/hook-patterns.md` | Validator registration, profile tiers, DX rule IDs |
+| `.claude/rules/hook-validator-profiles.md` | Validator registration, profile tiers, DX rule IDs |
 | `references/friction-levels.md` | Friction level contract, adaptive behavior, completion gates |
 | `.claude/rules/skill-gates.md` | Decision gate pattern, ALWAYS_ASK marking |
 | `.claude/rules/performance.md` | CLI startup baseline, benchmark profiling |

@@ -2,12 +2,12 @@
 name: memory-maintenance
 description: 'Audit project and global memory files for stale patterns, version-pinned paths, contradictory instructions, and anti-patterns that cause skill bypass or permission friction. Reports findings and offers to clean up. TRIGGER when: user wants to audit memory health, after a plugin upgrade, or when agents keep bypassing skills despite memory instructions. DO NOT TRIGGER when: user wants to save or recall a specific memory (use the auto memory system directly).'
 metadata:
-  upstream: skills/memory-maintenance/SKILL.md
+  upstream: plugins/teach/skills/memory-maintenance/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/memory-maintenance/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/teach/skills/memory-maintenance/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/memory-maintenance/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/teach/skills/memory-maintenance/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 > **In Codex:** It audits Claude Code memory under ~/.claude/; Codex memory and AGENTS.md files are not covered.
 
@@ -52,7 +52,7 @@ Search for hardcoded plugin cache paths with version numbers:
 ```
 
 These break on plugin upgrades. Replace with:
-- `<plugin-root>/...` (in skill contexts)
+- `<plugin-root>/plugins/teach/...` (in skill contexts)
 - MCP tool calls (in memory instructions)
 - Skill() invocations (in workflow instructions)
 

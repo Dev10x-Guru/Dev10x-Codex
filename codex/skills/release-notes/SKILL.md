@@ -2,12 +2,12 @@
 name: release-notes
 description: 'Generate JTBD-driven release notes from git commits between releases. Playbook-powered workflow with configurable ticket patterns, output targets, and categories. TRIGGER when: preparing a release and need to generate changelog or release notes from commit history. DO NOT TRIGGER when: writing individual commit messages, or updating documentation unrelated to releases.'
 metadata:
-  upstream: skills/release-notes/SKILL.md
+  upstream: plugins/coding/skills/release-notes/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/release-notes/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/release-notes/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/release-notes/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/release-notes/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Release Notes Skill
@@ -25,7 +25,7 @@ summaries instead of technical commit logs.
 ## Playbook-Powered Workflow
 
 This skill is driven by playbook configuration. The default playbook
-lives at `<plugin-root>/skills/release-notes/references/playbook.yaml`.
+lives at `<plugin-root>/plugins/coding/skills/release-notes/references/playbook.yaml`.
 Projects can override via the 4-tier resolution in
 `references/config-resolution.md` (global preferred:
 `~/.config/Dev10x/playbooks/release-notes.yaml`).
@@ -81,7 +81,7 @@ root cause of 3/14 compliance deviations in a prior audit (GH-271).
 Run the `collect-prs.py` script with configured ticket patterns:
 
 ```bash
-<plugin-root>/skills/release-notes/scripts/collect-prs.py \
+<plugin-root>/plugins/coding/skills/release-notes/scripts/collect-prs.py \
   <REPO_PATH> \
   [--from TAG] [--to TAG] \
   [--ticket-pattern PATTERN] ...

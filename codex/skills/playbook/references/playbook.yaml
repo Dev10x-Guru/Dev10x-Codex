@@ -1,4 +1,4 @@
-version: "0.110.0"
+version: "0.116.0"
 
 # playbook.yaml — Reusable play templates for orchestration skills
 # Default location: <plugin-root>/skills/playbook/references/playbook.yaml
@@ -58,7 +58,28 @@ version: "0.110.0"
 # Fragments — reusable step sequences referenced via `- fragment: <name>`.
 # A fragment reference copies the fragment's steps inline at resolution
 # time. The reference may carry `condition` or `prompt` overrides that
-# apply to every expanded step.
+# apply to every expanded step. A fragment may reference another fragment
+# (expanded recursively, max depth 3); the outer reference's `condition`
+# reaches the inner steps too. A step with its own `condition` keeps both:
+# they join as `<outer> and <inner>`, so neither side wins (GH-1826).
+#
+# Terminal convention (GH-149, GH-1822): every default play ends with
+# the `session-reflection` fragment (Dev10x:reflect), placed right after
+# "Verify acceptance criteria". Reflection is non-blocking and never
+# closes Verify AC — that task stays open for the supervisor. Exception:
+# `investigation` has no Verify AC step, so Dev10x:reflect creates one
+# before completing. Validated by
+# tests/skills/playbook/test_session_reflection_step.py.
+#
+# Self-QA convention (GH-1827): plays that ship a user-facing change run
+# the `self-qa-evidence` fragment (qa-scope → qa-self --exploratory with a
+# narrated video → review-pack) right before the review request; the
+# fragment's comment in coding.yaml states the exact placement. It skips
+# with one printed line when there is no user-facing change or no
+# runnable environment. Per project: `active_modes:
+# [qa-off]` drops it, `[qa-record-only]` records without publishing, and
+# a same-named fragment in an override file shadows it. Validated by
+# tests/skills/playbook/test_self_qa_step.py.
 
 # User overrides — added when user customizes a plan.
 # persist: true = reuse across sessions; false = one-time.

@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -44,11 +43,18 @@ from functools import partial
 from pathlib import Path
 from typing import ClassVar
 
-from dev10x.domain import HookInput, HookResult
-from dev10x.domain.claude_paths import ClaudeDir
-from dev10x.domain.common.bash_tokens import strip_command_wrappers, substitution_bodies
-from dev10x.domain.profile_tier import ProfileTier
-from dev10x.validators.base import ValidatorBase
+from dev10x.core.domain import HookInput, HookResult
+from dev10x.core.domain.claude_paths import ClaudeDir
+from dev10x.core.domain.common.bash_tokens import (
+    ProgramProbe,
+    UntokenizableCommandError,
+    command_position_re,
+    command_units,
+    segment_programs,
+    tagged_command_units,
+)
+from dev10x.core.domain.profile_tier import ProfileTier
+from dev10x.core.validators.base import ValidatorBase
 
 # Verbs that write a file when paired with a redirect. Judged in
 # COMMAND position only (GH-1087) — see `_check_shell_writes`.
@@ -66,6 +72,20 @@ SHELL_WRITE_RE = re.compile(
 
 # Matches dd of= writes to real files; excludes /dev/null, /dev/stdout, /dev/stderr
 _DD_OF_RE = re.compile(r"\bof=(?!/dev/(null|stdout|stderr)\b)\S")
+
+# Fail-closed fallback for a unit the segmenter cannot tokenize (GH-1798):
+# an in-place editor in command position with its in-place flag anywhere
+# after it on the line. Over-matching is the safe direction here.
+_INPLACE_FALLBACK_RE = re.compile(
+    "|".join(
+        (
+            command_position_re(program="sed|perl").pattern + r"[^\n]*?\s-[A-Za-z]*i",
+            command_position_re(program="g?awk").pattern
+            + r"[^\n]*?\s(?:-i|--include)\s+['\"]?inplace\b",
+            command_position_re(program="dd").pattern + r"[^\n]*?" + _DD_OF_RE.pattern,
+        )
+    )
+)
 
 APPROVED_ABS_PREFIXES = (
     f"{ClaudeDir.tools_dir()}/",
@@ -122,80 +142,6 @@ If the script needs no third-party deps, the # /// block can be omitted."""
 
 SHELL_INTERPRETERS = ("bash", "sh", "zsh")
 
-
-def _heredoc_into_re(program: str) -> re.Pattern[str]:
-    """Match a heredoc/here-string feeding ``program`` via stdin (GH-687).
-
-    ``program`` is a regex fragment naming the interpreter (and, for
-    python, the launchers that reach it — GH-1630). It must appear at a
-    command boundary (start, pipe, ``;``, ``&``, ``(``, or newline),
-    optionally preceded by ``VAR=value`` env prefixes, and be followed on
-    the same line by ``<<`` (heredoc) or ``<<<`` (here-string). Matched
-    on the whole command so a ``|`` inside the heredoc body never
-    confuses pipeline splitting.
-
-    Substitutions need no boundary character here (GH-986). Each body is
-    passed in as its own unit by :func:`_command_units`, stripped of its
-    ``$(``/backtick wrapper, so the interpreter lands at ``^``.
-    """
-    return re.compile(
-        r"(?:^|[|;&(\n])\s*"
-        r"(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*" + program + r"\b[^\n]*?<<"
-    )
-
-
-def _command_position_re(program: str) -> re.Pattern[str]:
-    """Match ``interpreter`` in COMMAND position, not as an argument (GH-971).
-
-    Guards the fail-closed path only. A bare ``\\b<interpreter>\\b`` search
-    also matches a *filename* argument — ``bin/tachyon-env.sh`` ends on a
-    word-boundaried ``sh`` — so a read-only ``grep -E 'a|b' bin/x.sh`` was
-    blocked as script execution: the alternation ``|`` splits the pipeline
-    mid-quote, ``shlex`` then fails on the unbalanced quote, and the
-    fail-closed fallback matched the file extension.
-
-    Command position means: start of string or after a ``|``/``;``/``&``/
-    ``(``/newline separator, optionally preceded by ``VAR=value`` env
-    prefixes and optionally carrying a directory prefix (``/bin/sh``).
-
-    Note the scope: this pattern guards the ``shlex``-raised branch only.
-    An interpreter inside a substitution is caught by checking each body
-    as its own unit (:func:`_command_units`), not here.
-    """
-    return re.compile(
-        r"(?:^|[|;&(\n])\s*"
-        r"(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
-        r"(?:[\w./~-]*/)?" + program + r"\b"
-    )
-
-
-def _command_units(command: str) -> tuple[str, ...]:
-    """``command`` plus every command it nests in a substitution (GH-986).
-
-    A substitution runs its body as its own command, so each body is a
-    unit the interpreter guard must judge on its own terms.
-
-    Flattened ONCE per check rather than re-derived per interpreter. The
-    guard runs on every Bash tool call under a 2x-baseline CI benchmark,
-    and `_check_one_interpreter`'s substring guard admits ``sh`` for any
-    command merely mentioning ``bash``, ``zsh``, or a ``.sh`` filename —
-    so a per-interpreter scan would repeat this work several times over
-    on very ordinary commands.
-
-    The sweep is breadth-first because ``substitution_bodies`` returns
-    only the outermost bodies: re-scanning each one is what reaches a
-    nested ``$(python3 -c "$(echo x)")``.
-    """
-    units = [command]
-    pending = [command]
-    while pending:
-        for body in substitution_bodies(pending.pop(), include_backticks=True):
-            if body.strip():
-                units.append(body)
-                pending.append(body)
-    return tuple(units)
-
-
 _PYTHON_NAME_RE = re.compile(r"python(?:\d+(?:\.\d+)*)?(?:@[\w.]+)?")
 
 # A launcher that hands its remaining argv to an interpreter, mapped to
@@ -247,12 +193,23 @@ _LAUNCHER_VALUE_OPTIONS = frozenset(
     }
 )
 
-# Regex twin of `_python_argv` for the two whole-command matchers
-# (heredoc, fail-closed). Interpreter name with an optional launcher in
-# front; the launcher's own options ride in the lazy middle span.
+# Launcher options between a launcher word and what it runs: each an
+# option token optionally followed by one value token, mirroring
+# `_skip_launcher_options`. A free-text span here read an ARGUMENT as the
+# interpreter, so `uv run pytest -k python <<EOF` was denied (GH-1733).
+_ESCAPED_CHAR = r"\\."
+# An unquoted value may carry backslash escapes (`my\ dir`), and must not
+# start with `-`, or it would be the next option rather than a value.
+_BARE_VALUE = rf"(?:[^\s|;&\"'\\-]|{_ESCAPED_CHAR})(?:[^\s|;&\\]|{_ESCAPED_CHAR})*"
+_OPTION_VALUE = rf"(?:\"[^\"\n]*\"|'[^'\n]*'|{_BARE_VALUE})"
+_LAUNCHER_OPTIONS = rf"(?:-[^\s|;&]*\s+(?:{_OPTION_VALUE}\s+)?)*"
+
+# Regex twin of `_python_argv` for the fail-closed matcher. Interpreter
+# name with an optional launcher in front.
 _PYTHON_PROGRAM = (
-    r"(?:(?:(?:uv\s(?:[^\n|;&]*?\s)?(?:tool\s+)?run|(?:poetry|pipenv)\s(?:[^\n|;&]*?\s)?run|uvx)"
-    r"\s(?:[^\n|;&]*?\s)?))?"
+    r"(?:(?:uv\s+" + _LAUNCHER_OPTIONS + r"(?:tool\s+)?run"
+    r"|(?:poetry|pipenv)\s+" + _LAUNCHER_OPTIONS + r"run"
+    r"|uvx)\s+" + _LAUNCHER_OPTIONS + r")?"
     r"(?:[\w./~-]*/)?python(?:\d+(?:\.\d+)*)?(?:@[\w.]+)?"
 )
 
@@ -310,7 +267,8 @@ def _python_argv(parts: list[str]) -> list[str] | None:
 
 
 def _exact_argv(parts: list[str], *, name: str) -> list[str] | None:
-    return parts[1:] if parts[0] == name else None
+    # By basename, as for python: `/bin/bash -c x` runs bash (GH-1798).
+    return parts[1:] if Path(parts[0]).name == name else None
 
 
 class _Run(StrEnum):
@@ -384,31 +342,28 @@ def _shell_target(argv: list[str]) -> tuple[_Run, str | None]:
 class _Interpreter:
     """How to recognise one guarded interpreter in a command.
 
-    ``token`` is a cheap substring pre-filter; ``argv_of`` returns the
-    interpreter's own argv from a tokenized segment, or ``None`` when the
-    segment runs something else; ``target`` reads that argv into what
-    will actually execute.
+    ``probe`` is the cheap pre-filter shared with every guard (GH-1798);
+    ``argv_of`` returns the interpreter's own argv from a tokenized
+    segment, or ``None`` when the segment runs something else; ``target``
+    reads that argv into what will actually execute.
     """
 
-    token: str
-    heredoc: re.Pattern[str]
+    probe: ProgramProbe
     command_position: re.Pattern[str]
     argv_of: Callable[[list[str]], list[str] | None]
     target: Callable[[list[str]], tuple[_Run, str | None]]
 
 
 _PYTHON = _Interpreter(
-    token="python",
-    heredoc=_heredoc_into_re(_PYTHON_PROGRAM),
-    command_position=_command_position_re(_PYTHON_PROGRAM),
+    probe=ProgramProbe.for_program(program=_PYTHON_NAME_RE.pattern),
+    command_position=command_position_re(program=_PYTHON_PROGRAM),
     argv_of=_python_argv,
     target=_python_target,
 )
 _SHELLS = tuple(
     _Interpreter(
-        token=name,
-        heredoc=_heredoc_into_re(re.escape(name)),
-        command_position=_command_position_re(re.escape(name)),
+        probe=ProgramProbe.for_program(program=re.escape(name)),
+        command_position=command_position_re(program=re.escape(name)),
         argv_of=partial(_exact_argv, name=name),
         target=_shell_target,
     )
@@ -521,21 +476,18 @@ class ExecutionSafetyValidator(ValidatorBase):
         Substitution bodies are judged as their own units, so
         `$(printf x > /tmp/f)` is still caught.
         """
-        for unit in _command_units(command):
-            for segment in unit.split("|"):
-                try:
-                    parts = shlex.split(segment)
-                except ValueError:
-                    # Fail closed (mirroring the interpreter guard): an
-                    # unparseable segment is judged by the looser regex,
-                    # where over-matching is the safe direction.
-                    if SHELL_WRITE_RE.search(segment):
-                        return HookResult(message=SHELL_WRITE_MSG)
-                    continue
+        for unit in command_units(command=command):
+            try:
+                programs = segment_programs(command=unit)
+            except UntokenizableCommandError:
+                # Fail closed (mirroring the interpreter guard): an
+                # unparseable unit is judged by the looser regex, where
+                # over-matching is the safe direction.
+                if SHELL_WRITE_RE.search(unit):
+                    return HookResult(message=SHELL_WRITE_MSG)
+                continue
 
-                parts = strip_command_wrappers(parts=parts)
-                if not parts:
-                    continue
+            for segment, parts in programs:
                 verb = Path(parts[0]).name
                 if verb not in SHELL_WRITE_CMDS:
                     continue
@@ -543,9 +495,12 @@ class ExecutionSafetyValidator(ValidatorBase):
                 # A heredoc counts only for `cat` — `cat <<EOF` is itself a
                 # write shape. A heredoc after `echo` belongs to whatever
                 # the substitution runs (`echo $(python3 <<PY …)`), which
-                # the interpreter guard judges on its own terms.
-                if any(">" in arg for arg in parts[1:]) or (
-                    verb == "cat" and any(arg.startswith("<<") for arg in parts[1:])
+                # the interpreter guard judges on its own terms. The
+                # scanner owns the redirect grammar (GH-1798), so a quoted
+                # `'>'` argument is not a write and `echo a>f` is.
+                if any(
+                    redirect.writes or (verb == "cat" and redirect.feeds_inline_text)
+                    for redirect in segment.redirects
                 ):
                     return HookResult(message=SHELL_WRITE_MSG)
 
@@ -554,35 +509,36 @@ class ExecutionSafetyValidator(ValidatorBase):
     def _check_inplace_edit(self, *, command: str) -> HookResult | None:
         """Detect in-place file editors and steer to Write/Edit tool.
 
-        Scans each pipeline segment so `cat x | sed -i ...` is caught.
+        Scans every segment of every unit, so `cat x | sed -i ...`,
+        `true; sed -i ...` and `find . -exec sed -i ...` are all caught.
         Returns a HookResult on the first flagged segment, None otherwise.
+        An unparseable unit fails closed on `_INPLACE_FALLBACK_RE`, like
+        the shell-write and interpreter checks (GH-1798).
         """
         _INPLACE_CMDS = frozenset({"sed", "perl", "gawk", "awk", "dd"})
 
-        for segment in command.split("|"):
-            segment = segment.strip()
+        for unit in command_units(command=command):
             try:
-                parts = shlex.split(segment)
-            except ValueError:
-                return None
-
-            parts = strip_command_wrappers(parts=parts)
-            if not parts:
-                continue
-
-            cmd = parts[0]
-            if cmd not in _INPLACE_CMDS:
-                continue
-
-            argv = parts[1:]
-
-            if cmd == "dd":
-                if _DD_OF_RE.search(segment):
+                programs = segment_programs(command=unit)
+            except UntokenizableCommandError:
+                if _INPLACE_FALLBACK_RE.search(unit):
                     return HookResult(message=INPLACE_EDIT_MSG)
                 continue
 
-            if _has_inplace_flag(argv=argv, cmd=cmd):
-                return HookResult(message=INPLACE_EDIT_MSG)
+            for _, parts in programs:
+                cmd = parts[0]
+                if cmd not in _INPLACE_CMDS:
+                    continue
+
+                argv = parts[1:]
+
+                if cmd == "dd":
+                    if any(_DD_OF_RE.match(arg) for arg in argv):
+                        return HookResult(message=INPLACE_EDIT_MSG)
+                    continue
+
+                if _has_inplace_flag(argv=argv, cmd=cmd):
+                    return HookResult(message=INPLACE_EDIT_MSG)
 
         return None
 
@@ -597,15 +553,21 @@ class ExecutionSafetyValidator(ValidatorBase):
         interpreter loop stays outermost and each one sweeps every unit
         before the next interpreter is tried.
         """
-        units = _command_units(command)
+        # Flattened once, not per interpreter: the `sh` probe admits any
+        # command mentioning bash, zsh or a .sh filename. Each unit carries
+        # its remote flag: a script path inside an ssh or container command
+        # names the remote filesystem, so only inline and stdin forms are
+        # judged there.
+        units = tagged_command_units(command=command)
 
         for unit in units:
             result = self._check_one_interpreter(
-                command=unit,
+                command=unit.command,
                 interpreter=_PYTHON,
                 approved=APPROVED_ABS_PREFIXES,
                 message=PYTHON3_INLINE_MSG,
                 cwd=cwd,
+                remote=unit.remote,
             )
             if result:
                 return result
@@ -613,11 +575,12 @@ class ExecutionSafetyValidator(ValidatorBase):
         for interpreter in _SHELLS:
             for unit in units:
                 result = self._check_one_interpreter(
-                    command=unit,
+                    command=unit.command,
                     interpreter=interpreter,
                     approved=SHELL_APPROVED_ABS_PREFIXES,
                     message=SHELL_INTERP_MSG,
                     cwd=cwd,
+                    remote=unit.remote,
                 )
                 if result:
                     return result
@@ -632,40 +595,36 @@ class ExecutionSafetyValidator(ValidatorBase):
         approved: tuple[str, ...],
         message: str,
         cwd: str = "",
+        remote: bool = False,
     ) -> HookResult | None:
         """Judge ONE command unit — the caller supplies substitution bodies
-        as their own units (see `_command_units`), so this never has to
+        as their own units (see `command_units`), so this never has to
         look inside `$( … )` itself."""
-        if interpreter.token not in command:
+        if not interpreter.probe.found_in(command=command):
             return None
 
-        # Heredoc / here-string feeding the interpreter via stdin (GH-687).
-        # Checked on the whole command so a `|` inside the heredoc body does
-        # not confuse the pipeline split below.
-        if interpreter.heredoc.search(command):
-            return HookResult(message=message)
+        try:
+            programs = segment_programs(command=command)
+        except UntokenizableCommandError:
+            # Fail closed (GH-687): an unparseable command naming the
+            # interpreter is suspicious, not safe. The old `return None`
+            # let a quoting trick smuggle execution past the guard.
+            # Command position only (GH-971): an argument that merely
+            # ends in `.sh` is a read target, not an interpreter.
+            if interpreter.command_position.search(command):
+                return HookResult(message=message)
+            return None
 
-        for idx, raw_segment in enumerate(command.split("|")):
-            segment = raw_segment.strip()
-
-            try:
-                parts = shlex.split(segment)
-            except ValueError:
-                # Fail closed (GH-687): an unparseable command naming the
-                # interpreter is suspicious, not safe. The old `return None`
-                # let a quoting trick smuggle execution past the guard.
-                # Command position only (GH-971): an argument that merely
-                # ends in `.sh` is a read target, not an interpreter.
-                if interpreter.command_position.search(command):
-                    return HookResult(message=message)
-                return None
-
-            parts = strip_command_wrappers(parts=parts)
-            if not parts:
-                continue
+        for segment, parts in programs:
             argv = interpreter.argv_of(parts)
             if argv is None:
                 continue
+
+            # Heredoc / here-string feeding the interpreter via stdin
+            # (GH-687). The scanner already dropped the body, so a `|`
+            # inside it cannot split the segment (GH-1798).
+            if any(redirect.feeds_inline_text for redirect in segment.redirects):
+                return HookResult(message=message)
 
             run, script = interpreter.target(argv)
             if run is _Run.INLINE:
@@ -675,13 +634,13 @@ class ExecutionSafetyValidator(ValidatorBase):
 
             if script is None:
                 # No script file. An upstream pipe makes the interpreter read
-                # the piped data as its program (GH-687); a bare interpreter in
-                # the first segment is just a REPL — not a script smuggle.
-                if idx > 0:
+                # the piped data as its program (GH-687); a bare interpreter
+                # anywhere else is just a REPL — not a script smuggle.
+                if segment.is_piped:
                     return HookResult(message=message)
                 continue
 
-            if not Path(script).expanduser().is_absolute():
+            if remote or not Path(script).expanduser().is_absolute():
                 continue
 
             if _is_approved_path(script, approved):

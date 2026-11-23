@@ -12,8 +12,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from dev10x.domain.session_document import state_path_for_toplevel, write_state
-from dev10x.session.service import SessionService
+
+from dev10x.core.domain.session_document import state_path_for_toplevel, write_state
+from dev10x.core.session.service import SessionService, marked_preamble
 
 
 def _write_state(*, toplevel: str, session_id: str) -> Path:
@@ -122,7 +123,7 @@ class TestBuildGuidanceContext:
         """GH-1495: SessionStart guidance is the one channel present in a
         session with no scoping skill loaded, so it must carry the pointer."""
         result = SessionService().build_guidance_context()
-        assert "/dev10x:estimate" in result
+        assert "/dev10x-scoping:estimate" in result
         assert "outside a scoping skill" in result
 
 
@@ -130,7 +131,7 @@ class TestBuildSkillsIndexContext:
     def test_empty_when_index_missing(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        from dev10x.domain.claude_paths import CLAUDE_HOME_ENV_VAR, ClaudeDir
+        from dev10x.core.domain.claude_paths import CLAUDE_HOME_ENV_VAR, ClaudeDir
 
         monkeypatch.setenv(CLAUDE_HOME_ENV_VAR, str(tmp_path / "claude-home"))
         ClaudeDir.reset_cache()
@@ -141,7 +142,7 @@ class TestBuildSkillsIndexContext:
     def test_returns_file_contents_when_present(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        from dev10x.domain.claude_paths import CLAUDE_HOME_ENV_VAR, ClaudeDir
+        from dev10x.core.domain.claude_paths import CLAUDE_HOME_ENV_VAR, ClaudeDir
 
         claude_home = tmp_path / "claude-home"
         claude_home.mkdir(parents=True)
@@ -158,7 +159,7 @@ class TestBuildSkillsIndexContext:
     def test_empty_when_index_unreadable(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        from dev10x.domain.claude_paths import CLAUDE_HOME_ENV_VAR, ClaudeDir
+        from dev10x.core.domain.claude_paths import CLAUDE_HOME_ENV_VAR, ClaudeDir
 
         claude_home = tmp_path / "claude-home"
         claude_home.mkdir(parents=True)
@@ -176,31 +177,75 @@ class TestBuildBackgroundPreambleContext:
         svc = SessionService(plugin_root=tmp_path)
         assert svc.build_background_preamble_context() == ""
 
-    def test_returns_file_contents_when_present(self, tmp_path: Path) -> None:
+    def test_missing_file_is_logged(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        SessionService(plugin_root=tmp_path).build_background_preamble_context()
+
+        assert "background preamble document missing" in caplog.text
+
+    @pytest.fixture()
+    def unmarked_root(self, tmp_path: Path) -> Path:
+        orchestration_dir = tmp_path / "references" / "orchestration"
+        orchestration_dir.mkdir(parents=True)
+        (orchestration_dir / "background-preamble.md").write_text("# No markers here\n")
+        return tmp_path
+
+    def test_unmarked_document_yields_nothing(self, unmarked_root: Path) -> None:
+        result = SessionService(plugin_root=unmarked_root).build_background_preamble_context()
+
+        assert result == ""
+
+    def test_unmarked_document_is_logged(
+        self, unmarked_root: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        SessionService(plugin_root=unmarked_root).build_background_preamble_context()
+
+        assert "block missing or empty" in caplog.text
+
+    def test_returns_only_the_marked_block(self, tmp_path: Path) -> None:
         orchestration_dir = tmp_path / "references" / "orchestration"
         orchestration_dir.mkdir(parents=True)
         preamble = orchestration_dir / "background-preamble.md"
-        preamble.write_text("# Background Friction Preamble\nNo cd && chaining.")
+        preamble.write_text(
+            "# Background Friction Preamble\n\nWhy this exists.\n\n"
+            "<!-- BEGIN PREAMBLE -->\nNo cd && chaining.\n<!-- END PREAMBLE -->\n\n"
+            "## Pre-seed\nMaintainer notes.\n"
+        )
 
         svc = SessionService(plugin_root=tmp_path)
-        result = svc.build_background_preamble_context()
 
-        assert "Background Friction Preamble" in result
-        assert "No cd && chaining" in result
+        assert svc.build_background_preamble_context() == "No cd && chaining."
 
-    def test_real_plugin_root_has_preamble_file(self) -> None:
-        svc = SessionService()
-        result = svc.build_background_preamble_context()
-        assert len(result) > 0
+    def test_real_plugin_root_serves_the_subagent_block(self) -> None:
+        result = SessionService().build_background_preamble_context()
+
+        assert result.startswith("You are a background subagent.")
+        assert "## Why this exists" not in result
+        assert "PREAMBLE" not in result
+
+
+class TestMarkedPreamble:
+    @pytest.mark.parametrize(
+        "document",
+        [
+            "no markers at all",
+            "<!-- BEGIN PREAMBLE -->\nunterminated",
+            "trailing only\n<!-- END PREAMBLE -->",
+            "<!-- END PREAMBLE -->\nreversed\n<!-- BEGIN PREAMBLE -->",
+        ],
+    )
+    def test_missing_or_misordered_marker_yields_empty(self, document: str) -> None:
+        assert marked_preamble(document=document) == ""
 
 
 class TestBuildInstallCheckContext:
     def test_empty_when_install_current(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        from dev10x.domain.claude_paths import CLAUDE_HOME_ENV_VAR
-        from dev10x.domain.dev10x_paths import CONFIG_HOME_ENV_VAR, Dev10xConfigDir
-        from dev10x.domain.install_version import write_applied_version
+        from dev10x.core.domain.claude_paths import CLAUDE_HOME_ENV_VAR
+        from dev10x.core.domain.dev10x_paths import CONFIG_HOME_ENV_VAR, Dev10xConfigDir
+        from dev10x.core.domain.install_version import write_applied_version
 
         monkeypatch.setenv(CLAUDE_HOME_ENV_VAR, str(tmp_path))
         monkeypatch.setenv(CONFIG_HOME_ENV_VAR, str(tmp_path / "config_dev10x"))
@@ -220,8 +265,8 @@ class TestBuildInstallCheckContext:
     def test_guides_bootstrap_when_config_missing(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        from dev10x.domain.claude_paths import CLAUDE_HOME_ENV_VAR
-        from dev10x.domain.dev10x_paths import CONFIG_HOME_ENV_VAR, Dev10xConfigDir
+        from dev10x.core.domain.claude_paths import CLAUDE_HOME_ENV_VAR
+        from dev10x.core.domain.dev10x_paths import CONFIG_HOME_ENV_VAR, Dev10xConfigDir
 
         monkeypatch.setenv(CLAUDE_HOME_ENV_VAR, str(tmp_path))
         monkeypatch.setenv(CONFIG_HOME_ENV_VAR, str(tmp_path / "config_dev10x"))
@@ -237,9 +282,9 @@ class TestBuildInstallCheckContext:
     def test_guides_upgrade_on_version_mismatch(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        from dev10x.domain.claude_paths import CLAUDE_HOME_ENV_VAR
-        from dev10x.domain.dev10x_paths import CONFIG_HOME_ENV_VAR, Dev10xConfigDir
-        from dev10x.domain.install_version import write_applied_version
+        from dev10x.core.domain.claude_paths import CLAUDE_HOME_ENV_VAR
+        from dev10x.core.domain.dev10x_paths import CONFIG_HOME_ENV_VAR, Dev10xConfigDir
+        from dev10x.core.domain.install_version import write_applied_version
 
         monkeypatch.setenv(CLAUDE_HOME_ENV_VAR, str(tmp_path))
         monkeypatch.setenv(CONFIG_HOME_ENV_VAR, str(tmp_path / "config_dev10x"))
@@ -265,7 +310,7 @@ class TestBuildHookVersionDriftContext:
     def test_empty_when_versions_match(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        from dev10x.domain.claude_paths import CLAUDE_HOME_ENV_VAR, ClaudeDir
+        from dev10x.core.domain.claude_paths import CLAUDE_HOME_ENV_VAR, ClaudeDir
 
         plugin_root = tmp_path / "plugins" / "cache" / "Dev10x-Guru" / "dev10x-claude" / "0.76.0"
         (plugin_root / ".claude-plugin").mkdir(parents=True)
@@ -282,7 +327,7 @@ class TestBuildHookVersionDriftContext:
     def test_warns_when_newer_version_installed(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        from dev10x.domain.claude_paths import CLAUDE_HOME_ENV_VAR, ClaudeDir
+        from dev10x.core.domain.claude_paths import CLAUDE_HOME_ENV_VAR, ClaudeDir
 
         cache_base = tmp_path / "plugins" / "cache" / "Dev10x-Guru" / "dev10x-claude"
         old_root = cache_base / "0.72.0"
@@ -305,7 +350,7 @@ class TestBuildHookVersionDriftContext:
     def test_empty_when_running_version_unknown(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        from dev10x.domain.claude_paths import CLAUDE_HOME_ENV_VAR, ClaudeDir
+        from dev10x.core.domain.claude_paths import CLAUDE_HOME_ENV_VAR, ClaudeDir
 
         monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
         monkeypatch.setenv(CLAUDE_HOME_ENV_VAR, str(tmp_path))
@@ -323,14 +368,14 @@ class TestBuildCompactionContext:
 
     def test_returns_string_with_valid_toplevel(self, tmp_path: Path) -> None:
         with (
-            patch("dev10x.domain.documents.session_context.GitContext") as mock_git_cls,
+            patch("dev10x.core.domain.documents.session_context.GitContext") as mock_git_cls,
             patch(
-                "dev10x.domain.documents.session_context.plan_path_for_toplevel",
+                "dev10x.core.domain.documents.session_context.plan_path_for_toplevel",
                 return_value=tmp_path / "plan.json",
             ),
-            patch("dev10x.domain.documents.session_context.SessionYamlDocument") as mock_doc,
+            patch("dev10x.core.domain.documents.session_context.SessionYamlDocument") as mock_doc,
         ):
-            from dev10x.domain.friction_level import FrictionLevel
+            from dev10x.core.domain.friction_level import FrictionLevel
 
             mock_git = mock_git_cls.return_value
             mock_git.branch = "feature/test"
@@ -345,14 +390,14 @@ class TestBuildCompactionContext:
 
     def test_includes_branch_in_output(self, tmp_path: Path) -> None:
         with (
-            patch("dev10x.domain.documents.session_context.GitContext") as mock_git_cls,
+            patch("dev10x.core.domain.documents.session_context.GitContext") as mock_git_cls,
             patch(
-                "dev10x.domain.documents.session_context.plan_path_for_toplevel",
+                "dev10x.core.domain.documents.session_context.plan_path_for_toplevel",
                 return_value=tmp_path / "plan.json",
             ),
-            patch("dev10x.domain.documents.session_context.SessionYamlDocument") as mock_doc,
+            patch("dev10x.core.domain.documents.session_context.SessionYamlDocument") as mock_doc,
         ):
-            from dev10x.domain.friction_level import FrictionLevel
+            from dev10x.core.domain.friction_level import FrictionLevel
 
             mock_git = mock_git_cls.return_value
             mock_git.branch = "feature/svc-test"

@@ -135,7 +135,7 @@ merge.
 
 **Detection:**
 ```bash
-<plugin-root>/skills/gh-pr-monitor/scripts/detect-fixup-commits.sh \
+<plugin-root>/plugins/coding/skills/gh-pr-monitor/scripts/detect-fixup-commits.sh \
   --pr {pr_number} --repo {repo}
 ```
 

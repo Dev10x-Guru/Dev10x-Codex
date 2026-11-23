@@ -2,12 +2,12 @@
 name: git
 description: 'Use before running git push or git rebase — so force-pushes to protected branches are blocked and non-interactive rebases run unattended without manual editor approval prompts. TRIGGER when: running git push or git rebase operations. DO NOT TRIGGER when: other git operations (commit, status, log, diff) that don''t need push/rebase safety.'
 metadata:
-  upstream: skills/git/SKILL.md
+  upstream: plugins/coding/skills/git/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/git/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/git/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/git/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/git/`.
 
 **Announce:** "Using Dev10x:git to [push / groom commits]."
 
@@ -88,7 +88,8 @@ deliberately not expressible — the shell layer has no such flag.
 `push_safe` with the right `protected_branches` list. Reach for
 the skill's documented escape paths — not env-level bypasses —
 when the wrapper itself blocks: hook overrides live in the hook
-layer (see `.claude/rules/hook-patterns.md`), not at the caller.
+layer (see `.claude/rules/hook-validator-profiles.md`
+§ Configuration), not at the caller.
 
 If the call still blocks after adjusting `protected_branches`,
 read the returned `blocked_reason` field — it names the exact
@@ -157,7 +158,7 @@ hint so the next move is unambiguous.
 
 **There is no wrapper-script fallback (GH-1025).** Earlier versions of
 this skill documented
-`<plugin-root>/skills/git/scripts/git-push-safe.sh` as a
+`<plugin-root>/plugins/coding/skills/git/scripts/git-push-safe.sh` as a
 fallback, but the `git-push-safe-script` rule in
 `command-skill-map.yaml` hard-blocks that path with "use the MCP tool
 instead" — so following the instruction produced a guaranteed block.
@@ -220,7 +221,7 @@ then Write the sequence content.
 3. Run the rebase with the sequence file as the first argument:
 
 ```bash
-<plugin-root>/skills/git/scripts/git-rebase-groom.sh <unique-path> <base-ref>
+<plugin-root>/plugins/coding/skills/git/scripts/git-rebase-groom.sh <unique-path> <base-ref>
 ```
 
 ### Sequence file ordering
@@ -275,8 +276,8 @@ Add to your project's `.claude/settings.local.json`:
 {
   "permissions": {
     "allow": [
-      "Bash(<plugin-root>/skills/git/scripts/git-rebase-groom.sh:*)",
-      "Bash(<plugin-root>/skills/git/scripts/git-seq-editor.sh:*)",
+      "Bash(<plugin-root>/plugins/coding/skills/git/scripts/git-rebase-groom.sh:*)",
+      "Bash(<plugin-root>/plugins/coding/skills/git/scripts/git-seq-editor.sh:*)",
       "Bash(git reset --soft:*)",
       "Bash(git push --force-with-lease:*)",
       "Bash(/tmp/Dev10x/bin/mktmp.sh:*)",

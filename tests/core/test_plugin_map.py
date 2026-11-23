@@ -9,9 +9,10 @@ from dev10x.core.plugin_map import (
     expected_plugin_name,
     load_plugin_map,
     parse_plugin_map,
+    repo_skill_directories,
     skill_directories,
 )
-from dev10x.subprocess_utils import get_plugin_root
+from dev10x.core.subprocess_utils import get_plugin_root
 
 ADR_0034_COUNTS = {
     "qa": 6,
@@ -19,10 +20,10 @@ ADR_0034_COUNTS = {
     "db": 3,
     "comm": 7,
     "teach": 7,
-    "tasks": 7,
-    "scoping": 15,
+    "tasks": 8,
+    "scoping": 19,
     "core": 17,
-    "coding": 38,
+    "coding": 40,
 }
 
 
@@ -33,7 +34,7 @@ def plugin_map() -> PluginMap:
 
 @pytest.fixture(scope="module")
 def skill_dirs() -> list[str]:
-    return skill_directories(skills_root=get_plugin_root() / "skills")
+    return repo_skill_directories(repo_root=get_plugin_root())
 
 
 @pytest.fixture
@@ -81,8 +82,25 @@ class TestRepositoryPluginMap:
     def test_marketplace_is_the_core_install_marketplace(self, plugin_map: PluginMap) -> None:
         assert plugin_map.marketplace == "Dev10x-Guru"
 
-    def test_nothing_is_extracted_during_stage_a(self, plugin_map: PluginMap) -> None:
-        assert plugin_map.extracted == ()
+    def test_extracted_skills_live_in_their_satellite(self, plugin_map: PluginMap) -> None:
+        root = get_plugin_root()
+
+        assert [
+            f"{key}/{skill}"
+            for key in plugin_map.extracted
+            for skill in plugin_map.plugins[key]
+            if not (root / "plugins" / key / "skills" / skill / "SKILL.md").is_file()
+        ] == []
+
+    def test_core_skills_root_holds_no_extracted_skill(self, plugin_map: PluginMap) -> None:
+        core_dirs = set(skill_directories(skills_root=get_plugin_root() / "skills"))
+
+        assert [
+            skill
+            for key in plugin_map.extracted
+            for skill in plugin_map.plugins[key]
+            if skill in core_dirs
+        ] == []
 
     def test_extracted_keys_are_known_plugins(self, plugin_map: PluginMap) -> None:
         assert plugin_map.unknown_extracted() == []
@@ -166,6 +184,22 @@ class TestPluginNames:
     def test_plugin_name(self, named_map: PluginMap, key: str, expected: str | None) -> None:
         assert named_map.plugin_name(key=key) == expected
 
+    @pytest.mark.parametrize(
+        ("key", "expected"),
+        [
+            pytest.param("qa", "qa-plugin", id="named"),
+            pytest.param("comm", "dev10x-comm", id="falls-back-to-scheme"),
+            pytest.param("core", "dev10x", id="core"),
+        ],
+    )
+    def test_installed_name(
+        self,
+        named_map: PluginMap,
+        key: str,
+        expected: str,
+    ) -> None:
+        assert named_map.installed_name(key=key) == expected
+
     def test_known_plugin_names(self, named_map: PluginMap) -> None:
         assert named_map.known_plugin_names() == ("dev10x", "qa-plugin")
 
@@ -208,3 +242,6 @@ class TestSkillDirectories:
         (tmp_path / "loose.md").write_text("")
 
         assert skill_directories(skills_root=tmp_path) == ["real"]
+
+    def test_repo_skill_directories_merge_every_root(self, split_repo: Path) -> None:
+        assert repo_skill_directories(repo_root=split_repo) == ["afk", "k8s", "tts"]

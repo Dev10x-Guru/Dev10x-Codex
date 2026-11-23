@@ -2,12 +2,12 @@
 name: yt-upload
 description: 'Publish a recording to YouTube as unlisted and hand back the embed form each destination can actually use — a bare watch URL for Linear (the only thing its editor will turn into a player) and a clickable poster frame for GitHub (which strips iframes). TRIGGER when: a video file needs to become a shareable link — a QA walkthrough, a demo recording, a bug repro. DO NOT TRIGGER when: capturing the recording (use Dev10x:qa-self), converting or verifying evidence files (use qa-self''s own scripts), or publishing a full QA evidence set to a ticket and PR (use Dev10x:qa-publish, which calls this skill).'
 metadata:
-  upstream: skills/yt-upload/SKILL.md
+  upstream: plugins/qa/skills/yt-upload/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/yt-upload/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/qa/skills/yt-upload/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/yt-upload/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/qa/skills/yt-upload/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:yt-upload — publish a recording as unlisted
@@ -55,7 +55,7 @@ week. A minute of human watching catches all three. A missing player is not a
 reason to publish unreviewed — hand over the path instead.
 
 ```bash
-<plugin-root>/skills/yt-upload/scripts/upload-video.py \
+<plugin-root>/plugins/qa/skills/yt-upload/scripts/upload-video.py \
   resolve-video --run-dir <RUN_DIR>
 ```
 
@@ -98,9 +98,9 @@ for.
 | `delete` | Permanently remove a published video |
 
 ```bash
-<plugin-root>/skills/yt-upload/scripts/upload-video.py check
+<plugin-root>/plugins/qa/skills/yt-upload/scripts/upload-video.py check
 
-<plugin-root>/skills/yt-upload/scripts/upload-video.py \
+<plugin-root>/plugins/qa/skills/yt-upload/scripts/upload-video.py \
   upload --video <RUN_DIR>/video/qa-GH-42-narrated.mp4 \
          --title "GH-42 — assigning a work order from the queue" \
          --description-file <RUN_DIR>/description.txt
@@ -114,7 +114,7 @@ comment can be edited, and until now the YouTube description could not,
 so anyone opening the raw link saw the uncorrected version:
 
 ```bash
-<plugin-root>/skills/yt-upload/scripts/upload-video.py \
+<plugin-root>/plugins/qa/skills/yt-upload/scripts/upload-video.py \
   update --video-id <ID> --description-file <RUN_DIR>/description.txt
 ```
 
@@ -127,7 +127,7 @@ Use `delete` for a superseded take, so a stale unlisted link stops
 resolving for anyone still holding it:
 
 ```bash
-<plugin-root>/skills/yt-upload/scripts/upload-video.py \
+<plugin-root>/plugins/qa/skills/yt-upload/scripts/upload-video.py \
   delete --video-id <ID> --yes
 ```
 
@@ -177,10 +177,9 @@ and nothing secret in the repo or the config file.
 Run `check` after each setup step rather than working the list top to bottom
 blind — it names the next thing to fix.
 
-**Full setup:
-[`Dev10x:gog` § YouTube](../gog/references/youtube.md)**, with the shared
-OAuth traps in
-[`references/auth-setup.md`](../gog/references/auth-setup.md). The four
+**Full setup: `Dev10x:gog` § YouTube** (its `references/youtube.md`, in
+the `dev10x-comm` plugin), with the shared OAuth traps in the same skill's
+`references/auth-setup.md`. The four
 that decide whether a first-time setup succeeds:
 
 1. **The OAuth client must be a *Desktop app*.** gog binds a random
@@ -208,8 +207,8 @@ gog owns auth but **cannot carry a media body** — there is no
 `youtube videos insert`, and `api call` takes JSON only — so the resumable
 `videos.insert` is hand-rolled here with gog's exported token. Everything
 gog *can* do stays with gog: warming the token, minting the credential, and
-confirming the upload landed. See
-[`Dev10x:gog` § There is no upload command](../gog/references/youtube.md).
+confirming the upload landed. See `Dev10x:gog` § There is no upload
+command (`references/youtube.md`).
 
 **Re-check on a gog upgrade.** If a media flag appears, move the transfer to
 gog and delete the hand-rolled `open_session`/`upload` pair — it exists only
@@ -234,7 +233,7 @@ projects:
 ```
 
 ```bash
-<plugin-root>/skills/yt-upload/scripts/upload-video.py \
+<plugin-root>/plugins/qa/skills/yt-upload/scripts/upload-video.py \
   pin --account you@example.com --channel UCxxxxxxxxxxxxxxxxxxxxxx
 ```
 
@@ -267,4 +266,4 @@ Shredding is best-effort, not a secure erase — on CoW filesystems, SSDs with
 wear levelling, or an encrypted volume the original blocks may survive. That
 is an accepted trade-off for a token that lives for seconds and that gog can
 revoke and reissue. This is the worked reference for the token-handling rule
-in [`Dev10x:gog` § Tokens](../gog/references/auth-setup.md).
+in `Dev10x:gog` § Tokens (`references/auth-setup.md`).

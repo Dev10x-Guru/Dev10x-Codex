@@ -7,6 +7,9 @@
 # Play names match Phase 1 classification (for work-on):
 #   feature, bugfix, pr-continuation, local-only, investigation,
 #   structured-spec
+# Plus `business` (GH-1026): not a Phase 1 classification — a project
+# opts in by pointing its feature/bugfix plays at the
+# `business-change` fragment. See ../business-profile.md.
 
 fragments:
   shipping-pipeline:
@@ -25,13 +28,19 @@ fragments:
       type: detailed
       prompt: >
         Self-review the current branch to catch issues before
-        creating the PR. Run with --unattended. Auto-fix all
-        findings. Auto-advance without supervisor gate.
+        creating the PR. Run with --unattended --loop: every round
+        of fixes is re-reviewed by fresh reviewers until a round
+        finds no defects, capped at 4 rounds (GH-1831). Auto-fix
+        findings. Auto-advance without supervisor gate. If the
+        review ends "BLOCKED: review-loop", queue that decision for
+        the supervisor and do not create or advance the PR until
+        it is answered.
       skills: [Dev10x:review, Dev10x:review-fix]
       modes:
         supervised:
           prompt: >
-            Present findings for approval before auto-fixing.
+            Run with --loop. Present findings for approval before
+            auto-fixing.
     - subject: Simplify post-review changes
       type: detailed
       condition: review-fix-produced-changes
@@ -103,31 +112,60 @@ fragments:
         the PR ready (`pr_ready`). Under `required` leave the PR
         as a draft — readiness waits for the supervisor.
       skills: [Dev10x:gh-pr-create]
+    - fragment: self-qa-evidence
     - subject: Request review
       type: detailed
       prompt: >
-        Assign reviewers and post Slack notification per project
-        config. Auto-assign from CODEOWNERS — no AskUserQuestion
-        for reviewer selection.
+        When the self-QA review pack sent with gaps stated, its
+        section 4 lists them; when self-QA was skipped or held there
+        is no list to read. Before requesting review, close what can
+        be closed now — e.g. fix a non-UI defect (Dev10x:git-commit,
+        push via Dev10x:git). After all fixes, run Dev10x:review
+        --unattended --loop once on the new HEAD, then re-run
+        Dev10x:review-pack --no-request-review once so section 4
+        matches that HEAD, and refresh the PR body's linked commit
+        list the way Update PR description wrote it
+        (Dev10x:gh-pr-create) so it names the fix commits; skip all
+        three when nothing was fixed. A
+        UI-changing fix makes the pack's video stale, so list that
+        gap instead of fixing it here. Record in the Verify-AC summary
+        which gaps were closed and which remain, so the reviewer does
+        not learn of them from the pack alone. Then request review
+        with the remaining gaps stated: assign reviewers and post
+        Slack notification per project config. Auto-assign from
+        CODEOWNERS — no AskUserQuestion for reviewer selection.
       skills: [Dev10x:gh-pr-request-review]
       modes:
         solo-maintainer:
           subject: Mark PR ready for review
           prompt: >
-            Mark ready via the `pr_ready` MCP wrapper (GH-779) — not
-            raw `gh pr ready`. No reviewers, no Slack.
+            When the self-QA review pack sent with gaps stated, list
+            each open gap in the Verify-AC summary; when self-QA was
+            skipped or held there is no list to read. Mark ready via
+            the `pr_ready` MCP wrapper (GH-779) — not raw `gh pr
+            ready`. No reviewers, no Slack.
     - subject: Merge PR
       type: detailed
       prompt: >
         Merge the PR after all checks pass. Use the merge
         strategy from project settings (rebase preferred to
-        preserve groomed commit history).
+        preserve groomed commit history). If the DX019 review
+        stamp gate denies, run Dev10x:review --unattended --loop
+        on the PR branch, push its fixups via Dev10x:git, wait for
+        CI on the new head, then retry. If that review ends
+        "BLOCKED: review-loop", stop and queue the decision for the
+        supervisor. Never disable the rule.
       skills: [Dev10x:gh-pr-merge]
       modes:
         solo-maintainer:
           prompt: >
             Solo maintainer — no reviewers to wait for. Merge
-            immediately after marking ready and CI passes.
+            immediately after marking ready and CI passes. If the
+            DX019 review stamp gate denies, run Dev10x:review
+            --unattended --loop on the PR branch, push its fixups via
+            Dev10x:git, wait for CI on the new head, then retry. If
+            that review ends "BLOCKED: review-loop", stop and queue
+            the decision for the supervisor. Never disable the rule.
       condition: solo-maintainer
     - subject: Verify acceptance criteria
       type: detailed
@@ -135,6 +173,113 @@ fragments:
         Always delegate to Dev10x:verify-acc-dod skill
         regardless of mode. The skill owns its own gates.
       skills: [Dev10x:verify-acc-dod]
+    - fragment: session-reflection
+
+  # The last step of every default play (GH-1822): file what the session
+  # learned into the configured knowledge vault. It comes AFTER Verify
+  # acceptance criteria but never closes it — Verify AC stays the open
+  # terminal task the supervisor signs off (GH-149). Reflection is
+  # non-blocking: it finishes or skips inside the turn, so the Stop gate
+  # sees Verify AC as the only open task again.
+  session-reflection:
+    - subject: Reflect lessons into the knowledge vault
+      type: detailed
+      prompt: >
+        Non-blocking final step. Run it once Dev10x:verify-acc-dod has
+        reported, while "Verify acceptance criteria" stays open for the
+        supervisor — never mark Verify AC completed or deleted here.
+        Dev10x:reflect skips with one line when no vault is
+        configured. Complete (or skip) this step before the turn ends;
+        when it would be the last open task, the skill seeds Verify AC
+        first.
+      skills: [Dev10x:reflect]
+
+  # Proof that someone used the change (GH-1827). Runs after the Verify
+  # (tests and lint) step and right before the review request, so the
+  # reviewer opens a narrated demo instead of a bare diff; Verify
+  # acceptance criteria and reflection still follow. Skips with one
+  # printed line, never silently.
+  # Per project: `active_modes: [qa-off]` drops the step,
+  # `active_modes: [qa-record-only]` records without publishing, and a
+  # `self-qa-evidence` fragment in the project playbook shadows this one.
+  self-qa-evidence:
+    - subject: Record self-QA video and review pack
+      type: detailed
+      prompt: >
+        (1) Run Dev10x:qa-scope on the PR. When it reports no
+        user-facing change, print "Self-QA skipped: no user-facing
+        change" and complete the step. (2) Otherwise run
+        Dev10x:qa-self with --exploratory <PR> against staging or
+        the configured local stack, recording a narrated video. When
+        no runnable environment resolves, or the dev10x-qa plugin is
+        not installed, print "Self-QA skipped: <reason>" and complete
+        the step. (3) Hand the evidence to Dev10x:review-pack with
+        --no-request-review; it links the pack at the top of the PR
+        body and publishes the video through Dev10x:qa-publish or
+        Dev10x:yt-upload.
+        Keep every external-publish gate those skills own: staging
+        footage only, never production, and no public host for a
+        private repository. A dismissed or failed publish gate leaves
+        the evidence local and is reported, not retried around. The
+        review pack's own pre-send gate stays; this step never
+        requests review itself, the play's next step does.
+      skills: [Dev10x:qa-scope, Dev10x:qa-self, Dev10x:review-pack]
+      modes:
+        qa-off: skip
+        qa-record-only:
+          prompt: >
+            Run Dev10x:qa-scope and, when it reports a user-facing
+            change, Dev10x:qa-self --exploratory <PR> with a narrated
+            recording. Publish nothing: leave the run directory local,
+            name it in the Verify-AC summary, and print "Self-QA
+            recorded, not published (qa-record-only)". Skip with one
+            printed line on no user-facing change, no runnable
+            environment, or no dev10x-qa plugin installed.
+          skills: [Dev10x:qa-scope, Dev10x:qa-self]
+
+  # Re-record counterpart for pr-continuation (GH-1848). Review fixes
+  # that change the UI make the first pack's video stale; this re-records
+  # only then, using review-pack's freshness check (GH-1828), which keys
+  # on author dates so a groom does not make every video look stale.
+  # Same modes as self-qa-evidence.
+  self-qa-evidence-refresh:
+    - subject: Re-record self-QA video if the UI changed
+      type: detailed
+      prompt: >
+        (1) Read the PR body with pr_get. When it links no review pack
+        or the pack has no video, print "Self-QA refresh skipped: no
+        earlier recording" and complete the step. (2) Run
+        Dev10x:review-pack's freshness check, scripts/video-freshness.py
+        (plugins/qa/skills/review-pack/references/evidence.md §
+        Freshness check), against
+        origin/<baseRefName> with the configured ui_globs from
+        review-pack.yaml (none: the script's default) and the pack
+        video's capture time: --video for a take still on disk, else
+        --recorded-at with the time the take was committed to the
+        evidence repo. On exit 0 print "Self-QA evidence still current:
+        <verdict>" and complete the step. (3) On exit 1 the video is
+        stale: run Dev10x:qa-self with --exploratory <PR> against
+        staging or the configured local stack, recording a narrated
+        video, then hand it to Dev10x:review-pack with
+        --no-request-review so the pack and the PR body link the new
+        take. When no runnable environment resolves, or the dev10x-qa
+        plugin is not installed, print "Self-QA refresh skipped:
+        <reason>" and record the stale video as an open gap in the
+        Verify-AC summary. Keep every external-publish gate those
+        skills own: staging footage only, never production, and no
+        public host for a private repository. This step never
+        requests review itself, the play's next step does.
+      skills: [Dev10x:review-pack, Dev10x:qa-self]
+      modes:
+        qa-off: skip
+        qa-record-only:
+          prompt: >
+            Run steps (1) and (2) as written. When the video is stale,
+            run Dev10x:qa-self --exploratory <PR> with a narrated
+            recording and publish nothing: leave the run directory
+            local, name it in the Verify-AC summary, and print
+            "Self-QA re-recorded, not published (qa-record-only)".
+          skills: [Dev10x:review-pack, Dev10x:qa-self]
 
   # Bundled multi-issue implementation (GH-196).
   # Replaces the single "Implement changes" epic when work-on
@@ -173,8 +318,12 @@ fragments:
     - subject: Code review
       type: detailed
       prompt: >
-        Self-review changes to catch issues before pushing.
-        Fix any findings before proceeding.
+        Self-review changes to catch issues before pushing. Run
+        with --unattended --loop so the fixups are re-reviewed by
+        fresh reviewers until a round is clean (GH-1831). If the
+        review ends "BLOCKED: review-loop", queue that decision for
+        the supervisor and do not push or advance the PR until it
+        is answered.
       skills: [Dev10x:review, Dev10x:review-fix]
     - subject: Commit outstanding changes
       type: detailed
@@ -206,6 +355,7 @@ fragments:
       prompt: >
         Update the PR with final linked commits and checklist.
       skills: [Dev10x:gh-pr-create]
+    - fragment: self-qa-evidence-refresh
     - subject: Request re-review
       type: detailed
       prompt: >
@@ -224,13 +374,23 @@ fragments:
       prompt: >
         Merge the PR after all checks pass. Use the merge
         strategy from project settings (rebase preferred to
-        preserve groomed commit history).
+        preserve groomed commit history). If the DX019 review
+        stamp gate denies, run Dev10x:review --unattended --loop
+        on the PR branch, push its fixups via Dev10x:git, wait for
+        CI on the new head, then retry. If that review ends
+        "BLOCKED: review-loop", stop and queue the decision for the
+        supervisor. Never disable the rule.
       skills: [Dev10x:gh-pr-merge]
       modes:
         solo-maintainer:
           prompt: >
             Solo maintainer — no reviewers to wait for. Merge
-            immediately after marking ready and CI passes.
+            immediately after marking ready and CI passes. If the
+            DX019 review stamp gate denies, run Dev10x:review
+            --unattended --loop on the PR branch, push its fixups via
+            Dev10x:git, wait for CI on the new head, then retry. If
+            that review ends "BLOCKED: review-loop", stop and queue
+            the decision for the supervisor. Never disable the rule.
       condition: solo-maintainer
     - subject: Verify acceptance criteria
       type: detailed
@@ -238,6 +398,95 @@ fragments:
         Always delegate to Dev10x:verify-acc-dod skill
         regardless of mode. The skill owns its own gates.
       skills: [Dev10x:verify-acc-dod]
+    - fragment: session-reflection
+
+  # Light UI/content change to PR for a non-developer (GH-1026).
+  # A profile over the shipping kernel, not a separate package: it
+  # keeps the hooks and validators and drops the developer-only
+  # machinery — no design epic, no self-review fan-out, no history
+  # grooming, no merge. A developer merges what the PR shows.
+  business-change:
+    - subject: Set up workspace
+      type: detailed
+      prompt: >
+        Create a branch for the change from the base branch. Name
+        it after the ticket when there is one.
+      skills: [Dev10x:ticket-branch]
+    - subject: Describe the change
+      type: detailed
+      prompt: >
+        Restate the requested change in one or two plain sentences:
+        what the reader of the page or screen will see differently.
+        Name the files you expect to touch. When the request is
+        ambiguous, REQUIRED: call AskUserQuestion (not plain text)
+        with the readings you see as options before editing — a
+        wrong guess costs the requester a review cycle.
+    - subject: Make the change
+      type: epic
+      prompt: >
+        Edit only what the description names — copy, labels,
+        styles, images, layout. Leave logic, data access and
+        configuration alone; if the change needs them, stop and
+        say so, because that is a developer's change.
+    - subject: Preview the change
+      type: detailed
+      prompt: >
+        Show the requester what changed before anything is
+        committed: a short plain-language summary and the diff of
+        each file. Run the project's full checks the same way the
+        coding plays do (JS/TS via run_node_tests, Python via
+        $Dev10x:py-test with no path narrowing; lint via `pre-commit run
+        --files <changed files>` when the project has a pre-commit
+        config, or run_node_tests script="lint"). Report a failure
+        in plain words with the file it points at. Then REQUIRED:
+        call AskUserQuestion (not plain text) with options "Commit
+        this change", "Change something" and "Stop here". Exactly
+        one carries "(Recommended)" and is listed first: "Commit
+        this change" when the checks pass, "Change something" when
+        they fail — so nothing is committed that the requester did
+        not see.
+    - subject: Commit the change
+      type: detailed
+      prompt: >
+        Commit through the commit skill so the message carries the
+        gitmoji, ticket and an outcome-focused title.
+      skills: [Dev10x:git-commit]
+    - subject: Create PR
+      type: detailed
+      prompt: >
+        Open the PR through the PR skill and let its preview gate
+        show the title and body before it is created — the
+        requester confirms what the reviewer will read.
+      skills: [Dev10x:gh-pr-create]
+    - subject: Monitor CI
+      type: detailed
+      prompt: >
+        Watch CI on the PR. Fix failures caused by the change; when
+        a failure is outside what the change touched, report it and
+        stop fixing rather than editing code the requester did not
+        ask to change — the play still ends at Verify acceptance
+        criteria. If the repo's CI skips draft PRs, read
+        mcp__cli__supervisor_review_status first:
+        under `none` mark the PR ready via the `pr_ready` MCP
+        wrapper before monitoring; under `required` keep the draft
+        and record in Verify-AC that CI has not run on it.
+      skills: [Dev10x:gh-pr-monitor]
+    - fragment: self-qa-evidence
+    - subject: Respond to review comments
+      type: epic
+      prompt: >
+        Address each review comment with a fixup commit and a
+        reply. Short-circuit when unresolved_threads and
+        check_top_level_comments both report zero. History is not
+        groomed here: the developer who merges does that.
+      skills: [Dev10x:gh-pr-respond]
+    - subject: Verify acceptance criteria
+      type: detailed
+      prompt: >
+        Delegate to Dev10x:verify-acc-dod. The open PR, not a
+        merge, is the deliverable of this play.
+      skills: [Dev10x:verify-acc-dod]
+    - fragment: session-reflection
 
 # Mode definitions — structural modes that adapt step behavior.
 # Activated via active_modes in session.yaml or project playbook.
@@ -526,6 +775,11 @@ defaults:
           if-pr-decided path is already terminated by the shipping
           fragment's own Verify-AC step. Verify locally that all
           expected deliverables are done.
+      # Same path split as the Verify-AC step above: the PR path
+      # reflects inside the shipping fragment, so this one runs only
+      # when no PR was made (GH-1822).
+      - fragment: session-reflection
+        condition: if-no-pr
 
   investigation:
     prompt: >
@@ -572,6 +826,10 @@ defaults:
           If a fix is warranted, offer to switch to a bugfix
           plan. If more investigation is needed, suggest
           creating a follow-up ticket.
+      # No Verify-AC here, so reflect would be the last open task:
+      # Dev10x:reflect seeds Verify acceptance criteria before it
+      # completes (GH-149 task guard, GH-1822).
+      - fragment: session-reflection
 
   structured-spec:
     prompt: >
@@ -664,3 +922,15 @@ defaults:
         skills: [Dev10x:spec-sync]
         optional: true
       - fragment: shipping-pipeline
+
+  business:
+    prompt: >
+      Use for a small UI or content change shipped as a PR by
+      someone who is not a developer (GH-1026). It ends at an open
+      PR with green CI and answered review comments — grooming and
+      merging stay with a developer. Phase 1 never classifies into
+      this play; a project adopts it by pointing its feature and
+      bugfix plays at the `business-change` fragment (see
+      references/business-profile.md).
+    steps:
+      - fragment: business-change

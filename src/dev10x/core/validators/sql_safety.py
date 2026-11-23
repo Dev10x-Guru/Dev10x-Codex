@@ -17,15 +17,25 @@ from __future__ import annotations
 import os
 import re
 import shlex
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
-from dev10x.domain import HookInput, HookResult
-from dev10x.domain.common.bash_tokens import strip_command_wrappers
-from dev10x.domain.common.result import ErrorResult, Result, err, ok
-from dev10x.domain.profile_tier import ProfileTier
-from dev10x.validators.base import ValidatorBase
+from dev10x.core.db_script import db_script
+from dev10x.core.domain import HookInput, HookResult
+from dev10x.core.domain.common.bash_tokens import (
+    ANY_CASE_ENV_VAR_RE,
+    ProgramProbe,
+    UntokenizableCommandError,
+    command_position_re,
+    command_segments,
+    command_units,
+    strip_command_wrappers,
+)
+from dev10x.core.domain.common.result import ErrorResult, Result, err, ok
+from dev10x.core.domain.profile_tier import ProfileTier
+from dev10x.core.validators.base import ValidatorBase
 
 POSTGRES_CONN_RE = re.compile(r"postgres(?:ql)?://[^'\"\s]+:[^@'\"\s]+@[a-zA-Z0-9._-]+")
 
@@ -57,7 +67,7 @@ _PLUGIN_ROOT = Path(
         str(Path(__file__).resolve().parents[4]),
     )
 )
-DB_SH_PATH = _PLUGIN_ROOT / "skills" / "db-psql" / "scripts" / "db.sh"
+DB_SH_PATH = _PLUGIN_ROOT / db_script(plugin_root=_PLUGIN_ROOT)
 
 DIRECT_CONN_MSG = (
     "BLOCKED: Direct database connection via psycopg2 or postgres:// URL "
@@ -114,15 +124,6 @@ _BQ_VALUE_FLAGS = frozenset(
     }
 )
 
-_COMMAND_SEPARATORS = frozenset({"&&", "||", ";"})
-
-# shlex keeps redirections as ordinary tokens, so `bq query < q.sql`
-# would otherwise read the filename as query text. A spaced operator
-# consumes the next token; an attached one (`<q.sql`, `2>/dev/null`) is
-# a single token.
-_REDIRECT_OPERATORS = frozenset({"<", "<<", "<<<", ">", ">>", "2>", "2>>", "&>"})
-_FD_REDIRECT_PREFIXES = frozenset({"1>", "2>", "&>"})
-
 BQ_STDIN_MSG = (
     "BLOCKED: `bq query` without inline SQL reads the query from stdin, "
     "which the read-only check cannot inspect.\n"
@@ -149,6 +150,25 @@ DIRECT_PSQL_MSG = (
 
 def _is_psql_binary(token: str) -> bool:
     return token == "psql" or token.endswith("/psql")
+
+
+# Programs that only search or print their operands, so a `psql` token after
+# one of them is a pattern or text: `rg -n 'psql' projects.yaml` (GH-1790).
+_TEXT_ONLY_EXECUTABLES = frozenset(
+    {"ack", "ag", "cat", "echo", "egrep", "fgrep", "grep", "head", "printf", "rg", "tail", "wc"}
+)
+# A segment that chains, substitutes, opens a subshell or process
+# substitution (`cat <( psql … )`) or backgrounds may run psql after the
+# search tool; `rg --pre`, `rg --hostname-bin` and `ag/ack --pager` run a
+# program of their own. None of these is exempt.
+_EXEMPTION_BREAKERS_RE = re.compile(r"&|;|\n|`|[()]|--pre|--pager|--hostname-bin")
+
+
+def _psql_is_an_operand(*, segment: str, parts: list[str]) -> bool:
+    if _EXEMPTION_BREAKERS_RE.search(segment):
+        return False
+    words = strip_command_wrappers(parts=parts)
+    return bool(words) and Path(words[0]).name in _TEXT_ONLY_EXECUTABLES
 
 
 def _is_exempt_psql_wrapper(parts: list[str]) -> bool:
@@ -372,31 +392,6 @@ def _validate_sql(sql: str) -> Result[dict[str, Any]]:
     return ok({})
 
 
-def _simple_commands(*, command: str) -> list[list[str]]:
-    """Token lists for each simple command in ``command``.
-
-    Splits on pipes (quote-aware) and on spaced ``&&``/``||``/``;``
-    tokens, so ``cd x && bq query …`` still exposes the ``bq`` call.
-    An unparseable segment yields nothing; the other validators on
-    the chain judge it.
-    """
-    commands: list[list[str]] = []
-    for segment in _split_pipe_segments(command):
-        try:
-            tokens = shlex.split(segment)
-        except ValueError:
-            continue
-        current: list[str] = []
-        for token in tokens:
-            if token in _COMMAND_SEPARATORS:
-                commands.append(current)
-                current = []
-                continue
-            current.append(token)
-        commands.append(current)
-    return [parts for parts in commands if parts]
-
-
 def _bq_query_args(parts: list[str]) -> list[str] | None:
     """Everything after ``query`` when ``parts`` runs ``bq query``, else ``None``.
 
@@ -424,17 +419,22 @@ def _bq_flag_name(token: str) -> str:
 
 
 def _check_bq_query(*, args: list[str]) -> HookResult | None:
+    """Judge ``bq query``'s own arguments.
+
+    ``args`` come from a :class:`CommandSegment`, whose argv carries no
+    redirect words (GH-1798), so ``bq query < q.sql`` reaches here with no
+    SQL at all and is refused as a stdin read.
+    """
     sql_tokens: list[str] = []
     remaining = iter(args)
     for token in remaining:
         flag = _bq_flag_name(token)
         if flag in _BQ_WRITE_FLAGS:
             return HookResult(message=_bq_write_message(detail=f"{flag} writes a table."))
-        takes_next_value = "=" not in token and flag in _BQ_VALUE_FLAGS
-        if takes_next_value or token in _REDIRECT_OPERATORS:
+        if "=" not in token and flag in _BQ_VALUE_FLAGS:
             next(remaining, None)
             continue
-        if token.startswith(("-", "<", ">")) or token[:2] in _FD_REDIRECT_PREFIXES:
+        if token.startswith("-"):
             continue
         sql_tokens.append(token)
 
@@ -454,7 +454,125 @@ def _check_bq_query(*, args: list[str]) -> HookResult | None:
     return None
 
 
-_BQ_WORD_RE = re.compile(r"\bbq\b")
+_BQ_PROBE = ProgramProbe.for_program(program="bq")
+
+# Fail-closed fallback for a unit the segmenter cannot tokenize: a `bq`
+# call in command position that names the `query` subcommand.
+_BQ_QUERY_POSITION_RE = re.compile(command_position_re(program="bq").pattern + r"[^\n]*\bquery\b")
+BQ_UNTOKENIZABLE_DETAIL = (
+    "`bq query` could not be tokenized, so its flags cannot be checked for a write."
+)
+
+# Postgres client binaries that write a cluster without any SQL keyword
+# reaching this validator (GH-1732). Each is the CLI twin of a statement
+# the denylist already blocks: DROP/CREATE DATABASE, DROP/CREATE ROLE,
+# VACUUM, REINDEX, CLUSTER.
+# pgbench runs update transactions by default and rebuilds its tables
+# with -i, so it writes too.
+_PG_WRITE_BINARIES = frozenset(
+    {
+        "dropdb",
+        "createdb",
+        "dropuser",
+        "createuser",
+        "vacuumdb",
+        "reindexdb",
+        "clusterdb",
+        "pgbench",
+    }
+)
+_PG_RESTORE = "pg_restore"
+_PG_BINARIES = _PG_WRITE_BINARIES | {_PG_RESTORE}
+_PG_BINARY_PROBE = ProgramProbe.for_program(program="|".join(sorted(_PG_BINARIES)))
+
+# Fail-closed fallback when a unit cannot be tokenized: a write binary in
+# command position, optionally behind env assignments, wrappers or a path.
+_PG_COMMAND_POSITION_RE = command_position_re(program="|".join(sorted(_PG_WRITE_BINARIES)))
+
+# `command -v NAME` looks a binary up; it does not run it.
+_COMMAND_PROBE_FLAGS = frozenset({"-v", "-V"})
+
+# pg_restore short options that consume a value. A bundle ends at the
+# first one, so `-cd app` reaches `d` while `-fd` is `-f` with value `d`.
+_PG_RESTORE_VALUE_LETTERS = frozenset("dfFIjLnNPStTUhp")
+
+PG_WRITE_BINARY_MSG = (
+    "BLOCKED by db safety hook: `{binary}` writes to a Postgres cluster "
+    "(GH-1732).\n"
+    "Database writes are NEVER permitted, whether spelled as SQL or as a "
+    "client binary. Print the command for the user to run manually."
+)
+
+
+def _pg_restore_targets_database(args: list[str]) -> bool:
+    """True when ``pg_restore`` restores into a database, not to a file.
+
+    Without ``-d``/``--dbname`` it only prints a script (or a listing),
+    which is a read; ``--clean`` alone just adds DROP lines to that text.
+    """
+    for arg in args:
+        if arg.startswith("--"):
+            # getopt_long accepts any unambiguous prefix (`--db=app`).
+            # `--d` alone is ambiguous with --data-only and is rejected by
+            # pg_restore itself, so two letters are the shortest prefix.
+            name = arg[2:].partition("=")[0]
+            if len(name) >= 2 and "dbname".startswith(name):
+                return True
+            continue
+        if not arg.startswith("-"):
+            continue
+        for letter in arg[1:]:
+            if letter == "d":
+                return True
+            if letter in _PG_RESTORE_VALUE_LETTERS:
+                break
+    return False
+
+
+def _is_command_probe(*, parts: list[str]) -> bool:
+    head = [token for token in parts if not ANY_CASE_ENV_VAR_RE.match(token)][:2]
+    return len(head) == 2 and head[0] == "command" and head[1] in _COMMAND_PROBE_FLAGS
+
+
+def _pg_write_binary(parts: list[str]) -> str | None:
+    """The Postgres binary ``parts`` runs to write a cluster, else ``None``.
+
+    Env assignments, process wrappers and runners (``sudo``, ``xargs``)
+    are stripped first (GH-1732, GH-1774). Runners that take the command
+    as an argument (``ssh``, ``su -c``, ``docker exec`` …) hand it over
+    as its own unit through ``command_units``.
+    """
+    if _is_command_probe(parts=parts):
+        return None
+    parts = strip_command_wrappers(parts=parts)
+    if not parts:
+        return None
+    binary = Path(parts[0]).name
+    if binary in _PG_WRITE_BINARIES:
+        return binary
+    if binary == _PG_RESTORE and _pg_restore_targets_database(parts[1:]):
+        return binary
+    return None
+
+
+def _pg_write_binaries_in(*, unit: str) -> Iterator[str]:
+    """Every Postgres write binary ``unit`` runs.
+
+    A unit that cannot be tokenized fails closed on a command-position
+    match rather than being skipped.
+    """
+    try:
+        segments = command_segments(command=unit)
+    except UntokenizableCommandError:
+        match = _PG_COMMAND_POSITION_RE.search(unit)
+        if match:
+            # The match may open on the quote of a runner's command string.
+            yield Path(match.group(0).split()[-1].lstrip("'\"")).name
+        return
+    for segment in segments:
+        binary = _pg_write_binary(list(segment.argv))
+        if binary:
+            yield binary
 
 
 @dataclass
@@ -471,13 +589,18 @@ class SqlSafetyValidator(ValidatorBase):
             or "psycopg2" in cmd
             or "postgres://" in cmd
             or "postgresql://" in cmd
-            or _BQ_WORD_RE.search(cmd) is not None
+            or _BQ_PROBE.found_in(command=cmd)
+            or _PG_BINARY_PROBE.found_in(command=cmd)
         )
 
     def validate(self, inp: HookInput) -> HookResult | None:
         command = inp.command
 
         result = self._check_direct_connection(command=command)
+        if result:
+            return result
+
+        result = self._check_pg_write_binaries(command=command)
         if result:
             return result
 
@@ -495,14 +618,45 @@ class SqlSafetyValidator(ValidatorBase):
 
         return self._check_sql_content(command=command)
 
+    def _check_pg_write_binaries(self, *, command: str) -> HookResult | None:
+        # should_run also admits psql/bq/db.sh commands; only one naming a
+        # Postgres binary pays for the substitution scan and the lexer.
+        if not _PG_BINARY_PROBE.found_in(command=command):
+            return None
+        binary = next(
+            (
+                binary
+                for unit in command_units(command=command)
+                for binary in _pg_write_binaries_in(unit=unit)
+            ),
+            None,
+        )
+        if binary is None:
+            return None
+        return HookResult(message=PG_WRITE_BINARY_MSG.format(binary=binary))
+
     def _check_bq(self, *, command: str) -> HookResult | None:
-        for parts in _simple_commands(command=command):
-            args = _bq_query_args(parts)
-            if args is None:
+        """Judge every ``bq query`` the command runs, chained or nested (GH-1773).
+
+        A unit the segmenter cannot tokenize fails closed when it names
+        ``bq … query`` in command position; skipping it was the evasion.
+        """
+        if not _BQ_PROBE.found_in(command=command):
+            return None
+        for unit in command_units(command=command):
+            try:
+                segments = command_segments(command=unit)
+            except UntokenizableCommandError:
+                if _BQ_QUERY_POSITION_RE.search(unit):
+                    return HookResult(message=_bq_write_message(detail=BQ_UNTOKENIZABLE_DETAIL))
                 continue
-            result = _check_bq_query(args=args)
-            if result:
-                return result
+            for segment in segments:
+                args = _bq_query_args(list(segment.argv))
+                if args is None:
+                    continue
+                result = _check_bq_query(args=args)
+                if result:
+                    return result
         return None
 
     def _check_direct_connection(self, *, command: str) -> HookResult | None:
@@ -547,7 +701,9 @@ class SqlSafetyValidator(ValidatorBase):
                 if wrapped:
                     return wrapped
                 continue
-            if any(_is_psql_binary(t) for t in seg_parts):
+            if any(_is_psql_binary(t) for t in seg_parts) and not _psql_is_an_operand(
+                segment=seg, parts=seg_parts
+            ):
                 return HookResult(message=DIRECT_PSQL_MSG)
         return None
 

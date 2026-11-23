@@ -1,0 +1,598 @@
+---
+name: dev10x-coding:review
+invocation-name: dev10x-coding:review
+description: >
+  Review your own branch changes before creating a PR. Reviews diff
+  against base branch, runs automated checks, and produces structured
+  findings with severity, file, line, and suggested fix. Works in
+  attended (pick findings) or unattended (auto-advance to fixer) mode.
+  TRIGGER when: reviewing own branch changes before PR creation, or
+  self-reviewing code quality.
+  DO NOT TRIGGER when: reviewing an external PR (use dev10x-coding:gh-pr-review),
+  or no changes exist on the branch.
+user-invocable: true
+persona: >
+  Staff engineer doing a pre-push self-review: ranks findings by what
+  a reviewer would block on, cites the exact line, and verifies each
+  finding before reporting it.
+allowed-tools:
+  - Skill(dev10x-coding:review-fix)
+  - Agent
+  - Read
+  - mcp__plugin_dev10x_cli__issue_get
+  - Bash(git log:*)
+  - Bash(git diff:*)
+  - Bash(git rev-list:*)
+  - Bash(git status:*)
+  - Bash(git develop-log:*)
+  - Bash(git develop-diff:*)
+  - Bash(pre-commit run:*)
+  - Bash(/tmp/Dev10x/bin/mktmp.sh:*)
+  - Edit(/tmp/Dev10x/review/**)
+  - AskUserQuestion
+  - mcp__plugin_dev10x_cli__resolve_gate
+  - mcp__plugin_dev10x_cli__detect_base_branch
+  - Bash(git fetch:*)
+  - Bash(git rev-parse:*)
+  - Bash(rg:*)
+  - mcp__plugin_dev10x_cli__mktmp
+  - mcp__plugin_dev10x_cli__review_stamp_write
+---
+
+# Self-Review Branch
+
+**Persona:** Staff engineer doing a pre-push self-review: ranks
+findings by what a reviewer would block on, cites the exact line, and
+verifies each finding before reporting it.
+
+Review current branch changes against the base branch, applying project
+review guidelines. Produces structured findings that `dev10x-coding:review-fix`
+can consume to create fixup commits.
+
+## Arguments
+
+- `--unattended` — skip finding approval, auto-advance to
+  `dev10x-coding:review-fix` for all actionable findings
+- `--loop` — re-review each round of fixes with fresh reviewers until
+  a round finds no defects, capped at 4 rounds (Step 6b). Combines
+  with `--unattended`; the `work-on` shipping pipeline passes both
+- No arguments — attended mode, present findings for user approval
+
+## When to Use
+
+- Before creating a PR (self-review catches issues early)
+- As the "Code review" step in the `work-on` shipping pipeline
+- When asked to review your own changes
+
+**Not for remote PR review** — use `dev10x-coding:gh-pr-review` to post
+findings to GitHub.
+
+**Not a CI replica** — it routes files to reviewer specs the same way
+the Claude CI review does (`references/review-routing.md`), but its
+model, diff base and rule copies differ; to see what CI would post on
+a PR, use `dev10x-coding:ci-review` (GH-1621).
+
+## No-Reviewer Auto-Skip Threshold (GH-161)
+
+Audit GH-161 caught a session where `dev10x-coding:review` and
+`simplify` were auto-completed with the marker
+`Auto-skipped: solo-maintainer` despite the diff touching 8+
+files including domain restructuring and a platform Registry
+split. Blanket auto-skip when nobody else reviews defeats the
+purpose of the review gate.
+
+**Threshold rule:** Call `mcp__plugin_dev10x_cli__resolve_gate(
+gate="request_review", context={})`. Only when it returns
+`effect: "skip"` — nobody else is being asked to look — may
+auto-skip apply at all, and then ONLY to small-surface changes.
+Never read `active_modes` or any session file to make this call.
+Compute the touched-files count from
+`git develop-diff --name-only | wc -l`:
+
+| Files touched | Behavior when `request_review` resolves to skip |
+|---|---|
+| ≤ 3 files | Auto-skip allowed (Auto-skipped: no reviewer) |
+| 4–7 files | Run review in `--unattended` mode (no gate) |
+| ≥ 8 files | Run review in `--unattended` mode; if findings
+exist, emit `AskUserQuestion` so the user retains override |
+
+Orchestrators (e.g., `dev10x-coding:work-on`) MUST NOT mark the
+review task `completed` with the auto-skip marker when the
+diff exceeds the small-surface threshold. The same rule
+applies to the `simplify` step that follows review.
+
+## Orchestration
+
+This skill follows `references/task-orchestration.md` patterns
+(Tier: Standard).
+
+**Auto-advance:** Complete each step and immediately start the next — no checkpoints the resolver did not ask for.
+Never pause between steps to ask "should I continue?".
+
+**REQUIRED: Create tasks before ANY work.** Execute these
+`TaskCreate` calls at startup:
+
+1. `TaskCreate(subject="Verify branch state", activeForm="Checking branch")`
+2. `TaskCreate(subject="Run spec compliance gate", activeForm="Checking spec compliance")`
+3. `TaskCreate(subject="Run automated checks", activeForm="Running checks")`
+4. `TaskCreate(subject="Review changed files (one subagent per spec)", activeForm="Reviewing files")`
+5. `TaskCreate(subject="Present findings", activeForm="Presenting findings")`
+
+Set sequential dependencies.
+
+**Nested-mode exemption:** When invoked as a nested skill within
+a parent orchestrator (e.g., via `Skill()` from `dev10x-coding:work-on`),
+startup task creation is optional — at most 1 summary task. The
+parent provides progress visibility. See
+`references/task-orchestration.md` § Delegated Invocation Exception.
+
+## Workflow
+
+### Step 1: Verify Branch State
+
+1. Confirm inside a git repository
+2. Detect base branch — use `git develop-log` alias to find commits
+   ahead of develop. If alias fails, fall back to `origin/develop`
+3. Verify branch has commits ahead of base (warn if nothing to review)
+4. Check for uncommitted changes — warn but continue
+
+### Step 1b: Phase 0 — Spec Compliance Gate (GH-69)
+
+Before running automated checks or per-file review, dispatch the
+`spec-reviewer` agent to confirm the diff matches its declared
+specification. Domain-level review is wasted effort when scope is
+wrong or acceptance criteria are unmet — surfacing that early
+short-circuits the rest of the pipeline.
+
+**Skip Phase 0 when:**
+- The branch has no linked ticket and no Job Story (e.g., trivial
+  typo fixes, plugin-maintenance commits)
+- The diff is purely additive infra (e.g., a new agent spec file)
+  where scope is self-evident
+- The caller invoked `dev10x-coding:review` with `--skip-spec` (reserved
+  flag for explicit opt-out)
+
+**Dispatch** `spec-reviewer` with the ticket, Job Story and branch
+diff inlined — template and pre-read steps in
+[`references/spec-gate.md`](references/spec-gate.md).
+
+**Parse the trailing status line** and branch:
+
+- `DONE` → continue to Step 2 (branch diff)
+- `DONE_WITH_CONCERNS: <text>` → continue, queue the concern for
+  the final findings summary as a WARNING with `source: manual`,
+  `category: spec` — the findings contract has no `spec` source
+  (GH-1749)
+- `NEEDS_CONTEXT: <what>` → re-dispatch with the requested
+  additional inline context once
+- `BLOCKED: <verdict>: <reason>` → short-circuit the review. No
+  Step 3 automated check runs and no Step 4 domain subagent is
+  dispatched until the gate resolves. The options are:
+  - **Address spec gap first (Recommended)** — stop and let the
+    user fix scope/missing AC before continuing; the domain
+    fan-out never runs
+  - **Continue review anyway** — proceed to Step 2; record the
+    verdict as an INFO finding (`source: manual`, `category: spec`)
+
+  **Attended mode — REQUIRED: Call `AskUserQuestion`** (do NOT use
+  plain text) with the two options above.
+
+  **`--unattended` (GH-1749)** — no widget unless the resolver asks
+  for one. Call `mcp__plugin_dev10x_cli__resolve_gate(
+  gate="shipping_continuation", context={})` and branch on `effect`:
+  - `ask` — fire the `AskUserQuestion` widget above.
+  - `auto-advance` — take **Address spec gap first** without a
+    widget and surface the returned `record` line: skip Steps 2–6,
+    report the verdict as an ERROR spec finding in the Step 7
+    summary (which still runs), and end with
+    `BLOCKED: spec: <verdict>: <reason>` as the last line so the
+    caller queues the decision instead of the pipeline stalling on
+    a prompt nobody is watching.
+  - `skip` — the same as `auto-advance`, without the record line.
+  - An `error` key — fail safe: fire the widget.
+
+  Never take **Continue review anyway** without a human answer: a
+  failed spec check is the one verdict an unattended run must not
+  talk itself past.
+
+### Step 2: Get Branch Diff
+
+**Anchor on `origin/<base>`, not the local ref (GH-1463).**
+`git develop-diff` resolves its merge-base against the local
+`develop`, which lags `origin/develop` after any rebase-merge —
+the same hazard `dev10x-coding:git-groom` Phase 1 documents (GH-486,
+GH-997). Reviewing the stale local merge-base scopes the review
+to every file any previously-merged PR touched, not just this
+branch's own changes, and the failure is silent: the diff is
+larger, not empty.
+
+1. Resolve `<base>` via `mcp__plugin_dev10x_cli__detect_base_branch`
+   rather than hardcoding `develop`.
+2. Fetch and diff against the remote ref:
+   ```bash
+   git fetch origin <base>
+   git diff origin/<base>...HEAD
+   ```
+   This is the primary path. `git develop-diff` (the bare local
+   alias) is a fallback ONLY when `origin/<base>` cannot be
+   resolved (offline, no remote configured).
+3. If `git rev-list --count <base>..origin/<base>` is non-zero,
+   surface a `base_notice`-style warning ("local <base> is N
+   commits behind origin/<base>") so a reviewer who falls back to
+   the local ref knows it is stale rather than discovering it from
+   an oversized diff.
+
+Parse the diff to extract the list of changed files with their
+change types (added, modified, deleted, renamed).
+
+### Step 3: Run Automated Checks
+
+Linting and formatting run through the project's single
+pre-commit source of truth — never as inline `ruff`/`black`/
+`mypy`/`isort` invocations (GH-592, consistent with the
+inline-linter block validator, GH-596):
+
+```bash
+pre-commit run --files <changed files>
+```
+
+- Pass only the changed files (from Step 2) so the run is scoped
+  to the diff. `pre-commit` selects and runs the configured
+  lint/format/type hooks itself.
+- Treat each failing hook as a finding with severity `ERROR` and
+  source `automated`. pre-commit prints the offending file/line
+  and any auto-applied diff — surface that in the finding so the
+  lint/format result stays visible to the reviewer.
+
+**Missing `.pre-commit-config.yaml`:** Do NOT fall back to inline
+linters. Emit a single setup-guidance finding ("No pre-commit
+config — run `pre-commit install` and add a `.pre-commit-config.yaml`
+with the project's ruff/mypy hooks") and skip the automated-check
+stage. Per-file manual review (Step 4) still runs.
+
+### Step 4: Review Changed Files — One Subagent per Reviewer Spec
+
+The orchestrator routes and merges. It does not apply reviewer specs
+itself: one agent holding the whole diff and every spec skims the
+specs it reads last (GH-1741). The routing, dispatch and merge rules
+are the same ones the CI review follows, written down once in
+`references/review-routing.md`; the local template and the mapping
+into findings are in
+[`references/domain-dispatch.md`](references/domain-dispatch.md).
+
+**REQUIRED: Execute these steps in order.**
+
+1. **Route.** Match every changed file against
+   `.claude/rules/INDEX.md` § "File Patterns -> Agents" — the only
+   routing source; never keep an agent list in this skill. Group
+   files by agent. Use project specs (`.claude/agents/<name>.md`),
+   else plugin specs (`dev10x:<name>`). A repo without INDEX.md
+   routes by the plugin reviewers' `Triggers:` patterns.
+2. **Pre-read.** For each group, collect each file's diff hunks and
+   full content at HEAD, and inline them as `<file>` blocks so the
+   subagent needs no Read prompts.
+3. **Dispatch in parallel.** Issue every `Agent` call in ONE message,
+   in the foreground. Pass no `model:` — each spec's `model:`
+   frontmatter sets its tier. Split a group over ~15 files in two.
+   If the calls come back as background launches, wait for every
+   report before merging (shared doc, Rule 3).
+4. **Merge.** Deduplicate on `file:line`, apply the false-positive
+   gate below, Read the cited line to verify each survivor, and map
+   it into the findings format (CRITICAL → ERROR).
+5. **Cover the gaps yourself.** Files routed to an unregistered
+   agent, or matched by no row, are reviewed by the orchestrator
+   against `references/review-checks-common.md`. So are the
+   cross-cutting checks — dead code, call sites of a changed
+   signature — which need the whole diff.
+
+The summary (Step 7) names each agent dispatched and the files it
+covered.
+
+**False Positive Prevention Gate** (from `review-checks-common.md`):
+Before recording any finding, verify:
+1. Does this violate a documented rule? (No rule = preference, skip)
+2. Does this contradict an established codebase pattern?
+3. Is this a quality improvement or just preference?
+4. Did the author already fix this in a later commit?
+
+### Step 5: Compile Findings
+
+Each finding is a structured object:
+
+```
+Finding:
+  severity: ERROR | WARNING | INFO
+  confidence: <0-100>
+  source: automated | manual
+  file: <path>
+  line: <number>
+  description: <what's wrong>
+  suggested_fix: <code or guidance>
+  category: <bug | security | architecture | style | test | spec>
+```
+
+A Phase 0 verdict is a `manual` finding with `category: spec`, never a
+third `source` value — `dev10x-coding:review-fix` reads `source` as
+`automated | manual` (GH-1749). It names a scope or acceptance gap,
+not a code location, so it has no `file`/`line`: report it in the
+Step 7 summary and leave it out of the findings handoff file.
+
+**Confidence scoring (GH-872):** Each finding includes a
+`confidence` score (0-100) indicating how certain the reviewer
+is that this is a genuine issue:
+
+| Range | Meaning | Example |
+|-------|---------|---------|
+| 90-100 | Certain defect | Missing null check on user input |
+| 70-89 | Likely issue | Broad exception catch in prod path |
+| 50-69 | Possible issue | Style preference, debatable pattern |
+| 0-49 | Low confidence | Nitpick, subjective suggestion |
+
+**Threshold filtering:** In unattended mode, only findings with
+`confidence >= 70` are passed to `dev10x-coding:review-fix`. Below-
+threshold findings are reported as INFO in the summary but not
+auto-fixed. In attended mode, all findings are presented
+regardless of confidence.
+
+**The threshold is currently hardcoded at 70 — not yet
+configurable.** Its intended home is a per-project key in the global
+durable prefs (ADR-0018 D1), alongside the other project-scoped
+settings:
+
+```yaml
+# ~/.config/Dev10x/friction.yaml — INTENDED, no reader yet
+projects:
+  - match: ["*/<repo>", "*/<repo>-*"]
+    review_confidence_threshold: 70
+```
+
+Setting that key today has no effect: nothing reads it. It is
+documented as the destination so a future reader lands in the right
+place, not as a working knob. (Before ADR-0018 this was documented
+against the retired per-repo `session.yaml`, which had no reader
+either — the location changed, the gap did not.)
+
+Write findings to a temp file for handoff:
+
+```bash
+/tmp/Dev10x/bin/mktmp.sh review findings .json
+```
+
+Write the findings array as JSON to the temp file path.
+
+### Step 6: Present Findings
+
+**With `--loop`, Step 6b drives this step.** Go to Step 6b now: it
+decides, per round, which findings reach the fixer and when, and uses
+the mechanics below to hand them over. Never invoke the fixer from
+here first. Without `--loop`, continue below; every path ends at
+Step 6c.
+
+**Unattended mode** (`--unattended`):
+- Skip presentation
+- Filter findings by confidence threshold (default: 70).
+  Only pass findings with `confidence >= threshold` AND
+  severity `ERROR` or `WARNING` to `dev10x-coding:review-fix`
+- Below-threshold findings are logged as INFO in summary
+- Invoke: `Skill(skill="dev10x-coding:review-fix", args="<findings-file-path>")`
+- Auto-advance after fixer completes, to Step 6c
+
+**Attended mode** (default):
+- Present findings grouped by severity, then by file
+- Show count: "Found N issues (X errors, Y warnings, Z info)"
+- For each finding: severity, file:line, description, suggested fix
+
+**When findings = 0:**
+
+**REQUIRED: Call `AskUserQuestion`** even when no findings exist.
+This confirms the clean review to the user and prevents silent
+skip-through (GH-447 F5).
+
+**Unattended mode exemption (GH-760 F6):** When invoked with
+`--unattended` flag (e.g., from `dev10x-coding:work-on` shipping
+pipeline), skip this gate and auto-advance to Step 6c. The parent
+orchestrator already approved the work plan — pausing for
+zero-findings confirmation adds friction without safety value.
+
+**Attended mode** options:
+- Continue (Recommended) — Proceed to Step 6c
+- Re-review — Run the review again with different scope (in a `--loop`
+  round, the same scope: Step 6b item 4)
+
+In a `--loop` round whose ledger holds a `declined` finding, the
+question must say that **Continue** ends the loop clean but
+**unstamped**, and name the declined findings (`file:line`) — Step 6c
+refuses the stamp, so the user is not offered a confirmation the pass
+cannot earn (GH-1863). **Continue** stays the recommended option even
+then: a `declined` entry is never removed for the rest of the loop —
+a Re-review keeps the round's `declined` list when it replaces the
+entry, whether it comes back clean or turns into a fix round, and
+Step 6c refuses a loop that holds one from any round. No option at
+this gate can earn the stamp, so the recommendation does not depend
+on the ledger state (`.claude/rules/skill-gates.md`, GH-1404).
+
+**When findings > 0:**
+
+**REQUIRED: Call `AskUserQuestion`** (do NOT use plain text).
+Options:
+- Fix all (Recommended) — Send all ERROR and WARNING findings to
+  `dev10x-coding:review-fix`
+- Pick findings — Review each finding and select which to fix
+- Skip — No fixes, continue with pipeline
+
+If "Pick findings": present each finding with fix/skip choice,
+collect approved findings, then invoke `dev10x-coding:review-fix`. Picking
+none is a Skip.
+
+If "Fix all" or after picking: invoke `dev10x-coding:review-fix` with
+the findings file path.
+
+### Step 6b: Loop Mode (`--loop`, GH-1831)
+
+Without `--loop`, skip to Step 6c. With it, the review runs in rounds
+until a round is clean. The round rules, the defect/polish split and
+the round ledger are in
+[`references/loop-mode.md`](references/loop-mode.md) — Read it before
+round 1 and create the ledger it describes.
+
+**A round's fix set** is what it would hand to `dev10x-coding:review-fix`:
+round 1 hands every ERROR/WARNING finding at confidence >= 70 (defects
+and polish); later rounds hand defects only. **A round is clean** when
+its fix set is empty. A round that fixed anything — round-1 polish
+included — is followed by a round that reviews those fixes.
+
+**REQUIRED: Execute each round in order.**
+
+1. Record `round_start_sha` (`git rev-parse HEAD`) in the ledger.
+2. Review the round's scope with **new** `Agent` calls: round 1 runs
+   Steps 1b–4 on the whole branch; later rounds run Steps 3–4 on
+   `git diff <previous round_start_sha>..HEAD` plus its blast radius.
+   Never `SendMessage` an earlier round's reviewer, and never judge
+   your own fix.
+3. Run Step 5, then classify the findings into defects and polish in
+   the ledger; the findings JSON keeps its format.
+4. Clean round → end the loop. Attended, first fire the Step 6
+   zero-findings gate, even when the round also listed INFO,
+   below-threshold or polish findings: name them in the question.
+   When the ledger holds a `declined` finding, the question also says
+   that **Continue** ends the loop unstamped and names those findings
+   (GH-1863). **Re-review** repeats this round on the same scope with
+   new `Agent` calls and **replaces** the round's ledger entry — same
+   `round` and `round_start_sha`, new `findings_file`, `defects` and
+   `polish` counts. It keeps the entry's `scope` and `declined`: the
+   HEAD has not moved, and a `declined` finding stays for the rest of
+   the loop. Then it returns to item 3. A Re-review that finds a
+   defect makes the round not clean: it continues through items 5–6
+   like any other round, and its fixes get a following round (GH-1863).
+   Then go to Step 6c.
+5. Round 4 or later and not clean → fire the round-cap gate below
+   **before** fixing anything.
+6. Hand the fix set over with Step 6's mechanics: unattended, straight
+   to `dev10x-coding:review-fix`, filtered to the fix set; attended, through
+   the Step 6 findings gate, where **Fix all** and **Pick findings**
+   cover the fix set only — from round 2 on, polish is listed, not
+   offered.
+   A fix-set finding left unpicked, or reported as deferred by
+   `dev10x-coding:review-fix`, goes into the ledger's `declined` list: no later
+   delta has to touch it, so that loop never stamps.
+   An attended **Skip** ends the loop unstamped: go to Step 7.
+7. The fixer made no commit → end the loop: run Step 7 and end with
+   `BLOCKED: review-loop: <N> findings, fixer made no commit`.
+   Otherwise record `fixed_head_sha` and start the next round.
+
+**Round-cap gate.** Which option comes first and carries
+`(Recommended)` is computed from the ledger's defect counts
+(`references/loop-mode.md` § Escalation recommendation).
+
+- **Attended mode — REQUIRED: Call `AskUserQuestion`** (do NOT use
+  plain text, call spec:
+  [ask-loop-escalation.md](./tool-calls/ask-loop-escalation.md)).
+  Options, ordered by the ledger:
+  - Continue one more round — run item 6 for this round, then the
+    next round; the gate fires again after every unclean round
+  - Ship with open defects listed — end the loop unfixed, go to Step 7
+  - Stop and hand back — end the review, return to the supervisor
+- **`--unattended`** — call `mcp__plugin_dev10x_cli__resolve_gate(
+  gate="shipping_continuation", context={})` and branch on `effect`:
+  - `ask`, or an `error` key — fire the widget above.
+  - `auto-advance` / `skip` — take **Stop and hand back** without a
+    widget (surface the `record` line on auto-advance), run Step 7,
+    and end with `BLOCKED: review-loop: <N> defects after <R> rounds`
+    as the last line so the caller queues the decision.
+
+  Never take **Continue one more round** or **Ship with open defects
+  listed** without a human answer: both decide what an unbounded or
+  defective loop is worth, which is the supervisor's call.
+
+### Step 6c: Stamp a Clean Pass (GH-1830)
+
+**REQUIRED when the review is clean.** A single pass is clean when it
+found no ERROR/WARNING finding at confidence >= 70 and so handed
+nothing to `dev10x-coding:review-fix`; a loop is clean when a round's fix set
+was empty (`references/loop-mode.md` § Round rules, item 7). Call
+`mcp__plugin_dev10x_cli__review_stamp_write(cwd=<absolute checkout>)`
+and report the returned `head_sha` in Step 7. Otherwise go to Step 7.
+
+Never stamp a pass that handed findings to the fixer: those fixups
+are unreviewed, which is exactly what the stamp must not certify.
+Never stamp a pass with findings the user chose to **Skip** or left
+unpicked — declining a fix does not make the finding go away, so an
+empty fix set from a declined gate is not a clean round. Never stamp
+a loop whose ledger holds a `declined` finding from any round, even
+when its last round is clean. Never stamp a loop that ended on **Ship
+with open defects listed**, **Stop and hand back** or a
+`BLOCKED: review-loop` line. A clean round reached after **Continue
+one more round** is stamped like any other.
+
+The stamp records the HEAD and tree the clean pass reviewed. In repos
+whose `friction.yaml` entry sets `review_stamp: required`, the DX019
+hook denies `merge_pr`, `pr_ready` and `request_review` until the PR
+head matches that stamp (same commit, or same tree after a groom).
+
+### Step 7: Summary
+
+Report:
+- Reviewer agents dispatched, with the files each covered
+- **Files no reviewer spec covered**, listed by name under their own
+  heading, with the reason: matched no INDEX.md row, or routed to a
+  spec that is not installed. Say plainly that the orchestrator
+  reviewed them against `references/review-checks-common.md`, not a
+  spec. The core reviewers (`reviewer-generic`, `-security`,
+  `-silent-failures`, `-skill`, `-skill-behavior`, `-docs`, `-infra`,
+  `-rules-maintenance`) live in Dev10x's own `.claude/agents/` and
+  ship with no consumer repo, so there this list usually holds every
+  Python, shell, docs and skill file — the parallel fan-out does not
+  apply to them, and the summary must not imply it did (GH-1749)
+- Total findings by severity, and the false-positive drop count
+- Which were sent to fixer (if any)
+- Any deferred findings (INFO severity or user-skipped)
+- With `--loop`: the per-round defect and polish counts, how the loop
+  ended (clean, no-commit round, or cap), the polish list, and the HEAD
+  SHA the clean round reviewed (`references/loop-mode.md` § Summary
+  additions)
+
+## Findings Format (Handoff Protocol)
+
+The JSON findings file is the contract between `dev10x-coding:review`
+and `dev10x-coding:review-fix`:
+
+```json
+[
+  {
+    "severity": "WARNING",
+    "confidence": 85,
+    "source": "manual",
+    "file": "src/auth/middleware.py",
+    "line": 42,
+    "description": "Missing type annotation on return value",
+    "suggested_fix": "def validate(self, token: str) -> bool:",
+    "category": "style"
+  }
+]
+```
+
+Both skills must agree on this format. The fixer reads the file
+path passed as its argument.
+
+## Integration
+
+```
+work-on shipping pipeline
+└─ dev10x-coding:review          ← this skill (reviewer)
+   └─ dev10x-coding:review-fix   ← fixer (consumes findings)
+      └─ git commit fixup!  ← one fixup commit per finding
+```
+
+Complements:
+- `dev10x-coding:gh-pr-review` — posts findings to GitHub (remote PRs)
+- `dev10x-coding:gh-pr-respond` — responds to PR review comments
+
+## Design Note: Future `--post-to-pr` Mode (GH-319)
+
+If `dev10x-coding:review` ever gains a `--post-to-pr` flag that hands off
+findings to a GitHub PR review, that mode MUST default to Draft
+(PENDING) rather than submitting immediately. The self-review
+author is almost always the PR author — who should finalize the
+review as a human action, not have it auto-submitted on their
+behalf. Codify "draft-first" at design time to avoid retro-fitting
+the same gap that GH-319 addressed in `dev10x-coding:gh-pr-review`.

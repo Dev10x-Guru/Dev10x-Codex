@@ -7,30 +7,20 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from dev10x.domain.common.result import ErrorResult, SuccessResult
 
-from dev10x.git import (
+from dev10x.coding.git import (
     create_worktree,
+    find_fixup_target,
     mass_rewrite,
     next_worktree_name,
     push_safe,
     rebase_groom,
 )
+from dev10x.core.domain.common.result import ErrorResult, SuccessResult
+from tests.fakers.process import completed as _completed
 
-
-def _completed(
-    *,
-    returncode: int = 0,
-    stdout: str = "",
-    stderr: str = "",
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(
-        args=[],
-        returncode=returncode,
-        stdout=stdout,
-        stderr=stderr,
-    )
-
+CODING_SKILLS = Path(__file__).parents[2] / "plugins" / "coding" / "skills"
+WORKTREE_SCRIPTS = "plugins/coding/skills/git-worktree/scripts"
 
 CONFLICT_STDOUT = (
     "CONFLICT_DETECTED\n"
@@ -54,7 +44,7 @@ class TestRebaseGroomConflictDetection:
         # By default the remote-tracking ref does not resolve, so
         # _resolve_groom_base passes the bare base through unchanged and
         # makes no real git calls (GH-486).
-        with patch("dev10x.git.async_run", new_callable=AsyncMock) as mock:
+        with patch("dev10x.coding.git.async_run", new_callable=AsyncMock) as mock:
             mock.return_value = _completed(returncode=1)
             yield mock
 
@@ -71,7 +61,7 @@ class TestRebaseGroomConflictDetection:
         return _completed(stdout="commits_rewritten=3")
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_returns_conflict_info_on_conflict(
         self,
         mock_run_script: AsyncMock,
@@ -87,7 +77,7 @@ class TestRebaseGroomConflictDetection:
         assert result.details["rebase_head"] == "abc1234"
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_returns_error_on_non_conflict_failure(
         self,
         mock_run_script: AsyncMock,
@@ -102,7 +92,7 @@ class TestRebaseGroomConflictDetection:
         assert result.error == "fatal: invalid upstream"
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_returns_parsed_output_on_success(
         self,
         mock_run_script: AsyncMock,
@@ -120,7 +110,7 @@ class TestRebaseGroomConflictDetection:
         return _completed(returncode=1, stdout=PAUSED_STDOUT)
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_paused_rebase_is_not_reported_as_a_conflict(
         self,
         mock_run_script: AsyncMock,
@@ -169,7 +159,7 @@ class TestMassRewriteConflictDetection:
         return _completed(stdout="Done. New log:\nabc1234 Enable feature")
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_returns_conflict_info_on_conflict(
         self,
         mock_run_script: AsyncMock,
@@ -185,7 +175,7 @@ class TestMassRewriteConflictDetection:
         assert result.details["rebase_head"] == "def5678"
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_returns_error_on_non_conflict_failure(
         self,
         mock_run_script: AsyncMock,
@@ -200,7 +190,7 @@ class TestMassRewriteConflictDetection:
         assert result.error == "Rebase failed."
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_returns_output_on_success(
         self,
         mock_run_script: AsyncMock,
@@ -216,7 +206,7 @@ class TestMassRewriteConflictDetection:
 
 class TestPushSafeStructuredOutput:
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_parses_structured_success_payload(
         self,
         mock_run_script: AsyncMock,
@@ -238,7 +228,7 @@ class TestPushSafeStructuredOutput:
         assert result.value["ci_run_url"] is None
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_returns_error_on_blocked_force_push(
         self,
         mock_run_script: AsyncMock,
@@ -270,9 +260,9 @@ class TestPushSafeProtectedBranchResolution:
         return [args[i + 1] for i, arg in enumerate(args) if arg == "--protected"]
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
-    @patch("dev10x.git.SessionYamlDocument")
-    @patch("dev10x.git.GitContext")
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.SessionYamlDocument")
+    @patch("dev10x.coding.git.GitContext")
     async def test_explicit_list_wins_over_the_durable_pref(
         self,
         mock_ctx: MagicMock,
@@ -290,9 +280,9 @@ class TestPushSafeProtectedBranchResolution:
         mock_ctx.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
-    @patch("dev10x.git.SessionYamlDocument")
-    @patch("dev10x.git.GitContext")
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.SessionYamlDocument")
+    @patch("dev10x.coding.git.GitContext")
     async def test_durable_pref_applies_when_caller_passes_nothing(
         self,
         mock_ctx: object,
@@ -308,9 +298,9 @@ class TestPushSafeProtectedBranchResolution:
         assert self._protected_flags(mock_run_script) == ["trunk", "release/*"]
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
-    @patch("dev10x.git.SessionYamlDocument")
-    @patch("dev10x.git.GitContext")
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.SessionYamlDocument")
+    @patch("dev10x.coding.git.GitContext")
     async def test_no_pref_sends_no_flags_so_the_script_default_applies(
         self,
         mock_ctx: object,
@@ -326,8 +316,8 @@ class TestPushSafeProtectedBranchResolution:
         assert self._protected_flags(mock_run_script) == []
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
-    @patch("dev10x.git.GitContext")
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.GitContext")
     async def test_unresolvable_repo_root_sends_no_flags(
         self,
         mock_ctx: object,
@@ -351,7 +341,7 @@ class TestProtectedBranchDefaultIsDocumentedAccurately:
     is pinned to the script rather than restated by hand.
     """
 
-    SCRIPT = Path(__file__).parents[2] / "skills" / "git" / "scripts" / "protected-branches.sh"
+    SCRIPT = CODING_SKILLS / "git" / "scripts" / "protected-branches.sh"
 
     def _script_defaults(self) -> list[str]:
         match = re.search(
@@ -378,7 +368,7 @@ class TestProtectedBranchDefaultIsDocumentedAccurately:
         hatch, so a name missing here lets a push through that the push guard
         would have protected. It omitted ``staging`` until GH-1041.
         """
-        from dev10x.domain.common.branch_name import PROTECTED_BRANCHES
+        from dev10x.core.domain.common.branch_name import PROTECTED_BRANCHES
 
         assert PROTECTED_BRANCHES == frozenset(self._script_defaults())
 
@@ -389,7 +379,7 @@ class TestProtectedBranchDefaultIsDocumentedAccurately:
         is never a PR base. Protection is a superset, not an alias; pinning the
         relationship keeps a future edit from collapsing them back together.
         """
-        from dev10x.domain.common.branch_name import BASE_BRANCH_PRIORITY, PROTECTED_BRANCHES
+        from dev10x.core.domain.common.branch_name import BASE_BRANCH_PRIORITY, PROTECTED_BRANCHES
 
         assert frozenset(BASE_BRANCH_PRIORITY) < PROTECTED_BRANCHES
         assert "staging" not in BASE_BRANCH_PRIORITY
@@ -403,7 +393,7 @@ class ShellTwinHarness:
     subclass's name.
     """
 
-    SCRIPT = Path(__file__).parents[2] / "skills" / "git" / "scripts" / "git-push-safe.sh"
+    SCRIPT = CODING_SKILLS / "git" / "scripts" / "git-push-safe.sh"
 
     @pytest.fixture
     def repo_on_protected_branch(self, tmp_path: Path) -> Path:
@@ -565,7 +555,7 @@ class TestShellTwinDetectsBundledForceFlags(ShellTwinHarness):
     """GH-1047: the shell twin must agree with the validator on what is force.
 
     ``skill_redirect._has_bare_force`` and ``git-push-safe.sh`` implement the
-    same flag test in two languages, and `.claude/rules/hook-patterns.md`
+    same flag test in two languages, and `.claude/rules/hook-dispatch-patterns.md`
     requires the pair to stay functionally equivalent. Fixing only the
     validator would leave ``push_safe`` — the very tool force pushes are
     routed into — waving ``-uf origin main`` straight through.
@@ -743,23 +733,23 @@ class TestQualifyBaseRef:
     """GH-486: prefer origin/<base> over a possibly-stale local branch."""
 
     def test_bare_branch_qualified_when_remote_exists(self) -> None:
-        from dev10x.git import qualify_base_ref
+        from dev10x.coding.git import qualify_base_ref
 
         assert qualify_base_ref("develop", remote_exists=True) == "origin/develop"
 
     def test_bare_branch_unchanged_when_no_remote(self) -> None:
-        from dev10x.git import qualify_base_ref
+        from dev10x.coding.git import qualify_base_ref
 
         assert qualify_base_ref("develop", remote_exists=True) == "origin/develop"
         assert qualify_base_ref("feature-x", remote_exists=False) == "feature-x"
 
     def test_already_qualified_ref_passes_through(self) -> None:
-        from dev10x.git import qualify_base_ref
+        from dev10x.coding.git import qualify_base_ref
 
         assert qualify_base_ref("origin/develop", remote_exists=True) == "origin/develop"
 
     def test_sha_like_ref_passes_through(self) -> None:
-        from dev10x.git import qualify_base_ref
+        from dev10x.coding.git import qualify_base_ref
 
         # A path-ish / slash-bearing ref is treated as already-qualified.
         assert qualify_base_ref("refs/heads/develop", remote_exists=True) == "refs/heads/develop"
@@ -769,11 +759,11 @@ class TestResolveGroomBase:
     """GH-486: resolve effective base ref + stale-local notice."""
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run", new_callable=AsyncMock)
     async def test_local_behind_origin_resolves_to_origin_with_notice(
         self, mock_run: AsyncMock
     ) -> None:
-        from dev10x.git import _resolve_groom_base
+        from dev10x.coding.git import _resolve_groom_base
 
         # Single rev-list call reports 3 commits behind (both refs exist).
         mock_run.return_value = _completed(returncode=0, stdout="3\n")
@@ -785,9 +775,9 @@ class TestResolveGroomBase:
         assert mock_run.await_count == 1
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run", new_callable=AsyncMock)
     async def test_local_up_to_date_no_notice(self, mock_run: AsyncMock) -> None:
-        from dev10x.git import _resolve_groom_base
+        from dev10x.coding.git import _resolve_groom_base
 
         mock_run.return_value = _completed(returncode=0, stdout="0\n")
         effective, notice = await _resolve_groom_base("develop")
@@ -796,9 +786,9 @@ class TestResolveGroomBase:
         assert notice is None
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run", new_callable=AsyncMock)
     async def test_no_remote_tracking_ref_uses_local(self, mock_run: AsyncMock) -> None:
-        from dev10x.git import _resolve_groom_base
+        from dev10x.coding.git import _resolve_groom_base
 
         # rev-list exits non-zero when either ref is absent → local base.
         mock_run.return_value = _completed(returncode=1)
@@ -809,7 +799,7 @@ class TestResolveGroomBase:
 
     @pytest.mark.asyncio
     async def test_already_qualified_ref_skips_git(self) -> None:
-        from dev10x.git import _resolve_groom_base
+        from dev10x.coding.git import _resolve_groom_base
 
         # No patch needed: a slash-bearing ref returns immediately.
         effective, notice = await _resolve_groom_base("origin/main")
@@ -818,8 +808,8 @@ class TestResolveGroomBase:
         assert notice is None
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
-    @patch("dev10x.git.async_run", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run", new_callable=AsyncMock)
     async def test_rebase_groom_attaches_base_notice(
         self, mock_run: AsyncMock, mock_script: AsyncMock
     ) -> None:
@@ -839,7 +829,7 @@ class TestCreateWorktreeArgumentMapping:
     script's positional repo-root slot."""
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_forwards_explicit_path_and_base_positionally(
         self,
         mock_run_script: AsyncMock,
@@ -860,13 +850,13 @@ class TestCreateWorktreeArgumentMapping:
         # next-worktree-name.sh call).
         assert mock_run_script.await_count == 1
         args = mock_run_script.call_args.args
-        assert args[0] == "skills/git-worktree/scripts/create-worktree.sh"
+        assert args[0] == f"{WORKTREE_SCRIPTS}/create-worktree.sh"
         assert args[1] == "/tmp/wt"
         assert args[2] == "janusz/GH-1/slug"
         assert args[3] == "origin/develop"
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_defaults_path_via_next_worktree_name_when_omitted(
         self,
         mock_run_script: AsyncMock,
@@ -882,16 +872,16 @@ class TestCreateWorktreeArgumentMapping:
         assert mock_run_script.await_count == 2
 
         first_call_args = mock_run_script.call_args_list[0].args
-        assert first_call_args[0] == "skills/git-worktree/scripts/next-worktree-name.sh"
+        assert first_call_args[0] == f"{WORKTREE_SCRIPTS}/next-worktree-name.sh"
 
         second_call_args = mock_run_script.call_args_list[1].args
-        assert second_call_args[0] == "skills/git-worktree/scripts/create-worktree.sh"
+        assert second_call_args[0] == f"{WORKTREE_SCRIPTS}/create-worktree.sh"
         assert second_call_args[1] == "/work/proj/.worktrees/proj-3"
         assert second_call_args[2] == "janusz/GH-1/slug"
         assert second_call_args[3] == ""
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_propagates_next_worktree_name_failure(
         self,
         mock_run_script: AsyncMock,
@@ -919,7 +909,7 @@ class TestNextWorktreeName:
     exercised end-to-end in tests/skills/git-worktree/."""
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_returns_path_from_script_stdout(
         self,
         mock_run_script: AsyncMock,
@@ -932,7 +922,7 @@ class TestNextWorktreeName:
         assert result.value["path"] == "/work/proj/.worktrees/proj-4"
 
     @pytest.mark.asyncio
-    @patch("dev10x.git.async_run_script", new_callable=AsyncMock)
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
     async def test_forwards_base_dir_override(
         self,
         mock_run_script: AsyncMock,
@@ -942,5 +932,113 @@ class TestNextWorktreeName:
         await next_worktree_name(base_dir="/custom/.worktrees")
 
         args = mock_run_script.call_args.args
-        assert args[0] == "skills/git-worktree/scripts/next-worktree-name.sh"
+        assert args[0] == f"{WORKTREE_SCRIPTS}/next-worktree-name.sh"
         assert args[1] == "/custom/.worktrees"
+
+
+class TestFindFixupTarget:
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
+    async def test_runs_the_git_fixup_script_without_a_base(
+        self,
+        mock_run_script: AsyncMock,
+    ) -> None:
+        mock_run_script.return_value = _completed(stdout='{"status": "no_staged"}')
+
+        await find_fixup_target()
+
+        assert mock_run_script.call_args.args == (
+            "plugins/coding/skills/git-fixup/scripts/find-fixup-target.py",
+        )
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
+    async def test_forwards_an_explicit_base(
+        self,
+        mock_run_script: AsyncMock,
+    ) -> None:
+        mock_run_script.return_value = _completed(stdout='{"status": "no_staged"}')
+
+        await find_fixup_target(base="origin/develop")
+
+        assert mock_run_script.call_args.args[1:] == ("--base", "origin/develop")
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
+    async def test_single_owner_is_returned_as_the_payload(
+        self,
+        mock_run_script: AsyncMock,
+    ) -> None:
+        mock_run_script.return_value = _completed(
+            stdout='{"status": "single", "target": "abc123", "subject": "Enable X"}'
+        )
+
+        result = await find_fixup_target()
+
+        assert isinstance(result, SuccessResult)
+        assert result.value["status"] == "single"
+        assert result.value["target"] == "abc123"
+
+    @pytest.mark.parametrize(
+        ("returncode", "status"),
+        [(2, "no_staged"), (3, "out_of_branch")],
+    )
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
+    async def test_non_zero_exit_with_a_verdict_is_not_an_error(
+        self,
+        mock_run_script: AsyncMock,
+        returncode: int,
+        status: str,
+    ) -> None:
+        mock_run_script.return_value = _completed(
+            returncode=returncode,
+            stdout=f'{{"status": "{status}", "base": "origin/develop"}}',
+        )
+
+        result = await find_fixup_target()
+
+        assert isinstance(result, SuccessResult)
+        assert result.value["status"] == status
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
+    async def test_error_status_becomes_an_error_result(
+        self,
+        mock_run_script: AsyncMock,
+    ) -> None:
+        mock_run_script.return_value = _completed(
+            returncode=1,
+            stdout='{"status": "error", "error": "No commits in origin/develop..HEAD"}',
+        )
+
+        result = await find_fixup_target()
+
+        assert isinstance(result, ErrorResult)
+        assert "No commits" in result.error
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
+    async def test_unparseable_output_reports_stderr(
+        self,
+        mock_run_script: AsyncMock,
+    ) -> None:
+        mock_run_script.return_value = _completed(returncode=-1, stderr="Script not found: x")
+
+        result = await find_fixup_target()
+
+        assert isinstance(result, ErrorResult)
+        assert result.error == "Script not found: x"
+
+    @pytest.mark.asyncio
+    @patch("dev10x.coding.git.async_run_script", new_callable=AsyncMock)
+    async def test_non_object_json_is_an_error(
+        self,
+        mock_run_script: AsyncMock,
+    ) -> None:
+        mock_run_script.return_value = _completed(stdout="[]")
+
+        result = await find_fixup_target()
+
+        assert isinstance(result, ErrorResult)
+        assert "unexpected output" in result.error

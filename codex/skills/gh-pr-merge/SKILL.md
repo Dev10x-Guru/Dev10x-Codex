@@ -1,24 +1,25 @@
 ---
 name: gh-pr-merge
-description: 'Validate all pre-merge conditions and execute PR merge. Checks unresolved threads, CI status, draft state, mergeability, working copy, fixup commits, Fixes-linked scope delivery, and review approval before merging. TRIGGER when: PR is ready to merge and needs pre-merge validation. DO NOT TRIGGER when: PR is still draft, CI is failing, or review comments are unaddressed.'
+description: 'Validate all pre-merge conditions and execute PR merge. Checks unresolved threads, review comments, Fixes-linked scope delivery, blocking review bots at the head, CI status, merge state, draft state, mergeability, working copy, fixup commits, and review approval before merging. TRIGGER when: PR is ready to merge and needs pre-merge validation. DO NOT TRIGGER when: PR is still draft, CI is failing, or review comments are unaddressed.'
 metadata:
-  upstream: skills/gh-pr-merge/SKILL.md
+  upstream: plugins/coding/skills/gh-pr-merge/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/gh-pr-merge/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/gh-pr-merge/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/gh-pr-merge/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/gh-pr-merge/`.
 
 # Merge PR
 
-Pre-merge validation gate that checks 9 conditions before
+Pre-merge validation gate that checks 12 conditions before
 executing `gh pr merge`. Prevents premature merges by verifying
-unresolved threads, CI, draft state, mergeability, working copy,
-fixup commits, Fixes-linked scope delivery, and review approval.
+unresolved threads, review comments, Fixes-linked scope delivery,
+blocking review bots at the head, CI, merge state, draft state,
+mergeability, working copy, fixup commits, and review approval.
 
 ## Instructions
 
-The full workflow — 9 pre-merge checks, strategy selection from
+The full workflow — 12 pre-merge checks, strategy selection from
 project settings, merge execution, post-merge verification —
 lives in [`instructions.md`](instructions.md).
 
@@ -30,10 +31,11 @@ documented there are REQUIRED.
 
 **Hard rule:** Do NOT call `gh pr merge` directly. Every PR
 merge MUST go through `$Dev10x:gh-pr-merge` so the
-9-check pre-merge gate (unresolved threads, top-level
+12-check pre-merge gate (unresolved threads, top-level
 comments, inline review comments, Fixes-linked scope
-delivery, CI buckets, draft state, mergeability, working
-copy, review approval) runs. Audit
+delivery, blocking review bots, CI buckets, merge state,
+draft state, mergeability, working copy, fixup commits,
+review approval) runs. Audit
 GH-152 caught a session where the agent ran
 `gh pr merge <N> --rebase --delete-branch` directly after
 partially reading this SKILL.md — only the CI check was

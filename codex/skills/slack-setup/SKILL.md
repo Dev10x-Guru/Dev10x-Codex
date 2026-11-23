@@ -2,12 +2,12 @@
 name: slack-setup
 description: 'Guide the user through setting up their Slack integration — create a Slack app, configure scopes, store the token in the system keyring, and generate slack-config.yaml. Auto-detects existing tokens, validates them via auth.test, and derives config from the API and git so prompts only fire when state cannot be discovered. TRIGGER when: setting up Slack integration for the first time, or reconfiguring Slack credentials. DO NOT TRIGGER when: Slack already configured and working, or sending messages (use Dev10x:slack).'
 metadata:
-  upstream: skills/slack-setup/SKILL.md
+  upstream: plugins/comm/skills/slack-setup/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/slack-setup/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/comm/skills/slack-setup/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/slack-setup/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/comm/skills/slack-setup/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:slack-setup — Slack Integration Setup

@@ -41,19 +41,19 @@ test -f Cargo.toml         # Rust project
 Dev10x organizes 75+ skills into families:
 
 Pipeline — End-to-end ticket-to-merge workflow
-  /dev10x:work-on <ticket-url>  <- Start here for any task
+  /dev10x-coding:work-on <ticket-url>  <- Start here for any task
 
 Git — Atomic commits with gitmoji and JTBD titles
-  /dev10x:git-commit
+  /dev10x-coding:git-commit
 
 PR — Full PR lifecycle with CI monitoring
-  /dev10x:gh-pr-create -> /dev10x:gh-pr-monitor
+  /dev10x-coding:gh-pr-create -> /dev10x-coding:gh-pr-monitor
 
 Session — Track work, defer items, resume later
-  /dev10x:session-wrap-up -> /dev10x:park-discover
+  /dev10x-tasks:session-wrap-up -> /dev10x-tasks:park-discover
 
 To see all skills: check ~/.claude/SKILLS.md
-To regenerate: /dev10x:skill-index
+To regenerate: /dev10x-teach:skill-index
 ```
 
 ### 2.2 Git Workflow Setup
@@ -74,7 +74,7 @@ Options:
 - Set up aliases now (Recommended) — Run git-alias-setup
 - Skip — I'll set them up later
 
-If user chooses setup: `Skill(skill="dev10x:git-alias-setup")`
+If user chooses setup: `Skill(skill="dev10x-coding:git-alias-setup")`
 
 ### 2.2b Permission Setup
 
@@ -254,13 +254,13 @@ which assistants Dev10x should target.
 ```
 The Dev10x PR pipeline automates the full shipping flow:
 
-1. /dev10x:git-commit    — Gitmoji + JTBD commit message
-2. /dev10x:gh-pr-create  — Draft PR with Job Story
-3. /dev10x:gh-pr-monitor — Background CI + review monitoring
-4. /dev10x:git-groom     — Clean commit history
-5. /dev10x:gh-pr-respond — Address review comments
+1. /dev10x-coding:git-commit    — Gitmoji + JTBD commit message
+2. /dev10x-coding:gh-pr-create  — Draft PR with Job Story
+3. /dev10x-coding:gh-pr-monitor — Background CI + review monitoring
+4. /dev10x-coding:git-groom     — Clean commit history
+5. /dev10x-coding:gh-pr-respond — Address review comments
 
-Or use /dev10x:work-on <ticket> for the full pipeline.
+Or use /dev10x-coding:work-on <ticket> for the full pipeline.
 ```
 
 ### 2.4 Session Management
@@ -268,9 +268,9 @@ Or use /dev10x:work-on <ticket> for the full pipeline.
 ```
 Dev10x tracks your work across sessions:
 
-- /dev10x:session-wrap-up — Save open work before closing
-- /dev10x:park            — Defer a task to the right place
-- /dev10x:park-discover   — Find deferred items at start
+- /dev10x-tasks:session-wrap-up — Save open work before closing
+- /dev10x-tasks:park — Defer a task to the right place
+- /dev10x-tasks:park-discover — Find deferred items at start
 ```
 
 ### 2.5 Customization
@@ -354,10 +354,10 @@ Only runs if user chose "Explore more" or "Set up customization".
 ### If "Explore more":
 
 Show additional families:
-- Testing: `/test`, `/test:fix-flaky`, `/dev10x:qa-scope`
-- Architecture: `/dev10x:adr-evaluate`, `/dev10x:scope`
-- Operations: `/dev10x:investigate`, `/triage-sentry`
-- Reports: `/work:daily`, `/work:weekly`
+- Testing: `/dev10x-coding:py-test`, `/dev10x-coding:py-test-flaky`, `/dev10x-coding:py-mockito`, `/dev10x-coding:qa-scope`
+- Architecture: `/dev10x-scoping:adr-evaluate`, `/dev10x-scoping:scope`
+- Operations: `/dev10x-coding:investigate`
+- Reports: `/dev10x-coding:release-notes`
 
 ### If "Set up customization":
 

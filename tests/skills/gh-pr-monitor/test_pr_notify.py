@@ -7,13 +7,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest  # type: ignore[import-not-found]
-from dev10x.domain.common.result import Result, err, ok
+
+from dev10x.core.domain.common.result import Result, err, ok
 
 # Load the shim script so the module object is available for patching.
 _repo_root = Path(__file__).resolve().parent.parent.parent.parent
 _spec = importlib.util.spec_from_file_location(
     "pr_notify",
-    _repo_root / "skills" / "gh-pr-monitor" / "scripts" / "pr-notify.py",
+    _repo_root / "plugins" / "coding" / "skills" / "gh-pr-monitor" / "scripts" / "pr-notify.py",
 )
 assert _spec is not None and _spec.loader is not None
 _mod = importlib.util.module_from_spec(_spec)
@@ -30,7 +31,7 @@ split_title_jtbd = _mod.split_title_jtbd
 update_pr_checklist = _mod.update_pr_checklist
 
 # Private helper — import directly from the underlying module (not the * shim).
-from dev10x.skills.monitor import pr_notify as _pr_notify_module  # noqa: E402
+from dev10x.coding.skills.monitor import pr_notify as _pr_notify_module  # noqa: E402
 
 _repo_name = _pr_notify_module._repo_name
 

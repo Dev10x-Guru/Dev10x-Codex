@@ -2,12 +2,12 @@
 name: gchat-review-request
 description: 'Post a Google Chat review request for a PR using per-repo config (space, mentions). Mirrors Dev10x:slack-review-request. Invoked standalone or delegated to by Dev10x:request-review. TRIGGER when: a PR needs a Google Chat review notification. DO NOT TRIGGER when: Google Chat is not configured, or posting to Slack (use Dev10x:slack-review-request).'
 metadata:
-  upstream: skills/gchat-review-request/SKILL.md
+  upstream: plugins/coding/skills/gchat-review-request/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/gchat-review-request/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/gchat-review-request/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/gchat-review-request/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/gchat-review-request/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Google Chat Review Request

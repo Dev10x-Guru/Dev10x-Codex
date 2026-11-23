@@ -2,12 +2,12 @@
 name: estimate
 description: 'Estimate how long a ticket or project will take when AI agents do the implementation and humans still gate review, testing and release — so a lead plans on numbers that match how the work actually ships, instead of one engineer''s human-pace guess. TRIGGER when: sizing a ticket or project, filling an "estimated complexity" column, or answering "how long would it take to…?", "what would it take to…?", "when could this ship?" — inside or outside a scoping skill. DO NOT TRIGGER when: tracking time already spent (use a time tracker), or reporting what shipped (use Dev10x:release-notes).'
 metadata:
-  upstream: skills/estimate/SKILL.md
+  upstream: plugins/scoping/skills/estimate/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/estimate/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/scoping/skills/estimate/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/estimate/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/scoping/skills/estimate/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:estimate — Agent-Built Work Estimation

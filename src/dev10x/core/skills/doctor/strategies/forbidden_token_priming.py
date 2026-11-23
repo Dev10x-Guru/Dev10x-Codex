@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from dev10x.skills.doctor.strategy import (
+from dev10x.core.skills.doctor.strategy import (
     Context,
     Finding,
     Remediation,
@@ -49,7 +49,7 @@ class ForbiddenTokenRemediation:
 FORBIDDEN_TOKENS: dict[str, str] = {
     "DEV10X_SKIP_CMD_VALIDATION": (
         "structural guidance referencing the skill's mktmp mechanism "
-        "or the documented escape path in .claude/rules/hook-patterns.md"
+        "or the documented escape path in references/mcp-unavailable-escape-hatch.md"
     ),
 }
 

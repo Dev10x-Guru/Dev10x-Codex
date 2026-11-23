@@ -108,10 +108,20 @@ correctly. Each one is about what to report, not a new merge gate.
   green: the draft-on-push workflow cannot draft a fork PR or a push
   made with the workflow token. A PR with no checklist block has no
   review on record. Format: `references/review-checklist-format.md`.
+- **A skipped Claude check is a switched-off review, not a failed one
+  (GH-1756).** `claude-review` / `hygiene-review` read `skipped` when
+  `CLAUDE_REVIEW_ENABLED` is `false` or the PR carries
+  `skip-claude-review` (`.claude/rules/claude-ci-cost.md` § Switching
+  the reviews off). Tell it from a review that never fired by
+  `ci_check_status`'s `disabled_checks` (and `review_disabled_reason`),
+  not by probing labels and variables per caller (GH-1764). Report
+  "Claude review disabled", expect no checklist block, and do not hold
+  the merge for it — like the workflow-file case above, whether to wait
+  for a human read is the author's call.
 
 ## Merge Configuration (Fanout / Work-On)
 
-When `dev10x:fanout` or `dev10x:work-on` orchestrate PR merges,
+When `dev10x-coding:fanout` or `dev10x-coding:work-on` orchestrate PR merges,
 two playbook-level fields control behavior.
 
 ### `merge_mode`

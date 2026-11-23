@@ -12,7 +12,7 @@ feature is isolated — a failure in one does not skip the others.
 Features may now express a **verdict** (GH-1251). Previously every
 return value was discarded, so no Stop feature could halt a turn; that
 is the change `SessionStart` already made for `additionalContext` (see
-`.claude/rules/hook-patterns.md` § Consolidation checklist item 5). At
+`.claude/rules/hook-dispatch-patterns.md` § Consolidation checklist item 5). At
 most one envelope is emitted.
 
 **The stdout collision.** `session_goodbye` prints to the user's
@@ -42,16 +42,14 @@ def _load_stdin() -> dict:
 
 def _import() -> tuple:
     try:
-        from dev10x.hooks.audit_emit import audit_hook
-
-        from dev10x.hooks import session as s
+        from dev10x.core.hooks import session as s
+        from dev10x.core.hooks.audit_emit import audit_hook
     except ImportError:
         from pathlib import Path
 
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
-        from dev10x.hooks.audit_emit import audit_hook
-
-        from dev10x.hooks import session as s
+        from dev10x.core.hooks import session as s
+        from dev10x.core.hooks.audit_emit import audit_hook
     return s, audit_hook
 
 

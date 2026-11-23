@@ -2,12 +2,12 @@
 name: git-branch-prune
 description: 'Classify and prune stale local branches with merge verification, designed for rebase-merge repos where `git branch --merged` misses most merged branches. TRIGGER when: local repo has accumulated stale branches after fanout sessions, worktree cleanup, or manual sweeps. DO NOT TRIGGER when: working on a clean repo with few branches or when branch deletion is handled by another skill (e.g. Dev10x:fanout teardown).'
 metadata:
-  upstream: skills/git-branch-prune/SKILL.md
+  upstream: plugins/coding/skills/git-branch-prune/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/git-branch-prune/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/git-branch-prune/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/git-branch-prune/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/git-branch-prune/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Git Branch Prune
@@ -136,7 +136,10 @@ the batch on a single failure.
 ### Step 7: Cleanup
 
 Run `git worktree prune` to remove stale worktree administrative
-files.
+files. It never removes a live checkout — branches still checked out
+in merged worktrees stay protected in Step 4. Run
+`Dev10x:git-worktree-prune` first to remove those checkouts, then
+re-run this skill to delete their branches.
 
 If `git` warned about unreachable loose objects during any of the
 above steps, suggest the user run `git prune` separately (do not

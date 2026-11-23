@@ -2,12 +2,12 @@
 name: ticket-branch
 description: 'Create a properly named git branch for a ticket following project conventions (username/TICKET-ID/[worktree/]short-slug). Ensures latest develop is pulled before creating the branch. Automatically detects worktrees and includes worktree name in branch. TRIGGER when: starting work on a ticket and need a feature branch. DO NOT TRIGGER when: branch already exists for this ticket, or creating a worktree (use Dev10x:git-worktree which creates branches internally).'
 metadata:
-  upstream: skills/ticket-branch/SKILL.md
+  upstream: plugins/coding/skills/ticket-branch/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/ticket-branch/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/ticket-branch/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/ticket-branch/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/ticket-branch/`.
 
 # Create Git Branch for Ticket
 

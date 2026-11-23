@@ -23,7 +23,9 @@ Higher tiers produce better results but cost more tokens.
 
 ## Agent Model Assignments
 
-### Named Agents (`agents/`)
+### Named Agents (`agents/`, `plugins/scoping/agents/`)
+
+`adr-reviewer` and the `architect-*` agents ship with `dev10x-scoping`.
 
 | Agent | Model | Tier |
 |-------|-------|------|
@@ -56,11 +58,11 @@ explicitly per task tier:
 
 | Skill | Phase | Model | Tier |
 |-------|-------|-------|------|
-| `dev10x:work-on` | Phase 2 (gather) | haiku | Gather |
-| `dev10x:gh-pr-monitor` | CI polling | haiku | Monitor |
-| `dev10x:gh-pr-monitor` | Long CI (>10 min) | sonnet | Analyze |
-| `dev10x:skill-audit` | Wave 1+2 (5 phases) | sonnet | Analyze |
-| `dev10x:adr-evaluate` | Architect advocates | opus | Design |
+| `dev10x-coding:work-on` | Phase 2 (gather) | haiku | Gather |
+| `dev10x-coding:gh-pr-monitor` | CI polling | haiku | Monitor |
+| `dev10x-coding:gh-pr-monitor` | Long CI (>10 min) | sonnet | Analyze |
+| `dev10x-teach:skill-audit` | Wave 1+2 (5 phases) | sonnet | Analyze |
+| `dev10x-scoping:adr-evaluate` | Architect advocates | opus | Design |
 
 ## Per-Project Model Overrides
 
@@ -79,7 +81,7 @@ overrides:
       - subject: Code review
         type: detailed
         model: sonnet          # Override: use sonnet instead of opus
-        skills: [dev10x:review, dev10x:review-fix]
+        skills: [dev10x-coding:review, dev10x-coding:review-fix]
 ```
 
 When present, `model:` overrides the default model for agent
@@ -96,11 +98,11 @@ fragments:
     - subject: Code review
       type: detailed
       model: sonnet
-      skills: [dev10x:review, dev10x:review-fix]
+      skills: [dev10x-coding:review, dev10x-coding:review-fix]
     - subject: Monitor CI
       type: detailed
       model: haiku
-      skills: [dev10x:gh-pr-monitor]
+      skills: [dev10x-coding:gh-pr-monitor]
 ```
 
 ### Override Resolution Order
@@ -120,11 +122,11 @@ fragments:
     - subject: Code review
       type: detailed
       model: sonnet
-      skills: [dev10x:review, dev10x:review-fix]
+      skills: [dev10x-coding:review, dev10x-coding:review-fix]
     - subject: Monitor CI
       type: detailed
       model: haiku
-      skills: [dev10x:gh-pr-monitor]
+      skills: [dev10x-coding:gh-pr-monitor]
 ```
 
 **Quality-critical project** (prefer stronger models):

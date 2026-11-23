@@ -2,12 +2,12 @@
 name: plan-sync
 description: 'Reconcile persisted plan file with in-session task list. Detects divergences, recreates missing tasks, and updates plan context. TRIGGER when: session resumed after compaction and task list is empty or out of sync with the plan file. DO NOT TRIGGER when: no plan file exists or task list is already in sync with the current session work.'
 metadata:
-  upstream: skills/plan-sync/SKILL.md
+  upstream: plugins/tasks/skills/plan-sync/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/plan-sync/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/tasks/skills/plan-sync/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/plan-sync/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/tasks/skills/plan-sync/`.
 > **Not supported in Codex yet**: this skill depends on Claude Code features Codex lacks (Dev10x-Codex#13). Use it from Claude Code; Codex runs it only when invoked by name.
 
 # Plan Sync — Reconcile Persisted Plan with Session State

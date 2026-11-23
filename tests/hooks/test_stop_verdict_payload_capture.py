@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from dev10x.hooks.session_dispatch import build_stop_verdict
-from dev10x.hooks.stop_verdict import PAYLOAD_KEYS_FLAG, payload_capture
+
+from dev10x.core.hooks.session_dispatch import build_stop_verdict
+from dev10x.core.hooks.stop_verdict import PAYLOAD_KEYS_FLAG, payload_capture
 
 SUBAGENT_TRANSCRIPT = "/p/-work/0423993e/subagents/agent-a0932d5778dc9cc06.jsonl"
 PAYLOAD = {
@@ -42,17 +43,21 @@ class TestPayloadCapture:
     def test_the_record_carries_what_separates_the_two_explanations(self) -> None:
         captured = payload_capture(data=PAYLOAD, env={PAYLOAD_KEYS_FLAG: "1"})
 
-        assert captured["hook_event_name"] == "Stop"
-        assert captured["session_id"] == "s-1"
-        assert captured["transcript_layout"] == "subagent"
+        assert captured == {
+            "payload_keys": (
+                "hook_event_name,last_assistant_message,session_id,"
+                "stop_hook_active,transcript_path"
+            ),
+            "hook_event_name": "Stop",
+            "session_id": "s-1",
+        }
 
-    def test_a_session_transcript_reads_as_a_session(self) -> None:
+    def test_an_absent_event_name_records_empty(self) -> None:
         captured = payload_capture(
             data={"transcript_path": "/p/-work/0423993e.jsonl"},
             env={PAYLOAD_KEYS_FLAG: "1"},
         )
 
-        assert captured["transcript_layout"] == "session"
         assert captured["hook_event_name"] == ""
 
 
@@ -67,8 +72,10 @@ class TestWiring:
         def _capture(*, rule_id: str, reason: str, extra: dict[str, str] | None = None) -> None:
             recorded.update(rule_id=rule_id, reason=reason, **(extra or {}))
 
-        monkeypatch.setattr("dev10x.hooks.session_dispatch.set_decision_attribution", _capture)
-        monkeypatch.setattr("dev10x.hooks.session_dispatch._get_toplevel", lambda: None)
+        monkeypatch.setattr(
+            "dev10x.core.hooks.session_dispatch.set_decision_attribution", _capture
+        )
+        monkeypatch.setattr("dev10x.core.hooks.session_dispatch._get_toplevel", lambda: None)
         monkeypatch.setenv(PAYLOAD_KEYS_FLAG, "1")
 
         build_stop_verdict(data={"session_id": "w-1", "stop_hook_active": True})

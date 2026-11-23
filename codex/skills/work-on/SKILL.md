@@ -2,12 +2,12 @@
 name: work-on
 description: 'Start work on any input — ticket URL, PR link, Slack thread, Sentry issue, or free text. Classifies inputs, gathers context in parallel, builds a supervisor-approved task list, and executes adaptively with pause/resume support. TRIGGER when: user provides ticket URLs, PR links, Slack threads, Sentry issues, or free text to start structured work. DO NOT TRIGGER when: simple one-off tasks that don''t need structured planning, or parallel fanout of independent items (use Dev10x:fanout).'
 metadata:
-  upstream: skills/work-on/SKILL.md
+  upstream: plugins/coding/skills/work-on/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/work-on/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/work-on/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/work-on/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/work-on/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:work-on — Adaptive Work Orchestrator

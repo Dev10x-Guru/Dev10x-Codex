@@ -2,12 +2,12 @@
 name: sql-handoff
 description: 'Use when a write (UPDATE, INSERT, DELETE, DDL) must reach a database the agent can only read through Dev10x:db-psql — so the supervisor gets one paste-safe statement aimed at the right database, and the agent proves the effect before building on it. TRIGGER when: the agent needs the user to run non-SELECT SQL by hand, or the db-psql hook just blocked a write. DO NOT TRIGGER when: the SQL is a SELECT (run it via Dev10x:db-psql), or the change belongs in a migration file in the codebase.'
 metadata:
-  upstream: skills/sql-handoff/SKILL.md
+  upstream: plugins/db/skills/sql-handoff/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/sql-handoff/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/db/skills/sql-handoff/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/sql-handoff/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/db/skills/sql-handoff/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:sql-handoff

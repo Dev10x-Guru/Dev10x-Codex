@@ -12,23 +12,23 @@ from pathlib import Path
 
 import click
 
-from dev10x.domain.dev10x_paths import Dev10xConfigDir
-from dev10x.domain.documents.friction_yaml import FrictionYamlDocument
+from dev10x.core.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.core.domain.documents.friction_yaml import FrictionYamlDocument
 
 QUICK_START_WORKFLOWS = [
     (
         "git-commit",
-        "/dev10x:git-commit",
+        "/dev10x-coding:git-commit",
         "JTBD-style commit messages with gitmoji + ticket ID",
     ),
     (
         "pr-create",
-        "/dev10x:gh-pr-create",
+        "/dev10x-coding:gh-pr-create",
         "Draft PR with Job Story body and Fixes: link",
     ),
     (
         "review",
-        "/dev10x:review",
+        "/dev10x-coding:review",
         "Self-review your branch before requesting a human reviewer",
     ),
     (
@@ -38,7 +38,7 @@ QUICK_START_WORKFLOWS = [
     ),
     (
         "architecture",
-        "/dev10x:adr",
+        "/dev10x-scoping:adr",
         "Author Architecture Decision Records with diagrams",
     ),
 ]

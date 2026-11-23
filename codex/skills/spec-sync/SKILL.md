@@ -2,12 +2,12 @@
 name: spec-sync
 description: 'Inverse Golden Rule path: when code is refactored without behaviour changes, update the canonical spec at docs/specs/‹TICKET-ID›.md to match the new code shape. Regenerates Architecture / Implementation Steps / Code References sections, leaves Requirements / Entities / Norms / Safeguards untouched. Bails to Dev10x:spec-update if it detects behavioural drift. TRIGGER when: a structural refactor (rename, file move, signature change) ships and the canonical spec must be re-aligned with the new code shape. DO NOT TRIGGER when: behaviour changes (use Dev10x:spec-update); spec is missing (use Dev10x:ticket-scope); no canonical spec workflow is in use (regular Dev10x:work-on applies).'
 metadata:
-  upstream: skills/spec-sync/SKILL.md
+  upstream: plugins/scoping/skills/spec-sync/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/spec-sync/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/scoping/skills/spec-sync/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/spec-sync/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/scoping/skills/spec-sync/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:spec-sync — Refactor-Driven Spec Update
@@ -142,7 +142,7 @@ when both drift kinds are present. See `.claude/rules/skill-gates.md`.
 ## Integration Points
 
 - **`Dev10x:spec-update`** — inverse path (behaviour-first).
-  Shares `dev10x.spec.drift_detector`.
+  Shares `dev10x.core.spec.drift_detector`.
 - **`Dev10x:ticket-scope`** — creates the canonical spec.
 - **`Dev10x:gh-pr-respond`** (GH-173) — calls this skill in
   `check_only=True` mode before applying review-comment fixups.

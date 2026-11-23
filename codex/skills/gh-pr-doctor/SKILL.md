@@ -2,12 +2,12 @@
 name: gh-pr-doctor
 description: 'Use when merged PRs may have unresolved review threads accumulating as silent tech debt — so unaddressed feedback gets surfaced, grouped by theme, and tracked as issues. TRIGGER when: reviewing merged PRs for accumulated tech debt, or post-merge as part of maintenance workflow DO NOT TRIGGER when: reviewing active draft PRs, or as part of automated PR review (not designed for real-time feedback)'
 metadata:
-  upstream: skills/gh-pr-doctor/SKILL.md
+  upstream: plugins/coding/skills/gh-pr-doctor/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/gh-pr-doctor/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/gh-pr-doctor/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/gh-pr-doctor/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/gh-pr-doctor/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:gh-pr-doctor
@@ -51,7 +51,7 @@ that silently accumulates as tech debt after PR merge.
 ### Step 1: Scan PRs for Unresolved Threads
 
 ```bash
-<plugin-root>/skills/gh-pr-doctor/scripts/gh-unresolved-threads.py \
+<plugin-root>/plugins/coding/skills/gh-pr-doctor/scripts/gh-unresolved-threads.py \
   --repo <repo> --limit <N> [--dry-run]
 ```
 
@@ -115,7 +115,7 @@ Unresolved review threads found during automated PR audit.
 For each audited PR, post a comment marking it as audited:
 
 ```bash
-<plugin-root>/skills/gh-pr-doctor/scripts/gh-audit-comment.py \
+<plugin-root>/plugins/coding/skills/gh-pr-doctor/scripts/gh-audit-comment.py \
   --repo <repo> --mapping <issues-json>
 ```
 
@@ -132,7 +132,7 @@ are skipped on subsequent invocations.
 ### Step 5: Verify Audit Completion
 
 ```bash
-<plugin-root>/skills/gh-pr-doctor/scripts/gh-audit-check.py \
+<plugin-root>/plugins/coding/skills/gh-pr-doctor/scripts/gh-audit-check.py \
   --repo <repo>
 ```
 

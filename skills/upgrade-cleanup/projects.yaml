@@ -21,12 +21,19 @@ include_user_settings: true
 # root (GH-40). These are added under permissions.additionalDirectories
 # in every settings file.
 #
-# GH-1260: the gate governs the Read/Write/Edit TOOLS ONLY. It does not
-# gate Bash, and the two rule namespaces are independent — a `Read()`
-# rule, allow or deny, has no bearing on a Bash command reading the same
-# path. Adding a workspace directory therefore does NOT relieve Bash
-# friction, and no `Read()` deny protects a path that `cat`/`rg`/`wc`
-# can reach. Do not reach for either as a path-scoping remedy; a path is
+# GH-1710 (re-tested on Claude Code 2.1.316): the working-directory
+# gate ALSO checks the path operands of read-only Bash commands. With
+# `Bash(rg:*)` allowed, `rg` on a path outside every working directory
+# still prompted, offering to allow reading that directory. A Bash allow
+# rule never lifts that check, so registering a workspace directory here
+# DOES relieve that Bash friction (what `derive_worktree_roots` buys).
+#
+# GH-1260 still holds for the rule namespaces: they are independent — a
+# `Read()` rule, allow or deny, has no bearing on a Bash command reading
+# the same path, and no `Read()` deny protects a path that
+# `cat`/`rg`/`wc` can reach. A workspace directory only removes a
+# prompt; it protects nothing. Do not reach for either as a
+# path-scoping remedy; a path is
 # scopable only by an effect-based PreToolUse validator (the DX0xx
 # axis), filesystem permissions, or not storing the secret in a readable
 # file. Every `Read()` entry below is an ALLOW; the shipped catalog
@@ -89,8 +96,11 @@ command_spellings:
       - dev10x skill codex-skills
       - dev10x skill codex-agents
       - dev10x skill prune-overrides
-      - dev10x supervisor serve
-      - dev10x supervisor unit
+      - dev10x overwatch serve
+      - dev10x overwatch unit
+      - dev10x overwatch dev
+      - dev10x overwatch artifact
+      - dev10x chatbus status  # GH-1845; `run` and `install-unit` stay unseeded
       - dev10x config
       - dev10x platform
       - dev10x init
@@ -174,7 +184,6 @@ base_permissions:
   - "mcp__plugin_dev10x_cli__detect_tracker"
   - "mcp__plugin_dev10x_cli__pr_detect"
   - "mcp__plugin_dev10x_cli__issue_get"
-  - "mcp__plugin_dev10x_cli__issue_comments"
   - "mcp__plugin_dev10x_cli__issue_comment_edit"
   - "mcp__plugin_dev10x_cli__issue_comment_delete"
   - "mcp__plugin_dev10x_cli__issue_create"
@@ -212,6 +221,10 @@ base_permissions:
   # the test's WRITE_TOOLS_NOT_SEEDED list).
   - "mcp__plugin_dev10x_cli__audit_hook_log_path"
   - "mcp__plugin_dev10x_cli__audit_hook_recent"
+  # GH-1153: registered read-only, never catalogued until the coverage
+  # test found it. Core since diag-friction (core) and coding skills
+  # both declare it (GH-1727).
+  - "mcp__plugin_dev10x_cli__background_preamble"
   - "mcp__plugin_dev10x_cli__slack_thread_is_forward"
 
   # GH-1215: the guard added by GH-1153 scanned 5 of 12 mcp modules and
@@ -249,7 +262,6 @@ base_permissions:
   # prompt while the unsanctioned one is denied — a dead end, not a
   # safety margin.
   - "mcp__plugin_dev10x_cli__update_pr"
-  - "mcp__plugin_dev10x_cli__pr_ready"
   - "mcp__plugin_dev10x_cli__pr_close"
   - "mcp__plugin_dev10x_cli__pr_issue_comment"
   - "mcp__plugin_dev10x_cli__pr_review_edit"
@@ -266,6 +278,11 @@ base_permissions:
   # its raw form (a REST POST to `.../rerequest`) is on an ask rule,
   # and `gh run rerun` covers Actions only. Repo-bound with a retry cap.
   - "mcp__plugin_dev10x_cli__ci_rerun"
+  # wait_for (GH-1833): read-only bounded wait that replaces one-off
+  # polling scripts. No skill declares it yet, so core owns it
+  # (GH-1589). pr_wait moved to the coding fragment once gh-pr-monitor
+  # declared it (GH-1832).
+  - "mcp__plugin_dev10x_cli__wait_for"
   # The milestone create/bulk writes are scoping's, milestone_close is
   # coding's, the park family's task_index_* writes are tasks', and the
   # db server's `query` is db's — each in its projects.d fragment.
@@ -569,7 +586,7 @@ ide_denies:
 # allow and deny, so a rule that *should* prompt had nowhere to live and
 # never reached a project file.
 #
-# Why ask and not deny: DX014's own rationale (.claude/rules/hook-patterns.md)
+# Why ask and not deny: DX014's own rationale (.claude/rules/hook-validator-profiles.md)
 # is that a sensitive-but-legitimate operation must prompt rather than
 # hard-block — a deny drops the user into a manual `!` shell with no
 # in-session recourse. Deny stays reserved for operations that are never

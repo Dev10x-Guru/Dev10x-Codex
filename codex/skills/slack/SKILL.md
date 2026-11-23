@@ -2,12 +2,12 @@
 name: slack
 description: 'Send notifications to Slack channels with support for threads, file uploads, message updates, and user group mentions. TRIGGER when: sending messages, uploading files, or updating messages in Slack channels. DO NOT TRIGGER when: setting up Slack integration (use Dev10x:slack-setup), or posting review requests (use Dev10x:slack-review-request).'
 metadata:
-  upstream: skills/slack/SKILL.md
+  upstream: plugins/comm/skills/slack/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/slack/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/comm/skills/slack/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/slack/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/comm/skills/slack/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Dev10x:slack — Slack Notifications
@@ -93,7 +93,7 @@ The skill supports posting to multiple Slack workspaces from one
 machine via the `--workspace NAME` flag:
 
 ```bash
-<plugin-root>/skills/slack/slack-notify.py \
+<plugin-root>/plugins/comm/skills/slack/slack-notify.py \
   --workspace aperture \
   --channel C_APERTURE_CHAN \
   --message "hi"
@@ -182,7 +182,7 @@ uvx dev10x skill notify slack-send \
 ### Upload files
 
 ```bash
-<plugin-root>/skills/slack/slack-notify.py \
+<plugin-root>/plugins/comm/skills/slack/slack-notify.py \
   --channel CHANNEL_ID \
   --files screenshot.png report.pdf \
   --message "Optional comment"
@@ -191,7 +191,7 @@ uvx dev10x skill notify slack-send \
 ### Update a message
 
 ```bash
-<plugin-root>/skills/slack/slack-notify.py \
+<plugin-root>/plugins/comm/skills/slack/slack-notify.py \
   --channel CHANNEL_ID \
   --update MESSAGE_TS \
   --message "Revised content"
@@ -200,7 +200,7 @@ uvx dev10x skill notify slack-send \
 ### Delete a message
 
 ```bash
-<plugin-root>/skills/slack/slack-notify.py \
+<plugin-root>/plugins/comm/skills/slack/slack-notify.py \
   --channel CHANNEL_ID \
   --delete MESSAGE_TS
 ```
@@ -208,7 +208,7 @@ uvx dev10x skill notify slack-send \
 ### Delete a file
 
 ```bash
-<plugin-root>/skills/slack/slack-notify.py \
+<plugin-root>/plugins/comm/skills/slack/slack-notify.py \
   --delete-file FILE_ID
 ```
 
@@ -218,7 +218,7 @@ upload or visible in Slack URLs.
 ### Send a self-DM reminder
 
 ```bash
-<plugin-root>/skills/slack/slack-notify.py \
+<plugin-root>/plugins/comm/skills/slack/slack-notify.py \
   --remind "Follow up on PR #1234"
 ```
 

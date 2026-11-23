@@ -4,10 +4,11 @@ from pathlib import Path
 
 import pytest
 import yaml
-from dev10x.domain.common.config_io import ConfigIOError
-from dev10x.domain.documents.config_document import Config
-from dev10x.domain.rules.rule_engine import RuleEngine
-from dev10x.domain.rules.validation_rule import Compensation, MatchingRule, is_search_command
+
+from dev10x.core.domain.common.config_io import ConfigIOError
+from dev10x.core.domain.documents.config_document import Config
+from dev10x.core.domain.rules.rule_engine import RuleEngine
+from dev10x.core.domain.rules.validation_rule import Compensation, MatchingRule, is_search_command
 
 
 class TestRuleFromYamlEntry:
@@ -107,6 +108,19 @@ class TestRuleEngineFromYaml:
         with pytest.raises(ConfigIOError):
             RuleEngine.from_yaml(path=path)
 
+    @pytest.mark.parametrize(
+        "text",
+        ["", "# no rules yet\n"],
+        ids=["empty", "comment-only"],
+    )
+    def test_empty_rules_file_loads_no_rules(self, tmp_path: Path, text: str) -> None:
+        path = tmp_path / "rules.yaml"
+        path.write_text(text, encoding="utf-8")
+
+        engine = RuleEngine.from_yaml(path=path)
+
+        assert (engine.edit_rules, engine.command_rules, engine.hint_rules) == ([], [], [])
+
 
 class TestRuleEngineFromConfig:
     def test_filters_by_hook_block(self) -> None:
@@ -121,6 +135,58 @@ class TestRuleEngineFromConfig:
 
         assert len(engine.command_rules) == 1
         assert engine.command_rules[0].name == "active"
+
+
+class TestHintRules:
+    """GH-1725: advisory rules that opt in become a live, non-blocking lane."""
+
+    @pytest.fixture()
+    def engine(self) -> RuleEngine:
+        return RuleEngine.from_config(
+            config=Config(
+                rules=[
+                    MatchingRule(name="block", hook_block=True, patterns=["^git push"]),
+                    MatchingRule(
+                        name="hint", hook_block=False, live_hint=True, patterns=["^gog -a"]
+                    ),
+                    MatchingRule(name="quiet", hook_block=False, patterns=["^echo"]),
+                    MatchingRule(
+                        name="edit-hint",
+                        hook_block=False,
+                        live_hint=True,
+                        matcher="Edit|Write",
+                        file_names=[".env"],
+                    ),
+                    MatchingRule(
+                        name="blocking-hint", hook_block=True, live_hint=True, patterns=["^rm"]
+                    ),
+                ]
+            )
+        )
+
+    def test_only_opted_in_advisory_bash_rules_hint(self, engine: RuleEngine) -> None:
+        assert [rule.name for rule in engine.hint_rules] == ["hint"]
+
+    def test_a_blocking_rule_stays_blocking_even_with_live_hint(self, engine: RuleEngine) -> None:
+        assert [rule.name for rule in engine.command_rules] == ["block", "blocking-hint"]
+
+    def test_matching_hint_rule_finds_the_match(self, engine: RuleEngine) -> None:
+        rule = engine.matching_hint_rule(command="gog -a me chat spaces list")
+
+        assert rule is not None
+        assert rule.name == "hint"
+
+    def test_matching_hint_rule_is_none_without_a_match(self, engine: RuleEngine) -> None:
+        assert engine.matching_hint_rule(command="echo hi") is None
+
+
+def test_from_yaml_still_treats_a_missing_hook_block_as_advisory(tmp_path: Path) -> None:
+    path = tmp_path / "rules.yaml"
+    path.write_text(yaml.dump({"rules": [{"name": "implicit", "patterns": ["^echo"]}]}))
+
+    engine = RuleEngine.from_yaml(path=path)
+
+    assert engine.command_rules == []
 
 
 class TestRuleEngineEvaluate:

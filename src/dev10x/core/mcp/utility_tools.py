@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dev10x.domain.common.result import err, ok, to_wire
-from dev10x.mcp._app import server
+from dev10x.core.domain.common.result import err, ok, to_wire
+from dev10x.core.mcp._app import server
 
 
 @server.tool()
@@ -15,19 +15,20 @@ async def background_preamble() -> dict:
     Dispatchers fetch this text and prepend it verbatim to each subagent
     prompt so the subagent avoids hook-tripping command shapes and stays on
     the pre-approved tool surface. The canonical source is
-    ``references/orchestration/background-preamble.md``; this tool serves it
-    without a Read permission prompt and keeps the dispatch paths from
-    drifting.
+    ``references/orchestration/background-preamble.md``; this tool serves
+    the block between its PREAMBLE markers without a Read permission
+    prompt and keeps the dispatch paths from drifting (GH-1874).
 
     Returns:
-        Dictionary with key: preamble (str) — the preamble document text.
-        Returns ``{"error": ...}`` when the canonical document is missing.
+        Dictionary with key: preamble (str) — the marked preamble block.
+        Returns ``{"error": ...}`` when the canonical document or either
+        marker is missing.
     """
-    from dev10x.session.service import SessionService
+    from dev10x.core.session.service import SessionService
 
     text = SessionService().build_background_preamble_context()
     if not text:
-        return to_wire(err("background-preamble.md not found in plugin root"))
+        return to_wire(err("background-preamble.md missing, or its PREAMBLE markers are missing"))
     return to_wire(ok({"preamble": text}))
 
 
@@ -62,8 +63,8 @@ async def mktmp(
     Returns:
         Dictionary with key: path (str) — the temp file/directory path
     """
-    from dev10x import utilities as util
-    from dev10x.subprocess_utils import use_cwd
+    from dev10x.core import utilities as util
+    from dev10x.core.subprocess_utils import use_cwd
 
     with use_cwd(cwd):
         return to_wire(
@@ -104,7 +105,7 @@ async def update_paths(
     Returns:
         Dictionary with keys: success (bool), output (str)
     """
-    from dev10x import permission as perm
+    from dev10x.core import permission as perm
 
     return to_wire(
         await perm.update_paths(
@@ -141,7 +142,7 @@ async def permission_catalog_gap(
         settings files of worktrees found through git outside every
         configured root (GH-1626)
     """
-    from dev10x import permission as perm
+    from dev10x.core import permission as perm
 
     return to_wire(await perm.catalog_gap(verbose=verbose))
 
@@ -176,8 +177,8 @@ async def permission_triage(
         Dictionary with keys: target, verdict, rule, reason, advice
         (list[str]), files_missing (list[str])
     """
-    from dev10x import permission as perm
-    from dev10x.subprocess_utils import use_cwd
+    from dev10x.core import permission as perm
+    from dev10x.core.subprocess_utils import use_cwd
 
     with use_cwd(cwd):
         return to_wire(await perm.triage(target=target, working_dirs=working_dirs))
@@ -190,6 +191,7 @@ async def permission_grant(
     working_dirs: list[str] | None = None,
     dry_run: bool = False,
     cwd: str | None = None,
+    remember: bool = False,
 ) -> dict:
     """Pre-approve a command's rule in every settings file at once (GH-1676).
 
@@ -208,15 +210,20 @@ async def permission_grant(
         working_dirs: Absolute session working directories; defaults to cwd
         dry_run: Report the files that would change without writing
         cwd: Effective working directory (GH-979)
+        remember: Also record the rule in
+            `~/.config/Dev10x/granted-permissions.yaml`, so worktrees and
+            projects created later are seeded with it (GH-1677). Accepts
+            an `already-allowed` verdict, to remember an earlier grant
 
     Returns:
         Dictionary with keys: rule, granted (list[str]), failed
-        (list[str]), dry_run, messages, triage. `{"error": ...,
-        "triage": {...}}` when triage recommends a different fix, the
-        rule differs, or any file failed to write.
+        (list[str]), dry_run, remembered (`{"path", "rule", "added"}`
+        or null), messages, triage. `{"error": ..., "triage": {...}}`
+        when triage recommends a different fix, the rule differs, any
+        file failed to write, or the rule could not be remembered.
     """
-    from dev10x import permission as perm
-    from dev10x.subprocess_utils import use_cwd
+    from dev10x.core import permission as perm
+    from dev10x.core.subprocess_utils import use_cwd
 
     with use_cwd(cwd):
         return to_wire(
@@ -225,6 +232,7 @@ async def permission_grant(
                 rule=rule,
                 working_dirs=working_dirs,
                 dry_run=dry_run,
+                remember=remember,
             )
         )
 
@@ -244,6 +252,6 @@ async def record_upgrade(version: str | None = None) -> dict:
         Dictionary with keys: version (str), path (str). Returns
         ``{"error": ...}`` when no version can be resolved.
     """
-    from dev10x.domain.install_version import record_upgrade as _record_upgrade
+    from dev10x.core.domain.install_version import record_upgrade as _record_upgrade
 
     return to_wire(_record_upgrade(version=version))

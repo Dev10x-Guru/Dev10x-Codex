@@ -15,7 +15,8 @@ Linear.
 
 ## Orchestration
 
-This skill follows `references/task-orchestration.md` patterns.
+This skill follows the core `dev10x` plugin's
+`references/task-orchestration.md` patterns.
 
 **Auto-advance:** Complete each phase, immediately start the next — no checkpoints the resolver did not ask for.
 Never pause between phases to ask "should I continue?".
@@ -42,6 +43,10 @@ text). Options:
 - Approve — upload to Linear (Recommended)
 - Re-capture — artifacts do not show what the test cases claim
 - Abort — stop without publishing
+
+An `--exploratory` run uploads nothing at 4.4, so there the gate
+resolves through `resolve_gate` and asks only when the resolver or a
+take defect says so — see § 4.4 (GH-1847).
 
 **Error recovery gate (Phase 3):** When tests fail, queue the
 decision in task metadata. If no other tasks can advance, present
@@ -512,7 +517,7 @@ Two rules close it:
    voice-over asserts it.
 
 **Before capturing a narrated run**, resolve the voice-licence gate: run
-`<plugin-root>/skills/tts/scripts/synthesize.py check` and, when it
+`<plugin-root>/plugins/qa/skills/tts/scripts/synthesize.py check` and, when it
 returns a non-null `warning`, **REQUIRED: Call `AskUserQuestion`** per
 `skills/tts/SKILL.md` § *Voice licensing is the supervisor's call*. The
 built-in voices are commercial-safe on both the English (Kokoro,
@@ -785,14 +790,14 @@ uv run --with 'playwright>=1.47,<2' python3 -m playwright install chromium
 Always validate syntax before launching a browser:
 
 ```bash
-<plugin-root>/skills/playwright/scripts/run-playwright.sh \
+<plugin-root>/plugins/qa/skills/playwright/scripts/run-playwright.sh \
   /tmp/Dev10x/self-qa/qa-<ticket>-test.py --validate-only
 ```
 
 Then execute (credentials injected automatically from settings.secrets.env):
 
 ```bash
-<plugin-root>/skills/playwright/scripts/run-playwright.sh \
+<plugin-root>/plugins/qa/skills/playwright/scripts/run-playwright.sh \
   /tmp/Dev10x/self-qa/qa-<ticket>-test.py
 ```
 
@@ -801,7 +806,7 @@ account from the secrets file by name (§ 2.3 — read the map, do not
 assume a name):
 
 ```bash
-<plugin-root>/skills/playwright/scripts/run-playwright.sh \
+<plugin-root>/plugins/qa/skills/playwright/scripts/run-playwright.sh \
   /tmp/Dev10x/self-qa/qa-<ticket>-test.py --user <admin-account>
 ```
 
@@ -809,7 +814,7 @@ To probe a PR's own preview deployment rather than the default host,
 name the host as a **flag**:
 
 ```bash
-<plugin-root>/skills/playwright/scripts/run-playwright.sh \
+<plugin-root>/plugins/qa/skills/playwright/scripts/run-playwright.sh \
   /tmp/Dev10x/self-qa/qa-<ticket>-test.py \
   --staging-url https://<preview-host>
 ```
@@ -864,7 +869,7 @@ anything. Run the verifier on every screenshot and video before
 converting, reviewing or uploading:
 
 ```bash
-<plugin-root>/skills/qa-self/scripts/verify-evidence.py \
+<plugin-root>/plugins/qa/skills/qa-self/scripts/verify-evidence.py \
   <RUN_DIR>/screenshots/*.png <RUN_DIR>/video/*.webm
 ```
 
@@ -881,7 +886,7 @@ pass against it and are not meant to. Run them against the
 
 ```bash
 # after 4.3, on the muxed take
-<plugin-root>/skills/qa-self/scripts/verify-evidence.py \
+<plugin-root>/plugins/qa/skills/qa-self/scripts/verify-evidence.py \
   <RUN_DIR>/video/*-narrated.mp4
 ```
 
@@ -963,7 +968,7 @@ for the guard shape and reconcile the declared screenshots against what
 reached disk:
 
 ```bash
-<plugin-root>/skills/qa-self/scripts/verify-evidence.py \
+<plugin-root>/plugins/qa/skills/qa-self/scripts/verify-evidence.py \
   /tmp/Dev10x/self-qa/*.png \
   --script /tmp/Dev10x/self-qa/qa-PAY-1434-matrix.py \
   --declared /tmp/Dev10x/self-qa/manifest.json
@@ -993,7 +998,7 @@ double-checks it.
 
 Use the bundled conversion script:
 ```bash
-<plugin-root>/skills/qa-self/scripts/convert-evidence.sh \
+<plugin-root>/plugins/qa/skills/qa-self/scripts/convert-evidence.sh \
   screenshots /tmp/Dev10x/self-qa/qa-test1.png /tmp/Dev10x/self-qa/qa-test2.png
 ```
 
@@ -1004,7 +1009,7 @@ file paths to stdout.
 
 Playwright records video as `.webm`. Convert to `.mp4` for Linear:
 ```bash
-<plugin-root>/skills/qa-self/scripts/convert-evidence.sh \
+<plugin-root>/plugins/qa/skills/qa-self/scripts/convert-evidence.sh \
   video <RUN_DIR>/video/*.webm
 ```
 
@@ -1021,11 +1026,11 @@ uses the printed path rather than a guessed one.
 Skip this step entirely when no `narration.json` was written:
 
 ```bash
-<plugin-root>/skills/tts/scripts/synthesize.py \
+<plugin-root>/plugins/qa/skills/tts/scripts/synthesize.py \
   track --segments-file <RUN_DIR>/narration/narration.json \
         --out <RUN_DIR>/narration/track.wav
 
-<plugin-root>/skills/qa-self/scripts/convert-evidence.sh \
+<plugin-root>/plugins/qa/skills/qa-self/scripts/convert-evidence.sh \
   narrate <RUN_DIR>/video/qa-<ticket>.mp4 <RUN_DIR>/narration/track.wav
 ```
 
@@ -1100,7 +1105,7 @@ bad take either way. Review locally first.
    playing it, then **Read the saved frames** — the report's paths are
    only useful if someone actually looks at them:
    ```bash
-   <plugin-root>/skills/qa-self/scripts/verify-evidence.py \
+   <plugin-root>/plugins/qa/skills/qa-self/scripts/verify-evidence.py \
      --save-frames <RUN_DIR>/review-frames \
      <RUN_DIR>/video/qa-<ticket>.mp4
    ```
@@ -1122,6 +1127,43 @@ bad take either way. Review locally first.
 
 Only on *Approve* proceed to 4.5. Never upload first and ask after.
 
+**Exploratory mode resolves this gate instead of always asking
+(GH-1847).** In a `--exploratory` run nothing leaves the machine at
+4.4: *Approve* hands the evidence back to the caller, and
+`Dev10x:review-pack`, `Dev10x:qa-publish` and
+`Dev10x:yt-upload` each keep their own publish gate. So the session
+policy, not a hard-coded prompt, decides whether a clean take needs a
+human look: the gate follows the resolver, which auto-advances it under
+the adaptive baseline and asks only where a project pin, overlay or
+override sets `artifact_preview: ask` (a `skip` value approves without
+asking, as `auto-advance` does). That is what keeps a walk-away session
+from stalling here. Report steps 1–2 exactly as above, then:
+
+1. **A defect always asks.** When any of these holds, skip the
+   resolver and **REQUIRED: Call `AskUserQuestion`** (do NOT use plain
+   text): the 4.1 verifier did not pass, the raster is below
+   `1920,1080`, `unrendered` is non-empty, or `anchor` is `install`.
+   Whichever defect it is, offer the full step 3 set in this order —
+   a defective take is the one this gate exists to stop:
+   - **Re-capture (Recommended)** — return to Phase 2/3 and shoot again
+   - **Approve — hand the evidence to the caller** — no marker
+   - **Abort** — stop without handing anything back
+2. Otherwise the take is clean. Call
+   `mcp__cli__resolve_gate(gate="artifact_preview", context={})`
+   and branch on `effect`:
+   - `ask` — **REQUIRED: Call `AskUserQuestion`** with the full step 3
+     set in this order, because the take passed every check above:
+     **Approve — hand the evidence to the caller (Recommended)**, in
+     place of the Linear upload option; **Re-capture**; **Abort**.
+   - `auto-advance` or `skip` — take *Approve*. Print the returned
+     `record` line (on `auto-advance`) and the screenshot manifest, so
+     the caller's Verify-AC summary can name what was approved.
+   - an `error` key — fail safe: ask, as for `ask`.
+
+The ticket-driven run keeps the unconditional gate: its *Approve*
+uploads to an append-only Linear trail. Neither branch ever approves an
+upload or a publish on its own.
+
 #### 4.5 Upload the evidence
 
 Only reachable on *Approve* from 4.4.
@@ -1129,7 +1171,7 @@ Only reachable on *Approve* from 4.4.
 **Linear** — use the upload script bundled with this skill (supports
 images and video):
 ```bash
-<plugin-root>/skills/qa-self/scripts/upload-screenshots.py \
+<plugin-root>/plugins/qa/skills/qa-self/scripts/upload-screenshots.py \
   upload /tmp/Dev10x/self-qa/qa-test1.jpg /tmp/Dev10x/self-qa/qa-test2.jpg /tmp/Dev10x/self-qa/qa-video.mp4
 ```
 
@@ -1148,7 +1190,7 @@ mechanics here — it owns the production-recording gate, the token
 handling, and the per-destination embed forms:
 
 ```bash
-<plugin-root>/skills/yt-upload/scripts/upload-video.py \
+<plugin-root>/plugins/qa/skills/yt-upload/scripts/upload-video.py \
   resolve-video --run-dir <RUN_DIR>
 ```
 

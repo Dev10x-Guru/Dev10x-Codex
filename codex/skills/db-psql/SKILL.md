@@ -2,16 +2,16 @@
 name: db-psql
 description: 'Safe read-only psql wrapper for Claude Code. Provides db.sh with SQL validation hook so database queries are safe and auditable. Configure databases in databases.yaml with env var or keyring backends. TRIGGER when: executing SQL against configured databases. DO NOT TRIGGER when: planning queries (use Dev10x:db), or working with non-database tasks.'
 metadata:
-  upstream: skills/db-psql/SKILL.md
+  upstream: plugins/db/skills/db-psql/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/db-psql/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/db/skills/db-psql/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/db-psql/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/db/skills/db-psql/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 <!--
-GH-127 #1 — `<plugin-root>` is expanded by Claude Code at
+GH-127 #1 — `<plugin-root>/plugins/db` is expanded by Claude Code at
 runtime to the resolved cache path. User settings that pin the
 absolute path (`/home/<user>/.claude/plugins/cache/.../db.sh:*`)
 or omit the tilde will not match this rule. Run
@@ -47,9 +47,9 @@ Safe read-only psql wrapper with two layers of protection:
 ## How to Use
 
 ```bash
-<plugin-root>/skills/db-psql/scripts/db.sh <database> "<SQL>"
-<plugin-root>/skills/db-psql/scripts/db.sh <database> -f <file>
-<plugin-root>/skills/db-psql/scripts/db.sh --list
+<plugin-root>/plugins/db/skills/db-psql/scripts/db.sh <database> "<SQL>"
+<plugin-root>/plugins/db/skills/db-psql/scripts/db.sh <database> -f <file>
+<plugin-root>/plugins/db/skills/db-psql/scripts/db.sh --list
 ```
 
 ## Common Mistakes (DO NOT do these)

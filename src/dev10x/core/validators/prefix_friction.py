@@ -15,23 +15,26 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, ClassVar
 
-from dev10x.domain import HookAllow, HookInput, HookResult
-from dev10x.domain.claude_paths import ClaudeDir
-from dev10x.domain.common.allow_rule import AllowRule, AllowRuleLoader
-from dev10x.domain.common.bash_tokens import (
+from dev10x.core.domain import HookAllow, HookInput, HookResult
+from dev10x.core.domain.claude_paths import ClaudeDir
+from dev10x.core.domain.common.allow_rule import AllowRule, AllowRuleLoader
+from dev10x.core.domain.common.bash_tokens import (
     GIT_C_DIR_RE,
+    is_simple_command,
+    split_tokens,
     strip_line_continuations,
     strip_quoted_spans,
 )
-from dev10x.domain.profile_tier import ProfileTier
-from dev10x.validators.base import ValidatorBase
+from dev10x.core.domain.profile_tier import ProfileTier
+from dev10x.core.validators.base import ValidatorBase
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from dev10x.domain import HookRetry
+    from dev10x.core.domain import HookRetry
 
 SETUP_TOKENS = frozenset(
     ["mkdir", "cd", "export", "source", ".", "pushd", "popd", "touch", "unset"]
@@ -144,6 +147,34 @@ def _strip_uv_run_env_flags(command: str) -> str | None:
     return inner or None
 
 
+# Flags whose value moves what `uv run` executes out of the checkout the
+# user's rule was written for (GH-1795 review): `--python` runs the named
+# interpreter, `--project`/`--directory` run another tree's build backend,
+# conftest or manage.py.
+_UV_INTERPRETER_FLAGS = frozenset({"--python"})
+_UV_TREE_FLAGS = frozenset({"--directory", "--project"})
+
+
+def _uv_flags_stay_in_tree(command: str) -> bool:
+    """True when no env flag points `uv run` outside the current checkout.
+
+    A relative path without `..`, `~` or `$` stays in the tree; anything
+    else, or any `--python`, may advise but never auto-approve.
+    """
+    tokens = split_tokens(command=command)
+    for idx, token in enumerate(tokens):
+        name, equals, attached = token.partition("=")
+        if name in _UV_INTERPRETER_FLAGS:
+            return False
+        if name not in _UV_TREE_FLAGS:
+            continue
+        value = attached if equals else (tokens[idx + 1] if idx + 1 < len(tokens) else "")
+        path = PurePosixPath(value)
+        if not value or path.is_absolute() or ".." in path.parts or value[0] in "~$":
+            return False
+    return True
+
+
 # GH-119: redirect followed by positional args swallows the post-redirect
 # tokens in Claude Code's command-shape classifier, breaking allow-rule
 # matching. Match commands shaped like `<cmd> ... 2>/dev/null -name X`
@@ -230,8 +261,7 @@ NEWLINE_CHAIN_RE = re.compile(
 # command prefix to the loop keyword (`for`, `while`, `until`).
 # `Bash(gh api:*)` does not match `for n in 1 2 3; do gh api ... ; done`
 # because the matcher sees `for` as the leading token. Same regression
-# family as `cd ... &&` chaining (DX007 existing rules) and `for/xargs`
-# wrappers documented in CLAUDE.md and `.claude/rules/hook-patterns.md`.
+# family as `cd ... &&` chaining (DX007 existing rules).
 # The proposed remedy is the parallel-Bash-tool-call pattern.
 _LOOP_KEYWORDS = ("for", "while", "until")
 SHELL_LOOP_HEAD_RE = re.compile(
@@ -302,7 +332,7 @@ GIT_C_COLOR_MSG = (
     "If color genuinely leaks (e.g. `color.ui=always` in config), use the\n"
     "sanctioned alias:\n"
     "    git nocolor <verb> …      (pre-approved via Bash(git nocolor:*))\n"
-    "Missing it? Run: /dev10x:git-alias-setup"
+    "Missing it? Run: /dev10x-coding:git-alias-setup"
 )
 
 GIT_C_HOOKSPATH_MSG = (
@@ -325,7 +355,7 @@ GIT_C_CONFIG_MSG = (
     "If the override is unnecessary, drop it:\n"
     "    {bare_command}\n\n"
     "If you need it repeatedly, provision a stable, pre-approvable alias:\n"
-    "    /dev10x:git-alias-setup    (e.g. `git <name>` → Bash(git <name>:*))"
+    "    /dev10x-coding:git-alias-setup    (e.g. `git <name>` → Bash(git <name>:*))"
 )
 
 GIT_C_EDITOR_MSG = (
@@ -338,10 +368,10 @@ GIT_C_EDITOR_MSG = (
     "  • For interactive / autosquash rebases, use the pre-approved aliases\n"
     "    (they bake in `GIT_SEQUENCE_EDITOR=true`) or the grooming skill:\n"
     "        git autosquash-develop      (or -main / -master / -trunk)\n"
-    "        dev10x:git-groom            (non-interactive history cleanup)\n\n"
+    "        dev10x-coding:git-groom     (non-interactive history cleanup)\n\n"
     "Drop the prefix and run:\n"
     "    {bare_command}\n\n"
-    "Missing the aliases? Run: /dev10x:git-alias-setup"
+    "Missing the aliases? Run: /dev10x-coding:git-alias-setup"
 )
 
 CD_GIT_CHAIN_MSG = (
@@ -397,7 +427,7 @@ ENV_PREFIX_MSG = (
     "     unusable unattended, GH-964)\n"
     "  \u2022 For rebase --continue, no env prefix is needed:\n"
     "      git rebase --continue\n\n"
-    "If aliases are missing, run: /dev10x:git-alias-setup"
+    "If aliases are missing, run: /dev10x-coding:git-alias-setup"
 )
 
 REDIRECT_THEN_POSITIONAL_MSG = (
@@ -475,7 +505,7 @@ MERGE_BASE_MSG = (
     "    git {{branch}}-log       \u2014 log since diverging from branch\n"
     "    git {{branch}}-diff      \u2014 diff since diverging from branch\n"
     "    git {{branch}}-rebase    \u2014 interactive rebase onto branch\n\n"
-    "If aliases are missing, run: /dev10x:git-alias-setup"
+    "If aliases are missing, run: /dev10x-coding:git-alias-setup"
 )
 
 
@@ -654,7 +684,15 @@ class PrefixFrictionValidator(ValidatorBase):
             _matches_allow_rule(inner, self._allow_patterns) is not None
             or _matches_allow_rule(normalized, self._allow_patterns) is not None
         ):
-            return HookAllow(message=UV_RUN_NORMALIZE_MSG.format(inner=inner))
+            # The allow skips the prompt (GH-1795), and the rule matched a
+            # prefix of the whole string, so it may only vouch for one
+            # simple command (`uv run --frozen foo && rm -rf ~` starts with
+            # an allowed `foo` too) whose flags keep it in this checkout.
+            return HookAllow(
+                message=UV_RUN_NORMALIZE_MSG.format(inner=inner),
+                decides=is_simple_command(command=inp.command)
+                and _uv_flags_stay_in_tree(inp.command),
+            )
         return None
 
     def _check_cd_revparse_chain(self, *, inp: HookInput) -> HookResult | None:
@@ -903,7 +941,7 @@ class PrefixFrictionValidator(ValidatorBase):
         return None
 
     def correct(self, inp: HookInput) -> HookRetry | None:
-        from dev10x.domain import HookRetry as _HookRetry
+        from dev10x.core.domain import HookRetry as _HookRetry
 
         result = self.validate(inp=inp)
         if result is None or isinstance(result, HookAllow):

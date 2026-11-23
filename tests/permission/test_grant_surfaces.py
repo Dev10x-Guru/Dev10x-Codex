@@ -8,15 +8,15 @@ from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
-from dev10x.domain.common.result import ErrorResult, SuccessResult, ok
-from dev10x.permission.service import PermissionContext
 
-from dev10x import permission as perm_mod
 from dev10x.commands.permission import permission as permission_cli
+from dev10x.core import permission as perm_mod
+from dev10x.core.domain.common.result import ErrorResult, SuccessResult, ok
 from dev10x.core.mcp import utility_tools
-from dev10x.skills.permission import catalog_write
+from dev10x.core.permission.service import PermissionContext
+from dev10x.core.skills.permission import catalog_write
 
-CONTEXT = "dev10x.permission.load_permission_context"
+CONTEXT = "dev10x.core.permission.load_permission_context"
 CLI_CONTEXT = "dev10x.commands.permission.load_permission_context"
 
 
@@ -87,7 +87,7 @@ class TestAdapter:
     ) -> None:
         with (
             patch(CONTEXT, return_value=ok(context)),
-            patch("dev10x.subprocess_utils.effective_cwd", return_value=str(workdir)),
+            patch("dev10x.core.subprocess_utils.effective_cwd", return_value=str(workdir)),
         ):
             result = await perm_mod.triage(target=f"rg x {workdir}/src")
         assert isinstance(result, SuccessResult)
@@ -193,6 +193,24 @@ class TestMcpTools:
             )
         assert payload["triage"]["verdict"] == "refuse-sensitive"
 
+    @pytest.mark.asyncio
+    async def test_grant_tool_remember_records_rule(
+        self,
+        context: PermissionContext,
+        workdir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("DEV10X_CONFIG_HOME", str(tmp_path / "config"))
+        with patch(CONTEXT, return_value=ok(context)):
+            payload = await utility_tools.permission_grant(
+                target="make test",
+                rule="Bash(make:*)",
+                remember=True,
+                cwd=str(workdir),
+            )
+        assert payload["remembered"]["added"] is True
+
 
 class TestCli:
     @pytest.mark.parametrize(
@@ -253,6 +271,22 @@ class TestCli:
                 ["grant", "make test", "--working-dir", str(workdir), "--dry-run"],
             )
         assert "Would grant Bash(make:*) in 1 file(s)." in result.output
+
+    def test_grant_remember_reports_the_fragment(
+        self,
+        context: PermissionContext,
+        workdir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        granted = tmp_path / "config" / "granted-permissions.yaml"
+        monkeypatch.setenv("DEV10X_CONFIG_HOME", str(granted.parent))
+        with patch(CLI_CONTEXT, return_value=ok(context)):
+            result = CliRunner().invoke(
+                permission_cli,
+                ["grant", "make test", "--working-dir", str(workdir), "--remember"],
+            )
+        assert f"remembered Bash(make:*)  {granted}" in result.output
 
     def test_grant_refusal_exits_nonzero_with_advice(
         self, context: PermissionContext, workdir: Path

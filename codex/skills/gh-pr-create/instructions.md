@@ -81,7 +81,7 @@ points. In unattended mode, these gates are skipped:
 
 ## Scripts
 
-All multi-line commands live in `<plugin-root>/skills/gh-pr-create/scripts/`:
+All multi-line commands live in `<plugin-root>/plugins/coding/skills/gh-pr-create/scripts/`:
 
 | Script | Purpose |
 |--------|---------|
@@ -165,7 +165,7 @@ script or env-level bypasses — see
 tool call errored for another reason:
 
 ```bash
-<plugin-root>/skills/gh-pr-create/scripts/verify-state.sh
+<plugin-root>/plugins/coding/skills/gh-pr-create/scripts/verify-state.sh
 ```
 
 This validates:
@@ -276,7 +276,7 @@ Dispatch based on TRACKER:
 
 | TRACKER | How to search |
 |---------|--------------|
-| `github` | `<plugin-root>/skills/gh-context/scripts/gh-issue-get.sh` for body, `<plugin-root>/skills/gh-context/scripts/gh-issue-comments.sh` for comments |
+| `github` | `mcp__cli__issue_get` for body, `mcp__cli__issue_comments` for comments |
 | `linear` | Linear MCP tools for description and comments |
 | `jira` | JIRA API for description |
 | `unknown` | Skip ticket search, rely on commit messages |
@@ -348,8 +348,11 @@ Fixes: {fixes_url from detect_tracker MCP tool}
 If `fixes_url` is empty (unknown tracker), first call
 `mcp__cli__tracker_status` — a pinned `tracker` names
 where the key lives, so build the issue URL from it.
-When no URL can be built, pass the bare ticket key, or
-`fixes_url="none — <reason>"` when there is no ticket at all.
+When no URL can be built, pass the bare ticket key, or a written-out
+reason such as `fixes_url="none — self-motivated refactor"` when there
+is no ticket at all.
+`create_pr` refuses a bare `none`, a punctuation-only reason, or a
+literal `<reason>` placeholder, because close-issues would fail on them.
 
 **Partial delivery (GH-1604).**
 When the PR delivers only part of issue #N, the trailer must be
@@ -367,7 +370,7 @@ reference `issue_id` would seed, so #N gets no closing trailer.
 ### Step 5: Run Pre-PR Checks
 
 ```bash
-<plugin-root>/skills/gh-pr-create/scripts/pre-pr-checks.sh
+<plugin-root>/plugins/coding/skills/gh-pr-create/scripts/pre-pr-checks.sh
 ```
 
 Automatically skips if no Python files changed. Runs ruff, formatting,
@@ -418,7 +421,7 @@ If push verification fails, STOP. Do NOT fall back to a raw
 on an unpushed branch.
 
 ```bash
-<plugin-root>/skills/gh-pr-create/scripts/create-pr.sh "$TITLE" "$JOB_STORY" "$ISSUE" "$FIXES_URL"
+<plugin-root>/plugins/coding/skills/gh-pr-create/scripts/create-pr.sh "$TITLE" "$JOB_STORY" "$ISSUE" "$FIXES_URL"
 ```
 
 This script:
@@ -429,6 +432,35 @@ This script:
 3. Gets the PR number
 4. Updates the body with linked commits (using `generate-commit-list.sh`)
 5. Outputs the PR number
+
+**When `create_pr` refuses the trailer (GH-1896).** An error that
+starts `create_pr: Fixes: trailer is malformed` means **no PR was
+opened** — the check runs before the push to GitHub, on the `body`
+you passed or, without one, on `job_story` plus the trailer built
+from `fixes_url` / `issue_id` / `closes`. Fix the trailer where it
+came from: the `Fixes:` line in `body` or `job_story`, an open fence
+or comment in `job_story` that hides it, or the `fixes_url` /
+`issue_id` value. Without `body`, `create_pr: Fixes: trailer is
+missing` means the trailer built from those values names no reference
+(a `fixes_url` such as `,` wins over `issue_id`). With `body`,
+`create_pr: body carries no Fixes: trailer` means no visible `Fixes:`
+line was found: one inside a code block or HTML comment, or only a
+`Refs:` line, does not count, and no PR was opened (GH-1935).
+A closing line that names more GitHub issues than it closes, such as
+`Fixes: #12, #13 (duplicate)`, is refused too: close-issues reads one
+reference per keyword (GH-1936). Pass one reference per token in
+`fixes_url`, or one `Fixes:` line per issue in `body`.
+It needs a usable `Fixes: none — <reason>` or an ASCII issue
+reference, on a visible line outside code and comments. Then call
+`create_pr` again. In unattended mode this is a retry, not a gate.
+An error that starts `PR #<N> (<url>) was created, but its` is the
+trailer read-back after the PR opened: repair that body with
+`update_pr`. `…was created, but assigning milestone` is a milestone
+failure: set it with `update_pr(milestone=…)`, not the body.
+Never fall back to `create-pr.sh` to get past it: the script does not
+run the Python trailer guard, accepts a bare `Fixes: none`, and opens
+a PR that close-issues fails on merge. The script stays the fallback
+only for when the MCP server is unreachable.
 
 ### Step 6b: Cross-Fork PRs (GH-473)
 

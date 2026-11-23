@@ -2,12 +2,12 @@
 name: ticket-jtbd
 description: 'Write a JTBD Job Story and apply it to a target (PR description, GitHub issue, Linear ticket, or JIRA ticket). Delegates drafting to the Dev10x:jtbd base skill, then handles the side-effecting write. TRIGGER when: a ticket or PR needs a Job Story written or updated. DO NOT TRIGGER when: JTBD is already present in the target, or user is writing commit messages (use Dev10x:git-commit for that).'
 metadata:
-  upstream: skills/ticket-jtbd/SKILL.md
+  upstream: plugins/scoping/skills/ticket-jtbd/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/ticket-jtbd/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/scoping/skills/ticket-jtbd/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/ticket-jtbd/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/scoping/skills/ticket-jtbd/`.
 > Reviewed for Codex but not yet run end to end in it: confirm before any step that writes to GitHub or rewrites history.
 
 # Write JTBD Story to Target

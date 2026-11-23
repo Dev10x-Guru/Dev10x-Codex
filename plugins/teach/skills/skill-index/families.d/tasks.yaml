@@ -1,0 +1,11 @@
+# Skill-index fragment for the tasks plugin (ADR-0034 Stage A3,
+# GH-1589). Merged into ../families.yaml by scripts/lib-families.sh.
+
+families:
+  - label: Session
+    description: "Track progress, defer & resume work, keep the lessons"
+    skills:
+      - dev10x-tasks:session-wrap-up
+      - dev10x-tasks:reflect
+      - dev10x-tasks:park
+      - dev10x-tasks:park-discover

@@ -6,11 +6,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from dev10x.domain.common.result import err, ok
-from dev10x.domain.dev10x_paths import Dev10xConfigDir
-from dev10x.domain.project_match import MatchScheme, ProjectsStatus
-from dev10x.session.preset_pin import RepoIdentity
-from dev10x.session.projects_scan import (
+
+from dev10x.core.domain.common.result import err, ok
+from dev10x.core.domain.dev10x_paths import Dev10xConfigDir
+from dev10x.core.domain.project_match import MatchScheme, ProjectsStatus
+from dev10x.core.session.preset_pin import RepoIdentity
+from dev10x.core.session.projects_scan import (
     NO_REPO_ROOT_REASON,
     scan_projects_lists,
 )
@@ -27,9 +28,11 @@ def in_repo(tmp_path: Path):
     """Resolve both targets: a checkout at tmp_path owned by `org/repo`."""
     identity = RepoIdentity(name="repo", root=str(tmp_path), source="git-common-dir")
     with (
-        patch("dev10x.session.projects_scan.resolve_repo_identity", return_value=ok(identity)),
         patch(
-            "dev10x.session.projects_scan.resolve_name_with_owner",
+            "dev10x.core.session.projects_scan.resolve_repo_identity", return_value=ok(identity)
+        ),
+        patch(
+            "dev10x.core.session.projects_scan.resolve_name_with_owner",
             return_value=ok("org/repo"),
         ),
     ):
@@ -82,7 +85,8 @@ class TestScanProjectsLists:
         )
         report = _report_for(scan_projects_lists(), name="work-on.yaml")
         assert report.scheme is MatchScheme.REPO
-        assert report.deprecated_alias_indexes == (0,)
+        assert report.status is ProjectsStatus.NO_MATCH
+        assert report.retired_key_indexes == (0,)
 
     def test_no_origin_remote_reports_unresolved_not_no_match(self, tmp_path: Path) -> None:
         """A repo-addressed list that was never evaluated says so (ADR-0026)."""
@@ -92,9 +96,12 @@ class TestScanProjectsLists:
         )
         identity = RepoIdentity(name="repo", root=str(tmp_path), source="git-common-dir")
         with (
-            patch("dev10x.session.projects_scan.resolve_repo_identity", return_value=ok(identity)),
             patch(
-                "dev10x.session.projects_scan.resolve_name_with_owner",
+                "dev10x.core.session.projects_scan.resolve_repo_identity",
+                return_value=ok(identity),
+            ),
+            patch(
+                "dev10x.core.session.projects_scan.resolve_name_with_owner",
                 return_value=err("no `origin` remote"),
             ),
         ):
@@ -106,11 +113,11 @@ class TestScanProjectsLists:
         _write(Dev10xConfigDir.friction_yaml(), "projects:\n  - match: ['*/repo']\n")
         with (
             patch(
-                "dev10x.session.projects_scan.resolve_repo_identity",
+                "dev10x.core.session.projects_scan.resolve_repo_identity",
                 return_value=err("Not in a git repository"),
             ),
             patch(
-                "dev10x.session.projects_scan.resolve_name_with_owner",
+                "dev10x.core.session.projects_scan.resolve_name_with_owner",
                 return_value=err("no origin"),
             ),
         ):

@@ -13,17 +13,17 @@ it into the record). These tests pin each hop plus the end-to-end path.
 from __future__ import annotations
 
 import pytest
-from dev10x.domain.events.hook_input import HookAllow, HookAsk, HookInput, HookResult
-from dev10x.domain.profile_tier import ProfileTier
-from dev10x.hooks.audit_emit import (
+
+from dev10x.core.domain.events.hook_input import HookAllow, HookAsk, HookInput, HookResult
+from dev10x.core.domain.profile_tier import ProfileTier
+from dev10x.core.hooks import audit_emit
+from dev10x.core.hooks.audit_emit import (
     audit_hook,
     set_audit_writer,
     set_decision_attribution,
 )
-from dev10x.hooks.hook_transport import emit
-from dev10x.validators.registry import ValidatorChain, ValidatorRegistry
-
-from dev10x.hooks import audit_emit
+from dev10x.core.hooks.hook_transport import emit
+from dev10x.core.validators.registry import ValidatorChain, ValidatorRegistry
 
 
 class RecordingWriter:
@@ -120,15 +120,16 @@ class TestChainStampsRuleId:
         )
         assert result.rule_id == "DX003"
 
-    def test_allow_passes_through_without_rule_id_field(self) -> None:
+    def test_allow_is_stamped_too(self) -> None:
+        """GH-1795: an allow can skip the prompt, so it must be attributable."""
         result = _run_chain(
             validator=StubValidator(
-                rule_id="DX010",
-                result=HookAllow(message="fine"),
+                rule_id="DX011",
+                result=HookAllow(message="fine", decides=True),
                 profile=ProfileTier.STANDARD,
             )
         )
-        assert not hasattr(result, "rule_id")
+        assert result.rule_id == "DX011"
 
     def test_validator_without_a_rule_id_leaves_result_unstamped(self) -> None:
         result = _run_chain(

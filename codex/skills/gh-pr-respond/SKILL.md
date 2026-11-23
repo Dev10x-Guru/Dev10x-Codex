@@ -2,12 +2,12 @@
 name: gh-pr-respond
 description: 'Validate and respond to PR review comments. Handles single comment (with follow-up offer) or batch mode for all unaddressed comments on a PR/review. Orchestrates Dev10x:gh-pr-triage and Dev10x:gh-pr-fixup. TRIGGER when: PR has review comments that need responses or fixes. DO NOT TRIGGER when: no review comments exist, or user wants to create a new PR (use Dev10x:gh-pr-create).'
 metadata:
-  upstream: skills/gh-pr-respond/SKILL.md
+  upstream: plugins/coding/skills/gh-pr-respond/SKILL.md
 ---
 
-> **Running in Codex.** Generated from `skills/gh-pr-respond/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
+> **Running in Codex.** Generated from `plugins/coding/skills/gh-pr-respond/` by `dev10x skill codex-skills` — edit the upstream skill, not this file.
 > Where this skill names a Claude Code tool (`AskUserQuestion`, `TaskCreate`, `Agent`, `Monitor`, …), use the Codex equivalent in [../../references/claude-tool-equivalents.md](../../references/claude-tool-equivalents.md).
-> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/skills/gh-pr-respond/`.
+> `<plugin-root>` is the Dev10x plugin folder (the one holding `.codex-plugin/`); this skill's `scripts/` and `templates/` stay in `<plugin-root>/plugins/coding/skills/gh-pr-respond/`.
 
 # Respond to PR Review Comments
 
