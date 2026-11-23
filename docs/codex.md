@@ -194,6 +194,12 @@ codex execpolicy check --rules ~/.codex/rules/dev10x.rules git status
 The baseline never allows `rm`, `dd` or `sudo`.
 The guardrail hooks still run on every allowed command.
 
+The hooks can block a command or ask about it, but they cannot approve
+one past a Codex prompt.
+When a rule says a command needs approval, Codex asks even if a
+Dev10x hook allows it, so pre-approve a command in a rules file, not
+through the hooks.
+
 Scripts inside the Dev10x skills are not in the baseline.
 They live under the versioned plugin cache path, which a Codex prefix
 rule cannot match across releases, so Codex asks before running one.
